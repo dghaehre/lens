@@ -15,7 +15,6 @@ Review `git diff`, commits, branches, or GitHub PRs side-by-side without leaving
 - Review GitHub Pull Requests with `lumen diff --pr 123`
 - Annotate selections, hunks, or whole files
 - Watch mode and stacked-commit review
-- Optional AI commit messages and change explanations (10+ providers)
 - Works with Git and Jujutsu (jj)
 
 [![Demo](https://github.com/user-attachments/assets/dc425871-3826-4368-88d8-931b9403f0ec)](https://github.com/user-attachments/assets/70d07324-8394-423c-bbc3-9460ed84877b)
@@ -33,13 +32,6 @@ Review `git diff`, commits, branches, or GitHub PRs side-by-side without leaving
   - [Installation](#installation)
 - [Usage](#usage-)
   - [Visual Diff Viewer](#visual-diff-viewer)
-- [AI Features](#ai-features-)
-  - [Configuration](#configuration)
-  - [Generate Commit Messages](#generate-commit-messages)
-  - [Generate Git Commands](#generate-git-commands)
-  - [Explain Changes](#explain-changes)
-  - [Tips & Tricks](#tips--tricks)
-  - [AI Providers](#ai-providers)
 - [Advanced Configuration](#advanced-configuration-)
   - [Configuration File](#configuration-file)
   - [Configuration Precedence](#configuration-precedence)
@@ -49,8 +41,6 @@ Review `git diff`, commits, branches, or GitHub PRs side-by-side without leaving
 ### Prerequisites
 Before you begin, ensure you have:
 1. `git` installed on your system
-2. [fzf](https://github.com/junegunn/fzf) (optional) - Required for `lumen explain --list` command
-3. [mdcat](https://github.com/swsnr/mdcat) (optional) - Required for pretty output formatting
 
 ### Installation
 
@@ -173,102 +163,6 @@ Annotated lines display a `▍` gutter indicator. Use `I` to view, edit, delete,
 - `ctrl+h/l`: Previous/next commit (stacked mode)
 - `?`: Show all keybindings
 
-## AI Features 🔅
-
-Lumen also bundles optional AI helpers for commit messages, explanations, and natural-language git commands. These require configuring an AI provider — the diff viewer above does not.
-
-### Configuration
-
-Run `lumen configure` for interactive setup (provider, API key, model). Settings are saved to `~/.config/lumen/lumen.config.json`.
-
-### Generate Commit Messages
-
-Create meaningful commit messages for your staged changes:
-
-```bash
-# Basic usage - generates a commit message based on staged changes
-lumen draft
-# Output: "feat(button.tsx): Update button color to blue"
-
-# Add context for more meaningful messages
-lumen draft --context "match brand guidelines"
-# Output: "feat(button.tsx): Update button color to align with brand identity guidelines"
-```
-
-### Generate Git Commands
-
-Ask Lumen to generate Git commands based on a natural language query:
-
-```bash
-lumen operate "squash the last 3 commits into 1 with the message 'squashed commit'"
-# Output: git reset --soft HEAD~3 && git commit -m "squashed commit" [y/N]
-```
-
-The command will display an explanation of what the generated command does, show any warnings for potentially dangerous operations, and prompt for confirmation before execution.
-
-### Explain Changes
-
-Understand what changed and why:
-
-```bash
-# Working directory or staged changes
-lumen explain
-lumen explain --staged
-
-# Specific commits or ranges
-lumen explain HEAD
-lumen explain HEAD~3..HEAD
-lumen explain main..feature/A
-
-# Ask specific questions
-lumen explain --query "What's the performance impact of these changes?"
-
-# Interactive commit selection (requires: fzf)
-lumen explain --list
-```
-
-### Tips & Tricks
-
-```bash
-# Copy commit message to clipboard (macOS / Linux)
-lumen draft | pbcopy
-lumen draft | xclip -selection c
-
-# Directly commit using the generated message
-lumen draft | git commit -F -
-```
-
-[lazygit](https://github.com/jesseduffield/lazygit) integration is available — see the [user config docs](https://github.com/jesseduffield/lazygit/blob/master/docs/Config.md) for binding `lumen draft` to a custom command.
-
-### AI Providers
-
-Configure your preferred AI provider:
-
-```bash
-# Using CLI arguments
-lumen -p openai -k "your-api-key" -m "gpt-5-mini" draft
-
-# Using environment variables
-export LUMEN_AI_PROVIDER="openai"
-export LUMEN_API_KEY="your-api-key"
-export LUMEN_AI_MODEL="gpt-5-mini"
-```
-
-#### Supported Providers
-
-| Provider | API Key Required | Models |
-|----------|-----------------|---------|
-| [OpenAI](https://platform.openai.com/docs/models) `openai` (Default) | Yes | `gpt-5.2`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `o4-mini` (default: `gpt-5-mini`) |
-| [Claude](https://www.anthropic.com/pricing) `claude` | Yes | `claude-sonnet-4-5-20250930`, `claude-opus-4-5-20251115`, `claude-haiku-4-5-20251015` (default: `claude-sonnet-4-5-20250930`) |
-| [Gemini](https://ai.google.dev/) `gemini` | Yes (free tier) | `gemini-3-pro`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite` (default: `gemini-2.5-flash`) |
-| [Groq](https://console.groq.com/docs/models) `groq` | Yes (free) | `llama-3.3-70b-versatile`, `llama-3.1-8b-instant`, `meta-llama/llama-4-maverick-17b-128e-instruct`, `openai/gpt-oss-120b` (default: `llama-3.3-70b-versatile`) |
-| [DeepSeek](https://www.deepseek.com/) `deepseek` | Yes | `deepseek-chat` (V3.2), `deepseek-reasoner` (default: `deepseek-chat`) |
-| [xAI](https://x.ai/) `xai` | Yes | `grok-4`, `grok-4-mini`, `grok-4-mini-fast` (default: `grok-4-mini-fast`) |
-| [OpenCode Zen](https://opencode.ai/docs/zen) `opencode-zen` | Yes | [see list](https://opencode.ai/docs/zen#models) (default: `claude-sonnet-4-5`) |
-| [Ollama](https://github.com/ollama/ollama) `ollama` | No (local) | [see list](https://ollama.com/library) (default: `llama3.2`) |
-| [OpenRouter](https://openrouter.ai/) `openrouter` | Yes | [see list](https://openrouter.ai/models) (default: `anthropic/claude-sonnet-4.5`) |
-| [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) `vercel` | Yes | [see list](https://vercel.com/docs/ai-gateway/supported-models) (default: `anthropic/claude-sonnet-4.5`) |
-
 ## Advanced Configuration 🔅
 
 ### Configuration File
@@ -289,25 +183,7 @@ Lumen will load configurations in the following order of priority:
 
 ```json
 {
-  "provider": "openai",
-  "model": "gpt-5-mini",
-  "api_key": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-  "theme": "catppuccin-mocha",
-  "draft": {
-    "commit_types": {
-      "docs": "Documentation only changes",
-      "style": "Changes that do not affect the meaning of the code",
-      "refactor": "A code change that neither fixes a bug nor adds a feature",
-      "perf": "A code change that improves performance",
-      "test": "Adding missing tests or correcting existing tests",
-      "build": "Changes that affect the build system or external dependencies",
-      "ci": "Changes to our CI configuration files and scripts",
-      "chore": "Other changes that don't modify src or test files",
-      "revert": "Reverts a previous commit",
-      "feat": "A new feature",
-      "fix": "A bug fix"
-    }
-  }
+  "theme": "catppuccin-mocha"
 }
 ```
 
@@ -317,23 +193,6 @@ Options are applied in the following order (highest to lowest priority):
 2. Configuration File
 3. Environment Variables
 4. Default options
-
-Example: Using different providers for different projects:
-```bash
-# Set global defaults in .zshrc/.bashrc
-export LUMEN_AI_PROVIDER="openai"
-export LUMEN_AI_MODEL="gpt-5-mini"
-export LUMEN_API_KEY="sk-xxxxxxxxxxxxxxxxxxxxxxxx"
-
-# Override per project using config file
-{
-  "provider": "ollama",
-  "model": "llama3.2"
-}
-
-# Or override using CLI flags
-lumen -p "ollama" -m "llama3.2" draft
-```
 ## Contributors
 
 <a href="https://github.com/jnsahaj/lumen/graphs/contributors">
