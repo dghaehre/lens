@@ -47,36 +47,36 @@ cargo install lens
 
 ```bash
 # View uncommitted changes (worktree vs HEAD)
-lens diff
+lens
 
 # View worktree vs an earlier ref (commit, branch, tag, ...)
-lens diff HEAD~3
-lens diff main
+lens HEAD~3
+lens main
 
 # Filter to specific files
-lens diff --file src/main.rs --file src/lib.rs
+lens --file src/main.rs --file src/lib.rs
 
 # Watch mode - auto-refresh on file changes
-lens diff --watch
+lens --watch
 
 # Stacked mode - walk commits in <ref>..HEAD one by one
-lens diff main --stacked
+lens main --stacked
 
 # Jump to a specific file on open
-lens diff --focus src/main.rs
+lens --focus src/main.rs
 ```
 
 lens always diffs the working tree against the supplied ref. To review a
 single historical commit, check it out (e.g. `git checkout <sha>`) and
-diff against its parent (`lens diff HEAD~1`).
+diff against its parent (`lens HEAD~1`).
 
 #### Stacked Diff Mode
 
 Review the commits between a base ref and `HEAD` one at a time with `--stacked`:
 
 ```bash
-lens diff main --stacked
-lens diff HEAD~5 --stacked
+lens main --stacked
+lens HEAD~5 --stacked
 ```
 
 This displays each commit individually, letting you navigate through them:
@@ -91,10 +91,10 @@ Customize the diff viewer colors with preset themes:
 
 ```bash
 # Using CLI flag
-lens diff --theme dracula
+lens --theme dracula
 
 # Using environment variable
-LENS_THEME=catppuccin-mocha lens diff
+LENS_THEME=catppuccin-mocha lens
 
 # Or set permanently in config file (~/.config/lens/lens.config.json)
 {

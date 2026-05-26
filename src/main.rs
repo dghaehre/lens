@@ -1,5 +1,5 @@
 use clap::Parser;
-use config::cli::{Cli, Commands};
+use config::cli::Cli;
 use config::LensConfig;
 use error::LensError;
 use std::process;
@@ -30,26 +30,15 @@ async fn run() -> Result<(), LensError> {
     let cwd = std::env::current_dir()?;
     let backend = vcs::GitBackend::new(&cwd)?;
 
-    match cli.command {
-        Commands::Diff {
-            reference,
-            file,
-            watch,
-            theme,
-            stacked,
-            focus,
-        } => {
-            let options = command::diff::DiffOptions {
-                reference,
-                file,
-                watch,
-                theme: theme.or(config.theme.clone()),
-                stacked,
-                focus,
-            };
-            command::diff::run_diff_ui(options, &backend)?;
-        }
-    }
+    let options = command::diff::DiffOptions {
+        reference: cli.reference,
+        file: cli.file,
+        watch: cli.watch,
+        theme: cli.theme.or(config.theme.clone()),
+        stacked: cli.stacked,
+        focus: cli.focus,
+    };
+    command::diff::run_diff_ui(options, &backend)?;
 
     Ok(())
 }

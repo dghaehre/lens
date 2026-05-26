@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::Parser;
 
 use crate::commit_reference::CommitReference;
 
@@ -11,40 +11,31 @@ pub struct Cli {
     #[arg(long)]
     pub config: Option<String>,
 
-    #[command(subcommand)]
-    pub command: Commands,
-}
+    /// Ref to diff the working tree against (defaults to HEAD).
+    /// Examples: `main`, `HEAD~3`, a SHA.
+    #[arg(value_parser = clap::value_parser!(CommitReference))]
+    pub reference: Option<CommitReference>,
 
-#[derive(Subcommand)]
-pub enum Commands {
-    /// Launch interactive side-by-side diff viewer
-    Diff {
-        /// Ref to diff the working tree against (defaults to HEAD).
-        /// Examples: `main`, `HEAD~3`, a SHA.
-        #[arg(value_parser = clap::value_parser!(CommitReference))]
-        reference: Option<CommitReference>,
+    /// Filter to specific files
+    #[arg(short, long)]
+    pub file: Option<Vec<String>>,
 
-        /// Filter to specific files
-        #[arg(short, long)]
-        file: Option<Vec<String>>,
+    /// Watch for file changes and auto-reload
+    #[arg(short, long)]
+    pub watch: bool,
 
-        /// Watch for file changes and auto-reload
-        #[arg(short, long)]
-        watch: bool,
+    /// Color theme (e.g., dracula, nord, gruvbox-dark, catppuccin-mocha)
+    #[arg(short, long)]
+    pub theme: Option<String>,
 
-        /// Color theme (e.g., dracula, nord, gruvbox-dark, catppuccin-mocha)
-        #[arg(short, long)]
-        theme: Option<String>,
+    /// Show commits stacked (commit-by-commit navigation with ctrl+l/h).
+    /// Requires a base ref (walks <ref>..HEAD).
+    #[arg(long)]
+    pub stacked: bool,
 
-        /// Show commits stacked (commit-by-commit navigation with ctrl+l/h).
-        /// Requires a base ref (walks <ref>..HEAD).
-        #[arg(long)]
-        stacked: bool,
-
-        /// Initially focus on this file path
-        #[arg(long)]
-        focus: Option<String>,
-    },
+    /// Initially focus on this file path
+    #[arg(long)]
+    pub focus: Option<String>,
 }
 
 #[cfg(test)]
@@ -52,8 +43,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_cli_parses_diff_command() {
-        let cli = Cli::try_parse_from(["lens", "diff"]).unwrap();
-        assert!(matches!(cli.command, Commands::Diff { .. }));
+    fn test_cli_parses_without_subcommand() {
+        let cli = Cli::try_parse_from(["lens"]).unwrap();
+        assert!(cli.reference.is_none());
+    }
+
+    #[test]
+    fn test_cli_parses_with_reference() {
+        let cli = Cli::try_parse_from(["lens", "main"]).unwrap();
+        assert!(cli.reference.is_some());
     }
 }
