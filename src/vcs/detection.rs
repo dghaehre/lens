@@ -5,26 +5,17 @@ use std::path::Path;
 pub enum VcsType {
     /// Git repository (has .git/)
     Git,
-    /// Jujutsu repository (has .jj/), includes colocated repos
-    Jj,
     /// No VCS detected
     None,
 }
 
 /// Detect the VCS type for a directory.
 ///
-/// Prefers Jj when both .jj/ and .git/ are present (colocated repo).
 /// Walks up the directory tree to find the repo root.
 pub fn detect_vcs_type(start_dir: &Path) -> VcsType {
     let mut current = start_dir;
 
     loop {
-        // Check for .jj/ first (prefer jj in colocated repos)
-        if current.join(".jj").is_dir() {
-            return VcsType::Jj;
-        }
-
-        // Check for .git/
         if current.join(".git").exists() {
             return VcsType::Git;
         }
@@ -52,20 +43,20 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_jj_repo() {
+    fn test_ignores_jj_repo_without_git() {
         let temp = TempDir::new().unwrap();
         fs::create_dir(temp.path().join(".jj")).unwrap();
 
-        assert_eq!(detect_vcs_type(temp.path()), VcsType::Jj);
+        assert_eq!(detect_vcs_type(temp.path()), VcsType::None);
     }
 
     #[test]
-    fn test_detect_colocated_prefers_jj() {
+    fn test_detect_colocated_repo_as_git() {
         let temp = TempDir::new().unwrap();
         fs::create_dir(temp.path().join(".git")).unwrap();
         fs::create_dir(temp.path().join(".jj")).unwrap();
 
-        assert_eq!(detect_vcs_type(temp.path()), VcsType::Jj);
+        assert_eq!(detect_vcs_type(temp.path()), VcsType::Git);
     }
 
     #[test]

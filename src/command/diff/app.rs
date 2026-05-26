@@ -294,7 +294,6 @@ fn run_app_internal(
 
     // Initialize state before TUI so we can sync viewed files
     let mut state = AppState::new(file_diffs, options.focus.as_deref());
-    state.set_vcs_name(backend.name());
 
     // Set diff reference for annotation export context
     let diff_ref_str = if let Some(pr) = &pr_info {
@@ -441,7 +440,6 @@ fn run_app_internal(
                     state.current_commit_index,
                     state.stacked_commits.len(),
                     &side_by_side,
-                    state.vcs_name,
                     &state.annotations,
                     &state.selection,
                     old_hl,

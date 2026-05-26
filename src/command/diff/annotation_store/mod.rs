@@ -93,14 +93,6 @@ impl Annotation {
         self.root().created_at
     }
 
-    #[cfg(feature = "jj")]
-    pub fn format_time(&self) -> String {
-        use chrono::{DateTime, Local};
-        let datetime: DateTime<Local> = self.created_at().into();
-        datetime.format("%H:%M").to_string()
-    }
-
-    #[cfg(not(feature = "jj"))]
     pub fn format_time(&self) -> String {
         use std::time::UNIX_EPOCH;
         let duration = self.created_at().duration_since(UNIX_EPOCH).unwrap_or_default();

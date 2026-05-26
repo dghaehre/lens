@@ -69,9 +69,8 @@ pub fn get_changed_files(options: &DiffOptions, backend: &dyn VcsBackend) -> Vec
         DiffRefs::WorkingTree => backend.get_working_tree_changed_files().unwrap_or_default(),
         DiffRefs::RangeToWorkingTree { from } => {
             // Union of files changed in `from..HEAD` and files changed in the working tree.
-            let head_ref = backend.working_copy_parent_ref();
             let range_files = backend
-                .get_range_changed_files(&from, head_ref)
+                .get_range_changed_files(&from, "HEAD")
                 .unwrap_or_default();
             let wt_files = backend.get_working_tree_changed_files().unwrap_or_default();
             let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -101,7 +100,7 @@ pub fn get_old_content(filename: &str, refs: &DiffRefs, backend: &dyn VcsBackend
         }
         DiffRefs::Range { from, .. } => from.clone(),
         DiffRefs::RangeToWorkingTree { from } => from.clone(),
-        DiffRefs::WorkingTree => backend.working_copy_parent_ref().to_string(),
+        DiffRefs::WorkingTree => "HEAD".to_string(),
     };
 
     // Empty ref means root commit with no parent - return empty content

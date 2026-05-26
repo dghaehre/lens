@@ -262,7 +262,6 @@ impl VcsBackend for GitBackend {
 
         Ok(CommitInfo {
             commit_id,
-            change_id: None, // Git doesn't have change IDs
             message,
             diff,
             author,
@@ -649,10 +648,6 @@ impl VcsBackend for GitBackend {
         Ok(merge_base.to_string())
     }
 
-    fn working_copy_parent_ref(&self) -> &'static str {
-        "HEAD"
-    }
-
     fn get_range_changed_files(&self, from: &str, to: &str) -> Result<Vec<String>, VcsError> {
         let from = from.trim();
         let to = to.trim();
@@ -781,7 +776,6 @@ impl VcsBackend for GitBackend {
                 commits.push(StackedCommitInfo {
                     commit_id,
                     short_id,
-                    change_id: None,
                     summary,
                 });
             }
@@ -790,10 +784,6 @@ impl VcsBackend for GitBackend {
         // Reverse to get oldest first
         commits.reverse();
         Ok(commits)
-    }
-
-    fn name(&self) -> &'static str {
-        "git"
     }
 }
 
@@ -809,7 +799,6 @@ mod tests {
 
         let info = backend.get_commit("HEAD").expect("should get commit");
         assert!(!info.commit_id.is_empty());
-        assert!(info.change_id.is_none()); // Git has no change IDs
         assert_eq!(info.message, "init");
         assert!(info.author.contains("Test User"));
         assert!(!info.diff.is_empty());
@@ -1185,12 +1174,6 @@ mod tests {
             "commit_id should be hex"
         );
 
-        // Git has no change_id
-        assert!(
-            commit.change_id.is_none(),
-            "git commits should not have change_id"
-        );
-
         // author format: "Name <email>"
         assert!(
             commit.author.contains('<') && commit.author.contains('>'),
@@ -1401,12 +1384,6 @@ mod tests {
     }
 
     #[test]
-    fn test_working_copy_parent_ref_returns_head() {
-        let backend = GitBackend::from_cwd().expect("should open repo");
-        assert_eq!(backend.working_copy_parent_ref(), "HEAD");
-    }
-
-    #[test]
     fn test_get_parent_ref_or_empty_root_commit() {
         let _repo = RepoGuard::new();
         let backend = GitBackend::from_cwd().expect("should open repo");
@@ -1590,9 +1567,6 @@ mod tests {
             commit.short_id.len() >= 7,
             "short_id should be at least 7 chars"
         );
-
-        // change_id should be None for git
-        assert!(commit.change_id.is_none(), "git has no change_id");
 
         // summary should match commit message
         assert_eq!(commit.summary, "second commit");

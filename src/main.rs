@@ -3,7 +3,6 @@ use config::cli::{Cli, Commands};
 use config::LumenConfig;
 use error::LumenError;
 use std::process;
-use vcs::VcsBackendType;
 
 mod command;
 mod commit_reference;
@@ -27,10 +26,9 @@ async fn run() -> Result<(), LumenError> {
         Err(e) => return Err(e),
     };
 
-    // Get VCS backend based on CLI override or auto-detection
+    // Discover the Git backend from the current directory.
     let cwd = std::env::current_dir()?;
-    let vcs_override = cli.vcs.map(VcsBackendType::from);
-    let backend = vcs::get_backend(&cwd, vcs_override)?;
+    let backend = vcs::get_backend(&cwd)?;
 
     match cli.command {
         Commands::Diff {
