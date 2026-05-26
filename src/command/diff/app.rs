@@ -1181,7 +1181,7 @@ fn run_app_internal(
                                 active_modal = Some(Modal::file_picker("Find File", items));
                             }
                         }
-                        KeyCode::Char(']') => {
+                        KeyCode::Char('}') => {
                             if !state.file_diffs.is_empty() {
                                 let diff = &state.file_diffs[state.current_file];
                                 if !diff.new_content.is_empty() {
@@ -1193,7 +1193,7 @@ fn run_app_internal(
                                 }
                             }
                         }
-                        KeyCode::Char('[') => {
+                        KeyCode::Char('{') => {
                             if !state.file_diffs.is_empty() {
                                 let diff = &state.file_diffs[state.current_file];
                                 if !diff.old_content.is_empty() {
@@ -1456,7 +1456,7 @@ fn run_app_internal(
                         KeyCode::PageUp => {
                             state.scroll = state.scroll.saturating_sub(20);
                         }
-                        KeyCode::Char('}') => {
+                        KeyCode::Char(']') => {
                             if !state.file_diffs.is_empty() {
                                 state.clear_selection(); // Clear selection on hunk navigation
                                 let hunks = state.get_hunks().to_vec();
@@ -1480,7 +1480,7 @@ fn run_app_internal(
                                 }
                             }
                         }
-                        KeyCode::Char('{') => {
+                        KeyCode::Char('[') => {
                             if !state.file_diffs.is_empty() {
                                 state.clear_selection(); // Clear selection on hunk navigation
                                 let hunks = state.get_hunks().to_vec();
@@ -1861,7 +1861,7 @@ fn run_app_internal(
                                                 description: "Scroll to top / bottom",
                                             },
                                             KeyBind {
-                                                key: "{ / }",
+                                                key: "[ / ]",
                                                 description: "Focus prev / next hunk",
                                             },
                                             KeyBind {
@@ -1877,11 +1877,11 @@ fn run_app_internal(
                                                 description: "Mark hunk viewed & next hunk",
                                             },
                                             KeyBind {
-                                                key: "]",
+                                                key: "}",
                                                 description: "Toggle new panel fullscreen",
                                             },
                                             KeyBind {
-                                                key: "[",
+                                                key: "{",
                                                 description: "Toggle old panel fullscreen",
                                             },
                                             KeyBind {
