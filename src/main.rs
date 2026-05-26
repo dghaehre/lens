@@ -33,23 +33,19 @@ async fn run() -> Result<(), LensError> {
     match cli.command {
         Commands::Diff {
             reference,
-            pr,
             file,
             watch,
             theme,
             stacked,
             focus,
-            origin,
         } => {
             let options = command::diff::DiffOptions {
                 reference,
-                pr,
                 file,
                 watch,
                 theme: theme.or(config.theme.clone()),
                 stacked,
                 focus,
-                origin,
             };
             command::diff::run_diff_ui(options, &backend)?;
         }

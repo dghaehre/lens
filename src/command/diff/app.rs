@@ -15,9 +15,7 @@ use super::annotation::{AnnotationEditor, AnnotationEditorResult};
 use super::annotation_store::{AnnotationStore, InMemoryStore, SqliteStore};
 use super::coordinates::{extract_selected_text, PanelLayout};
 use super::highlight;
-use super::loader::{
-    get_current_branch, load_file_diffs, load_pr_file_diffs, load_single_commit_diffs,
-};
+use super::loader::{get_current_branch, load_file_diffs, load_single_commit_diffs};
 use super::render::{
     render_diff, render_empty_state, truncate_path, FilePickerItem, KeyBind, KeyBindSection, Modal,
     ModalContent, ModalFileStatus, ModalResult,
@@ -29,12 +27,8 @@ use super::types::{
     SelectionMode, SidebarItem,
 };
 use super::watcher::{setup_watcher, WatchEvent};
-use super::{
-    fetch_viewed_files, mark_file_as_viewed_async, unmark_file_as_viewed_async, DiffOptions, PrInfo,
-};
-use spinoff::{spinners, Color, Spinner};
+use super::DiffOptions;
 
-use crate::commit_reference::CommitReference;
 use crate::vcs::{GitBackend, StackedCommitInfo};
 
 /// Navigate to a different commit in stacked mode.
@@ -275,38 +269,9 @@ fn build_annotation_list(state: &AppState) -> (Vec<String>, Vec<super::state::An
     (items, annotations)
 }
 
-pub fn run_app_with_pr(
-    options: DiffOptions,
-    pr_info: PrInfo,
-    backend: &GitBackend,
-) -> io::Result<()> {
-    let mut spinner = Spinner::new(
-        spinners::Dots,
-        format!(
-            "Fetching diff for {}/{}#{}",
-            pr_info.repo_owner, pr_info.repo_name, pr_info.number
-        ),
-        Color::Cyan,
-    );
-    match load_pr_file_diffs(&pr_info) {
-        Ok(file_diffs) => {
-            spinner.success(&format!("Fetched {} files", file_diffs.len()));
-            run_app_internal(options, Some(pr_info), file_diffs, None, backend)
-        }
-        Err(e) => {
-            spinner.fail(&e);
-            std::process::exit(1);
-        }
-    }
-}
-
-pub fn run_app(
-    options: DiffOptions,
-    pr_info: Option<PrInfo>,
-    backend: &GitBackend,
-) -> io::Result<()> {
+pub fn run_app(options: DiffOptions, backend: &GitBackend) -> io::Result<()> {
     let file_diffs = load_file_diffs(&options, backend);
-    run_app_internal(options, pr_info, file_diffs, None, backend)
+    run_app_internal(options, file_diffs, None, backend)
 }
 
 pub fn run_app_stacked(
@@ -317,19 +282,7 @@ pub fn run_app_stacked(
     // Load the first commit's diff
     let first_commit = &commits[0];
     let file_diffs = load_single_commit_diffs(&first_commit.commit_id, &options.file, backend);
-    run_app_internal(options, None, file_diffs, Some(commits), backend)
-}
-
-/// Sync viewed files from GitHub to local state
-fn sync_viewed_files_from_github(pr_info: &PrInfo, state: &mut AppState) {
-    if let Ok(viewed_paths) = fetch_viewed_files(pr_info) {
-        state.viewed_files.clear();
-        for (idx, diff) in state.file_diffs.iter().enumerate() {
-            if viewed_paths.contains(&diff.filename) {
-                state.viewed_files.insert(idx);
-            }
-        }
-    }
+    run_app_internal(options, file_diffs, Some(commits), backend)
 }
 
 /// Unified event source for the main loop: either a crossterm input event or
@@ -342,7 +295,6 @@ enum AppEvent {
 
 fn run_app_internal(
     options: DiffOptions,
-    pr_info: Option<PrInfo>,
     file_diffs: Vec<super::types::FileDiff>,
     stacked_commits: Option<Vec<StackedCommitInfo>>,
     backend: &GitBackend,
@@ -350,9 +302,8 @@ fn run_app_internal(
     theme::init(options.theme.as_deref());
     highlight::init();
 
-    // Initialize state before TUI so we can sync viewed files. Annotations
-    // persist in `<git_dir>/lens.db`; fall back to in-memory if SQLite open
-    // fails so the TUI still works.
+    // Annotations persist in `<git_dir>/lens.db`; fall back to in-memory if
+    // SQLite open fails so the TUI still works.
     let db_path = backend.git_dir().join("lens.db");
     let store: Box<dyn AnnotationStore> = match SqliteStore::open(&db_path) {
         Ok(s) => Box::new(s),
@@ -367,37 +318,12 @@ fn run_app_internal(
     };
     let mut state = AppState::with_store(file_diffs, options.focus.as_deref(), store);
 
-    // Set diff reference for annotation export context
-    let diff_ref_str = if let Some(pr) = &pr_info {
-        Some(format!(
-            "PR #{} ({}...{})",
-            pr.number, pr.base_ref, pr.head_ref
-        ))
-    } else {
-        options.reference.as_ref().map(|r| match r {
-            CommitReference::Single(s) => s.clone(),
-            CommitReference::Range { from, to } => format!("{}..{}", from, to),
-            CommitReference::TripleDots { from, to } => format!("{}...{}", from, to),
-            CommitReference::RangeToWorkingTree { from } => format!("{}..-", from),
-        })
-    };
+    let diff_ref_str = options.reference.as_ref().map(|r| r.as_str().to_string());
     state.set_diff_reference(diff_ref_str);
 
     // Initialize stacked mode if commits were provided
     if let Some(commits) = stacked_commits {
         state.init_stacked_mode(commits);
-    }
-
-    // Load viewed files from GitHub on startup in PR mode (before TUI starts)
-    if let Some(ref pr) = pr_info {
-        let mut spinner = Spinner::new(
-            spinners::Dots,
-            format!("Syncing viewed status for {} files", state.file_diffs.len()),
-            Color::Cyan,
-        );
-        sync_viewed_files_from_github(pr, &mut state);
-        let viewed_count = state.viewed_files.len();
-        spinner.success(&format!("{} files marked as viewed", viewed_count));
     }
 
     // Now enter TUI mode
@@ -407,7 +333,7 @@ fn run_app_internal(
 
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
-    let watch_rx = if options.watch && pr_info.is_none() {
+    let watch_rx = if options.watch {
         setup_watcher()
     } else {
         None
@@ -448,27 +374,11 @@ fn run_app_internal(
 
     'main: loop {
         if state.needs_reload {
-            let file_diffs = if let Some(ref pr) = pr_info {
-                // In PR mode, reload from GitHub
-                match load_pr_file_diffs(pr) {
-                    Ok(diffs) => diffs,
-                    Err(e) => {
-                        eprintln!("Warning: failed to reload PR diffs: {}", e);
-                        Vec::new()
-                    }
-                }
-            } else {
-                load_file_diffs(&options, backend)
-            };
+            let file_diffs = load_file_diffs(&options, backend);
 
             // Pass changed files to reload so it can unmark them from viewed
             let changed_files = pending_watch_event.take().map(|e| e.changed_files);
             state.reload(file_diffs, changed_files.as_ref());
-
-            // Re-sync viewed files from GitHub in PR mode
-            if let Some(ref pr) = pr_info {
-                sync_viewed_files_from_github(pr, &mut state);
-            }
         }
 
         if state.file_diffs.is_empty() {
@@ -521,7 +431,6 @@ fn run_app_internal(
                     state.diff_fullscreen,
                     &state.search_state,
                     commit_ref,
-                    pr_info.as_ref(),
                     state.focused_hunk,
                     &hunks,
                     state.stacked_mode,
@@ -1487,24 +1396,12 @@ fn run_app_internal(
                                     match selected {
                                         SidebarItem::File { file_index, .. } => {
                                             let file_idx = file_index;
-                                            let filename =
-                                                state.file_diffs[file_idx].filename.clone();
                                             let was_viewed = state.viewed_files.contains(&file_idx);
 
-                                            // Optimistic update - update local state immediately
                                             if was_viewed {
                                                 state.viewed_files.remove(&file_idx);
                                             } else {
                                                 state.viewed_files.insert(file_idx);
-                                            }
-
-                                            // Fire off async API call if in PR mode
-                                            if let Some(ref pr) = pr_info {
-                                                if was_viewed {
-                                                    unmark_file_as_viewed_async(pr, &filename);
-                                                } else {
-                                                    mark_file_as_viewed_async(pr, &filename);
-                                                }
                                             }
                                         }
                                         SidebarItem::Directory { path, .. } => {
@@ -1531,7 +1428,6 @@ fn run_app_internal(
                                                 .iter()
                                                 .all(|i| state.viewed_files.contains(i));
 
-                                            // Optimistic update - update local state immediately
                                             if all_viewed {
                                                 for idx in &child_indices {
                                                     state.viewed_files.remove(idx);
@@ -1541,27 +1437,13 @@ fn run_app_internal(
                                                     state.viewed_files.insert(*idx);
                                                 }
                                             }
-
-                                            // Fire off async API calls if in PR mode
-                                            if let Some(ref pr) = pr_info {
-                                                for &idx in &child_indices {
-                                                    let filename = &state.file_diffs[idx].filename;
-                                                    if all_viewed {
-                                                        unmark_file_as_viewed_async(pr, filename);
-                                                    } else {
-                                                        mark_file_as_viewed_async(pr, filename);
-                                                    }
-                                                }
-                                            }
                                         }
                                     }
                                 }
                             } else if state.focused_panel == FocusedPanel::DiffView {
                                 let current_file = state.current_file;
-                                let filename = state.file_diffs[current_file].filename.clone();
                                 let was_viewed = state.viewed_files.contains(&current_file);
 
-                                // Optimistic update - update local state immediately
                                 if was_viewed {
                                     state.viewed_files.remove(&current_file);
                                 } else {
@@ -1606,15 +1488,6 @@ fn run_app_internal(
                                         let visible_height =
                                             terminal.size()?.height.saturating_sub(5) as usize;
                                         ensure_sidebar_visible(&mut state, visible_height);
-                                    }
-                                }
-
-                                // Fire off async API call if in PR mode
-                                if let Some(ref pr) = pr_info {
-                                    if was_viewed {
-                                        unmark_file_as_viewed_async(pr, &filename);
-                                    } else {
-                                        mark_file_as_viewed_async(pr, &filename);
                                     }
                                 }
                             }
@@ -1917,21 +1790,6 @@ fn run_app_internal(
                                 terminal.clear()?;
                             }
                         }
-                        KeyCode::Char('o') => {
-                            if let Some(ref pr) = pr_info {
-                                if !state.file_diffs.is_empty() {
-                                    let filename = &state.file_diffs[state.current_file].filename;
-                                    let file_url = format!(
-                                        "https://github.com/{}/{}/pull/{}/files#diff-{}",
-                                        pr.repo_owner,
-                                        pr.repo_name,
-                                        pr.number,
-                                        generate_file_anchor(filename)
-                                    );
-                                    let _ = open_url(&file_url);
-                                }
-                            }
-                        }
                         KeyCode::Char('g') => {
                             if state.pending_key == PendingKey::G {
                                 state.scroll = 0;
@@ -2012,10 +1870,6 @@ fn run_app_internal(
                                             KeyBind {
                                                 key: "e",
                                                 description: "Edit file (at hunk line if focused)",
-                                            },
-                                            KeyBind {
-                                                key: "o",
-                                                description: "Open file in browser (PR mode)",
                                             },
                                             KeyBind {
                                                 key: "ctrl+l / ctrl+h",
@@ -2156,30 +2010,4 @@ fn run_app_internal(
     io::stdout().execute(LeaveAlternateScreen)?;
 
     Ok(())
-}
-
-fn open_url(url: &str) -> io::Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open").arg(url).spawn()?;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open").arg(url).spawn()?;
-    }
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("cmd")
-            .args(["/C", "start", url])
-            .spawn()?;
-    }
-    Ok(())
-}
-
-fn generate_file_anchor(filename: &str) -> String {
-    use sha2::{Digest, Sha256};
-
-    let mut hasher = Sha256::new();
-    hasher.update(filename.as_bytes());
-    format!("{:x}", hasher.finalize())
 }

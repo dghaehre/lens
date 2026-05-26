@@ -168,6 +168,7 @@ impl GitBackend {
 
     /// Generate unified diff for a commit, comparing to its parent.
     /// For root commits (no parent), compares to an empty tree.
+    #[allow(dead_code)]
     fn generate_commit_diff(&self, commit: &Commit) -> Result<String, VcsError> {
         let tree = commit
             .tree()
@@ -227,6 +228,7 @@ impl GitBackend {
 }
 
 impl GitBackend {
+    #[allow(dead_code)]
     pub fn get_commit(&self, reference: &str) -> Result<CommitInfo, VcsError> {
         let reference = reference.trim();
         Self::validate_ref_format(reference)?;
@@ -268,6 +270,7 @@ impl GitBackend {
         })
     }
 
+    #[allow(dead_code)]
     pub fn get_working_tree_diff(&self, staged: bool) -> Result<String, VcsError> {
         let mut opts = DiffOptions::new();
         opts.show_binary(true);
@@ -318,6 +321,7 @@ impl GitBackend {
         Ok(output)
     }
 
+    #[allow(dead_code)]
     pub fn get_range_diff(
         &self,
         from: &str,
@@ -544,6 +548,7 @@ impl GitBackend {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_commit_log_for_fzf(&self) -> Result<String, VcsError> {
         let mut revwalk = self
             .repo
@@ -584,6 +589,7 @@ impl GitBackend {
         Ok(output)
     }
 
+    #[allow(dead_code)]
     pub fn resolve_ref(&self, reference: &str) -> Result<String, VcsError> {
         let reference = reference.trim();
         Self::validate_ref_format(reference)?;
@@ -623,6 +629,7 @@ impl GitBackend {
         Ok(files.into_iter().collect())
     }
 
+    #[allow(dead_code)]
     pub fn get_merge_base(&self, ref1: &str, ref2: &str) -> Result<String, VcsError> {
         let ref1 = ref1.trim();
         let ref2 = ref2.trim();

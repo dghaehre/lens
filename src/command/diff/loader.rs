@@ -1,10 +1,8 @@
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 use super::types::{is_binary_content, FileDiff, FileStatus};
-use super::{DiffOptions, PrInfo};
-use crate::commit_reference::CommitReference;
+use super::DiffOptions;
 use crate::vcs::GitBackend;
 
 pub fn get_current_branch(backend: &GitBackend) -> String {
@@ -15,73 +13,46 @@ pub fn get_current_branch(backend: &GitBackend) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-/// Resolved references for diff comparison
-pub enum DiffRefs {
-    /// Uncommitted changes (working tree vs HEAD)
-    WorkingTree,
-    /// Single commit (SHA vs SHA^)
-    Single(String),
-    /// Range between two refs
-    Range { from: String, to: String },
-    /// Range from a ref to the working tree (range + uncommitted changes).
-    RangeToWorkingTree { from: String },
+/// Resolved reference for diff comparison.
+///
+/// lens always diffs the working tree against `base_ref`. If `base_ref` is
+/// `HEAD`, this is just the uncommitted-changes diff. Otherwise it's the
+/// union of files changed in `base_ref..HEAD` and uncommitted changes.
+pub struct DiffRefs {
+    pub base_ref: String,
 }
 
 impl DiffRefs {
-    pub fn from_options(options: &DiffOptions, backend: &GitBackend) -> Self {
-        match &options.reference {
-            None => DiffRefs::WorkingTree,
-            Some(CommitReference::Single(sha)) => DiffRefs::Single(sha.clone()),
-            Some(CommitReference::Range { from, to }) => DiffRefs::Range {
-                from: from.clone(),
-                to: to.clone(),
-            },
-            Some(CommitReference::TripleDots { from, to }) => {
-                // Get merge-base for triple dots
-                let merge_base = backend.get_merge_base(from, to).unwrap_or_else(|e| {
-                    eprintln!(
-                        "Warning: failed to find merge-base for {}...{}: {}. Using '{}' as base.",
-                        from, to, e, from
-                    );
-                    from.clone()
-                });
-                DiffRefs::Range {
-                    from: merge_base,
-                    to: to.clone(),
-                }
-            }
-            Some(CommitReference::RangeToWorkingTree { from }) => {
-                DiffRefs::RangeToWorkingTree { from: from.clone() }
-            }
-        }
+    pub fn from_options(options: &DiffOptions) -> Self {
+        let base_ref = options
+            .reference
+            .as_ref()
+            .map(|r| r.as_str().to_string())
+            .unwrap_or_else(|| "HEAD".to_string());
+        DiffRefs { base_ref }
     }
 }
 
-/// Get the list of files changed
+/// Get the list of files changed between `base_ref` and the working tree.
 pub fn get_changed_files(options: &DiffOptions, backend: &GitBackend) -> Vec<String> {
-    let refs = DiffRefs::from_options(options, backend);
+    let refs = DiffRefs::from_options(options);
 
-    let files: Vec<String> = match refs {
-        DiffRefs::Single(sha) => backend.get_changed_files(&sha).unwrap_or_default(),
-        DiffRefs::Range { from, to } => backend
-            .get_range_changed_files(&from, &to)
-            .unwrap_or_default(),
-        DiffRefs::WorkingTree => backend.get_working_tree_changed_files().unwrap_or_default(),
-        DiffRefs::RangeToWorkingTree { from } => {
-            // Union of files changed in `from..HEAD` and files changed in the working tree.
-            let range_files = backend
-                .get_range_changed_files(&from, "HEAD")
-                .unwrap_or_default();
-            let wt_files = backend.get_working_tree_changed_files().unwrap_or_default();
-            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-            let mut combined: Vec<String> = Vec::new();
-            for f in range_files.into_iter().chain(wt_files.into_iter()) {
-                if seen.insert(f.clone()) {
-                    combined.push(f);
-                }
+    let files: Vec<String> = if refs.base_ref == "HEAD" {
+        backend.get_working_tree_changed_files().unwrap_or_default()
+    } else {
+        // Union of `base_ref..HEAD` and the working tree.
+        let range_files = backend
+            .get_range_changed_files(&refs.base_ref, "HEAD")
+            .unwrap_or_default();
+        let wt_files = backend.get_working_tree_changed_files().unwrap_or_default();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut combined: Vec<String> = Vec::new();
+        for f in range_files.into_iter().chain(wt_files.into_iter()) {
+            if seen.insert(f.clone()) {
+                combined.push(f);
             }
-            combined
         }
+        combined
     };
 
     if let Some(ref filter) = options.file {
@@ -91,51 +62,25 @@ pub fn get_changed_files(options: &DiffOptions, backend: &GitBackend) -> Vec<Str
     }
 }
 
-/// Get content of a file at the "old" side of the diff
+/// Get content of a file at the "old" side of the diff (the base ref).
 pub fn get_old_content(filename: &str, refs: &DiffRefs, backend: &GitBackend) -> String {
-    let ref_str = match refs {
-        DiffRefs::Single(sha) => {
-            // Use get_parent_ref_or_empty to handle root commits gracefully
-            backend.get_parent_ref_or_empty(sha).unwrap_or_default()
-        }
-        DiffRefs::Range { from, .. } => from.clone(),
-        DiffRefs::RangeToWorkingTree { from } => from.clone(),
-        DiffRefs::WorkingTree => "HEAD".to_string(),
-    };
-
-    // Empty ref means root commit with no parent - return empty content
-    if ref_str.is_empty() {
-        return String::new();
-    }
-
     backend
-        .get_file_content_at_ref(&ref_str, Path::new(filename))
+        .get_file_content_at_ref(&refs.base_ref, Path::new(filename))
         .unwrap_or_default()
 }
 
-/// Get content of a file at the "new" side of the diff
-pub fn get_new_content(filename: &str, refs: &DiffRefs, backend: &GitBackend) -> String {
-    match refs {
-        DiffRefs::Single(sha) => backend
-            .get_file_content_at_ref(sha, Path::new(filename))
-            .unwrap_or_default(),
-        DiffRefs::Range { to, .. } => backend
-            .get_file_content_at_ref(to, Path::new(filename))
-            .unwrap_or_default(),
-        DiffRefs::WorkingTree | DiffRefs::RangeToWorkingTree { .. } => {
-            // Read from working tree (actual filesystem)
-            fs::read_to_string(filename).unwrap_or_default()
-        }
-    }
+/// Get content of a file at the "new" side of the diff (the working tree).
+pub fn get_new_content(filename: &str, _refs: &DiffRefs) -> String {
+    fs::read_to_string(filename).unwrap_or_default()
 }
 
 pub fn load_file_diffs(options: &DiffOptions, backend: &GitBackend) -> Vec<FileDiff> {
-    let refs = DiffRefs::from_options(options, backend);
+    let refs = DiffRefs::from_options(options);
     get_changed_files(options, backend)
         .into_iter()
         .map(|filename| {
             let old_content = get_old_content(&filename, &refs, backend);
-            let new_content = get_new_content(&filename, &refs, backend);
+            let new_content = get_new_content(&filename, &refs);
             let status = if old_content.is_empty() && !new_content.is_empty() {
                 FileStatus::Added
             } else if !old_content.is_empty() && new_content.is_empty() {
@@ -155,112 +100,13 @@ pub fn load_file_diffs(options: &DiffOptions, backend: &GitBackend) -> Vec<FileD
         .collect()
 }
 
-pub fn load_pr_file_diffs(pr_info: &PrInfo) -> Result<Vec<FileDiff>, String> {
-    let repo_arg = format!("{}/{}", pr_info.repo_owner, pr_info.repo_name);
-
-    // Get PR diff to find changed files
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "diff",
-            &pr_info.number.to_string(),
-            "--repo",
-            &repo_arg,
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run gh pr diff: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("gh pr diff failed: {}", stderr.trim()));
-    }
-
-    let diff_output = String::from_utf8_lossy(&output.stdout);
-    let changed_files = parse_changed_files_from_diff(&diff_output);
-
-    // Fetch full file contents for each changed file
-    let base_repo = format!("{}/{}", pr_info.base_repo_owner, pr_info.repo_name);
-    let head_repo = pr_info
-        .head_repo_owner
-        .as_ref()
-        .map(|owner| format!("{}/{}", owner, pr_info.repo_name))
-        .unwrap_or_else(|| base_repo.clone());
-
-    let file_diffs: Vec<FileDiff> = changed_files
-        .into_iter()
-        .map(|filename| {
-            let old_content =
-                fetch_file_content_from_github(&base_repo, &pr_info.base_ref, &filename);
-            let new_content =
-                fetch_file_content_from_github(&head_repo, &pr_info.head_ref, &filename);
-
-            let status = if old_content.is_empty() && !new_content.is_empty() {
-                FileStatus::Added
-            } else if !old_content.is_empty() && new_content.is_empty() {
-                FileStatus::Deleted
-            } else {
-                FileStatus::Modified
-            };
-
-            let is_binary = is_binary_content(&old_content) || is_binary_content(&new_content);
-            FileDiff {
-                filename,
-                old_content,
-                new_content,
-                status,
-                is_binary,
-            }
-        })
-        .collect();
-
-    Ok(file_diffs)
-}
-
-fn fetch_file_content_from_github(repo: &str, git_ref: &str, path: &str) -> String {
-    let api_path = format!("repos/{}/contents/{}?ref={}", repo, path, git_ref);
-    let output = Command::new("gh")
-        .args([
-            "api",
-            &api_path,
-            "-H",
-            "Accept: application/vnd.github.raw+json",
-        ])
-        .output();
-
-    match output {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-        _ => String::new(),
-    }
-}
-
-fn parse_changed_files_from_diff(diff: &str) -> Vec<String> {
-    let mut files = Vec::new();
-
-    for line in diff.lines() {
-        if line.starts_with("diff --git") {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 4 {
-                let b_path = parts[3];
-                if let Some(filename) = b_path.strip_prefix("b/") {
-                    files.push(filename.to_string());
-                } else {
-                    files.push(b_path.to_string());
-                }
-            }
-        }
-    }
-
-    files
-}
-
 /// Load file diffs for a single commit (comparing commit to its parent).
-/// Uses GitBackend for file content retrieval.
+/// Used by stacked mode to render each commit individually.
 pub fn load_single_commit_diffs(
     commit_id: &str,
     file_filter: &Option<Vec<String>>,
     backend: &GitBackend,
 ) -> Vec<FileDiff> {
-    // Get the list of changed files for this commit
     let files = backend.get_changed_files(commit_id).unwrap_or_default();
 
     let files: Vec<String> = if let Some(ref filter) = file_filter {
@@ -279,7 +125,6 @@ pub fn load_single_commit_diffs(
         .map(|filename| {
             let path = Path::new(&filename);
 
-            // Get old content (from parent commit)
             let old_content = if parent_ref.is_empty() {
                 String::new()
             } else {
@@ -288,7 +133,6 @@ pub fn load_single_commit_diffs(
                     .unwrap_or_default()
             };
 
-            // Get new content (from the commit itself)
             let new_content = backend
                 .get_file_content_at_ref(commit_id, path)
                 .unwrap_or_default();
@@ -347,19 +191,16 @@ mod tests {
         let backend = GitBackend::from_cwd().expect("should open repo");
         let options = super::super::DiffOptions {
             reference: None,
-            pr: None,
             file: None,
             watch: false,
             theme: None,
             stacked: false,
             focus: None,
-            origin: None,
         };
 
         let diffs = load_file_diffs(&options, &backend);
         let filenames: Vec<&str> = diffs.iter().map(|d| d.filename.as_str()).collect();
 
-        // Should have individual files from the untracked directory, not just "new_dir/"
         assert!(
             diffs.iter().any(|d| d.filename == "new_dir/file1.txt"),
             "should include new_dir/file1.txt, got: {:?}",
@@ -371,7 +212,6 @@ mod tests {
             filenames
         );
 
-        // Verify they're detected as Added with correct content
         let file1 = diffs
             .iter()
             .find(|d| d.filename == "new_dir/file1.txt")
@@ -385,11 +225,11 @@ mod tests {
     }
 
     #[test]
-    fn test_load_file_diffs_range_to_working_tree() {
+    fn test_load_file_diffs_worktree_vs_earlier_ref() {
         let _lock = crate::vcs::test_utils::cwd_lock()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let dir = make_temp_dir("git-diff-range-to-wt");
+        let dir = make_temp_dir("git-diff-worktree-vs-ref");
         let original = std::env::current_dir().expect("get cwd");
 
         git(&dir, &["init"]);
@@ -414,24 +254,17 @@ mod tests {
 
         let backend = crate::vcs::GitBackend::from_cwd().expect("should open repo");
         let options = super::super::DiffOptions {
-            reference: Some(
-                crate::commit_reference::CommitReference::RangeToWorkingTree {
-                    from: "HEAD~1".to_string(),
-                },
-            ),
-            pr: None,
+            reference: Some(crate::commit_reference::CommitReference("HEAD~1".to_string())),
             file: None,
             watch: false,
             theme: None,
             stacked: false,
             focus: None,
-            origin: None,
         };
 
         let diffs = load_file_diffs(&options, &backend);
         let filenames: Vec<&str> = diffs.iter().map(|d| d.filename.as_str()).collect();
 
-        // Should include both the committed file and the uncommitted/modified ones
         assert!(
             filenames.contains(&"committed.txt"),
             "should include committed file, got: {:?}",
@@ -470,7 +303,6 @@ mod tests {
         let _repo = RepoGuard::new();
         let backend = GitBackend::from_cwd().expect("should open repo");
 
-        // HEAD is the initial commit with README.md added
         let diffs = load_single_commit_diffs("HEAD", &None, &backend);
 
         assert_eq!(diffs.len(), 1, "should have 1 file diff");
@@ -495,12 +327,10 @@ mod tests {
         git(&dir, &["config", "user.email", "test@example.com"]);
         git(&dir, &["config", "user.name", "Test User"]);
 
-        // First commit
         fs::write(dir.join("file.txt"), "original content\n").expect("write file");
         git(&dir, &["add", "."]);
         git(&dir, &["commit", "-m", "first"]);
 
-        // Second commit - modify file
         fs::write(dir.join("file.txt"), "modified content\n").expect("modify file");
         git(&dir, &["add", "."]);
         git(&dir, &["commit", "-m", "second"]);
@@ -532,7 +362,6 @@ mod tests {
         git(&dir, &["config", "user.email", "test@example.com"]);
         git(&dir, &["config", "user.name", "Test User"]);
 
-        // Commit with multiple files
         fs::write(dir.join("a.txt"), "file a\n").expect("write a");
         fs::write(dir.join("b.txt"), "file b\n").expect("write b");
         fs::write(dir.join("c.txt"), "file c\n").expect("write c");
@@ -616,7 +445,6 @@ mod tests {
 
         let backend = GitBackend::from_cwd().expect("should open repo");
 
-        // Get commits in range (simulating stacked diff)
         let commits = backend
             .get_commits_in_range("HEAD~2", "HEAD")
             .expect("should get commits");
@@ -625,7 +453,6 @@ mod tests {
         assert_eq!(commits[0].summary, "commit A");
         assert_eq!(commits[1].summary, "commit B");
 
-        // Load diffs for each commit (as stacked diff would do)
         let diffs_a = load_single_commit_diffs(&commits[0].commit_id, &None, &backend);
         assert_eq!(diffs_a.len(), 1);
         assert_eq!(diffs_a[0].filename, "a.txt");

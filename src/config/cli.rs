@@ -19,14 +19,10 @@ pub struct Cli {
 pub enum Commands {
     /// Launch interactive side-by-side diff viewer
     Diff {
-        /// Commit reference: SHA, HEAD, HEAD~3..HEAD, main..feature, main...feature
-        /// Can also be a PR number or URL (e.g., 123 or https://github.com/owner/repo/pull/123)
+        /// Ref to diff the working tree against (defaults to HEAD).
+        /// Examples: `main`, `HEAD~3`, a SHA.
         #[arg(value_parser = clap::value_parser!(CommitReference))]
         reference: Option<CommitReference>,
-
-        /// View a GitHub pull request (number or URL)
-        #[arg(long)]
-        pr: Option<String>,
 
         /// Filter to specific files
         #[arg(short, long)]
@@ -40,17 +36,14 @@ pub enum Commands {
         #[arg(short, long)]
         theme: Option<String>,
 
-        /// Show commits stacked (commit-by-commit navigation with ctrl+l/h)
+        /// Show commits stacked (commit-by-commit navigation with ctrl+l/h).
+        /// Requires a base ref (walks <ref>..HEAD).
         #[arg(long)]
         stacked: bool,
 
         /// Initially focus on this file path
         #[arg(long)]
         focus: Option<String>,
-
-        /// Origin repository in owner/repo format (default: origin git remote)
-        #[arg(long)]
-        origin: Option<String>,
     },
 }
 
