@@ -14,7 +14,6 @@ use crate::command::diff::types::{
     ChangeType, DiffFullscreen, DiffLine, DiffPanelFocus, DiffViewSettings, FileDiff, FocusedPanel,
     InlineSegment, Selection, SelectionMode, SidebarItem,
 };
-use crate::command::diff::PrInfo;
 
 use super::footer::{render_footer, FooterData};
 use super::sidebar::render_sidebar;
@@ -945,7 +944,6 @@ pub fn render_diff(
     diff_fullscreen: DiffFullscreen,
     search_state: &SearchState,
     commit_ref: &str,
-    pr_info: Option<&PrInfo>,
     focused_hunk: Option<usize>,
     hunks: &[usize],
     stacked_mode: bool,
@@ -1052,7 +1050,6 @@ pub fn render_diff(
             FooterData {
                 filename: &diff.filename,
                 commit_ref,
-                pr_info,
                 watching,
                 current_file,
                 viewed_files,
@@ -1983,7 +1980,6 @@ pub fn render_diff(
         FooterData {
             filename: &diff.filename,
             commit_ref,
-            pr_info,
             watching,
             current_file,
             viewed_files,

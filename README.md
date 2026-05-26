@@ -8,10 +8,9 @@ A fast terminal diff viewer and code review TUI, written in Rust.
 ![GitHub License](https://img.shields.io/github/license/dghaehre/lens)
 ![Crates.io Size](https://img.shields.io/crates/size/lens)
 
-Review `git diff`, commits, branches, or GitHub PRs side-by-side without leaving your terminal. Ships as a single static Rust binary and stays snappy on multi-thousand-line diffs.
+Review your working tree against any ref side-by-side without leaving your terminal. Ships as a single static Rust binary and stays snappy on multi-thousand-line diffs.
 
 - Side-by-side diff viewer with tree-sitter syntax highlighting
-- Review GitHub Pull Requests with `lens diff --pr 123`
 - Annotate selections, hunks, or whole files
 - Watch mode and stacked-commit review
 - Works with Git repositories
@@ -53,18 +52,12 @@ Launch an interactive side-by-side diff viewer in your terminal:
 <img width="3456" height="2122" alt="image" src="https://github.com/user-attachments/assets/757e1187-1615-4e90-bee2-5a1f59ec0960" />
 
 ```bash
-# View uncommitted changes
+# View uncommitted changes (worktree vs HEAD)
 lens diff
 
-# View changes for a specific commit
-lens diff HEAD~1
-
-# View changes between branches
-lens diff main..feature/A
-
-# View changes in a GitHub Pull Request
-lens diff --pr 123 # (--pr is optional)
-lens diff https://github.com/owner/repo/pull/123
+# View worktree vs an earlier ref (commit, branch, tag, ...)
+lens diff HEAD~3
+lens diff main
 
 # Filter to specific files
 lens diff --file src/main.rs --file src/lib.rs
@@ -72,20 +65,24 @@ lens diff --file src/main.rs --file src/lib.rs
 # Watch mode - auto-refresh on file changes
 lens diff --watch
 
-# Stacked mode - review commits one by one
-lens diff main..feature --stacked
+# Stacked mode - walk commits in <ref>..HEAD one by one
+lens diff main --stacked
 
 # Jump to a specific file on open
 lens diff --focus src/main.rs
 ```
 
+lens always diffs the working tree against the supplied ref. To review a
+single historical commit, check it out (e.g. `git checkout <sha>`) and
+diff against its parent (`lens diff HEAD~1`).
+
 #### Stacked Diff Mode
 
-Review a range of commits one at a time with `--stacked`:
+Review the commits between a base ref and `HEAD` one at a time with `--stacked`:
 
 ```bash
-lens diff main..feature --stacked
-lens diff HEAD~5..HEAD --stacked
+lens diff main --stacked
+lens diff HEAD~5 --stacked
 ```
 
 This displays each commit individually, letting you navigate through them:
@@ -93,8 +90,6 @@ This displays each commit individually, letting you navigate through them:
 - Click the `‹` / `›` arrows in the header
 
 The header shows the current commit position, SHA, and message. Viewed files are tracked per commit, so your progress is preserved when navigating.
-
-When viewing a PR, you can mark files as viewed (syncs with GitHub) using the `space` keybinding.
 
 #### Theme Configuration
 
