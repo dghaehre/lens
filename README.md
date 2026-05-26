@@ -14,7 +14,7 @@ Review `git diff`, commits, branches, or GitHub PRs side-by-side without leaving
 - Review GitHub Pull Requests with `lens diff --pr 123`
 - Annotate selections, hunks, or whole files
 - Watch mode and stacked-commit review
-- Works with Git and Jujutsu (jj)
+- Works with Git repositories
 
 [![Demo](https://github.com/user-attachments/assets/dc425871-3826-4368-88d8-931b9403f0ec)](https://github.com/user-attachments/assets/70d07324-8394-423c-bbc3-9460ed84877b)
 

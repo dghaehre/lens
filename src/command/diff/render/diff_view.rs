@@ -26,7 +26,6 @@ fn render_stacked_header(
     commit: Option<&StackedCommitInfo>,
     index: usize,
     total: usize,
-    vcs_name: &str,
 ) {
     let t = theme::get();
     let bg = t.ui.bg;
@@ -49,28 +48,19 @@ fn render_stacked_header(
         dimmed_style
     };
 
-    // Commit info - for jj show change_id, for git show short SHA
     let (commit_id_label, commit_msg) = if let Some(c) = commit {
-        let id_str = if let Some(ref change_id) = c.change_id {
-            // jj: show change_id (first 8 chars) + short commit id
-            format!("{} {}", &change_id[..8.min(change_id.len())], c.short_id)
-        } else {
-            // git: just show short SHA
-            c.short_id.clone()
-        };
-        (id_str, c.summary.clone())
+        (c.short_id.clone(), c.summary.clone())
     } else {
         ("?".to_string(), "No commit".to_string())
     };
 
-    // Build center content: [jj] [1/6]  id  message
-    let vcs_indicator = format!(" {} ", vcs_name);
+    // Build center content: [1/6]  id  message
     let nav_indicator = format!(" {}/{} ", index + 1, total);
     let id_label = format!(" {} ", commit_id_label);
 
-    // Reserve space for arrows, hints, vcs indicator, and id
+    // Reserve space for arrows, hints, navigation, and id
     let available_for_msg =
-        (area.width as usize).saturating_sub(60 + vcs_indicator.len() + id_label.len());
+        (area.width as usize).saturating_sub(60 + nav_indicator.len() + id_label.len());
 
     let truncated_msg = if commit_msg.len() > available_for_msg {
         format!(
@@ -81,12 +71,10 @@ fn render_stacked_header(
         commit_msg
     };
 
-    // Build center spans: [vcs] [1/6] [id] message
+    // Build center spans: [1/6] [id] message
     let badge_style = Style::default().bg(t.ui.footer_branch_bg);
     let spacer_style = Style::default().bg(bg);
     let center_spans = vec![
-        Span::styled(&vcs_indicator, badge_style.fg(t.ui.text_muted)),
-        Span::styled(" ", spacer_style),
         Span::styled(&nav_indicator, badge_style.fg(t.ui.highlight)),
         Span::styled(" ", spacer_style),
         Span::styled(&id_label, badge_style.fg(t.ui.footer_branch_fg)),
@@ -98,9 +86,7 @@ fn render_stacked_header(
     ];
 
     // Calculate widths for centering
-    let center_width: usize = vcs_indicator.len()
-        + 1
-        + nav_indicator.len()
+    let center_width: usize = nav_indicator.len()
         + 1
         + id_label.len()
         + 2
@@ -970,7 +956,6 @@ pub fn render_diff(
     stacked_index: usize,
     stacked_total: usize,
     side_by_side: &[DiffLine],
-    vcs_name: &str,
     annotations: &[Annotation],
     selection: &Selection,
     old_highlighter: &FileHighlighter,
@@ -1001,7 +986,6 @@ pub fn render_diff(
             stacked_commit,
             stacked_index,
             stacked_total,
-            vcs_name,
         );
 
         (chunks[1], chunks[2])

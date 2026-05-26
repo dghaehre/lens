@@ -3,7 +3,6 @@ use config::cli::{Cli, Commands};
 use config::LensConfig;
 use error::LensError;
 use std::process;
-use vcs::VcsBackendType;
 
 mod command;
 mod commit_reference;
@@ -27,10 +26,9 @@ async fn run() -> Result<(), LensError> {
         Err(e) => return Err(e),
     };
 
-    // Get VCS backend based on CLI override or auto-detection
+    // Discover the Git backend from the current directory.
     let cwd = std::env::current_dir()?;
-    let vcs_override = cli.vcs.map(VcsBackendType::from);
-    let backend = vcs::get_backend(&cwd, vcs_override)?;
+    let backend = vcs::GitBackend::new(&cwd)?;
 
     match cli.command {
         Commands::Diff {
@@ -53,7 +51,7 @@ async fn run() -> Result<(), LensError> {
                 focus,
                 origin,
             };
-            command::diff::run_diff_ui(options, backend.as_ref())?;
+            command::diff::run_diff_ui(options, &backend)?;
         }
     }
 

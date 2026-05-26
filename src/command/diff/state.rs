@@ -108,8 +108,6 @@ pub struct AppState {
     pub current_commit_index: usize,
     /// Tracks viewed files per commit SHA (commit SHA -> set of viewed filenames)
     stacked_viewed_files: HashMap<String, HashSet<String>>,
-    /// VCS backend name ("git" or "jj")
-    pub vcs_name: &'static str,
     /// The commit reference used to open the diff (e.g., "HEAD~2..HEAD", "main..feature")
     pub diff_reference: Option<String>,
     // Selection state
@@ -228,7 +226,6 @@ impl AppState {
             stacked_commits: Vec::new(),
             current_commit_index: 0,
             stacked_viewed_files: HashMap::new(),
-            vcs_name: "git", // Default, will be set by caller
             diff_reference: None,
             diff_panel_focus: DiffPanelFocus::default(),
             selection: Selection::default(),
@@ -478,11 +475,6 @@ impl AppState {
         if self.selection.is_active() && self.selection.anchor != self.selection.head {
             self.show_selection_tooltip = true;
         }
-    }
-
-    /// Set the VCS backend name
-    pub fn set_vcs_name(&mut self, name: &'static str) {
-        self.vcs_name = name;
     }
 
     pub fn sidebar_visible_len(&self) -> usize {

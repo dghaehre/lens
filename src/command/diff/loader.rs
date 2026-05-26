@@ -5,9 +5,9 @@ use std::process::Command;
 use super::types::{is_binary_content, FileDiff, FileStatus};
 use super::{DiffOptions, PrInfo};
 use crate::commit_reference::CommitReference;
-use crate::vcs::VcsBackend;
+use crate::vcs::GitBackend;
 
-pub fn get_current_branch(backend: &dyn VcsBackend) -> String {
+pub fn get_current_branch(backend: &GitBackend) -> String {
     backend
         .get_current_branch()
         .ok()
@@ -28,7 +28,7 @@ pub enum DiffRefs {
 }
 
 impl DiffRefs {
-    pub fn from_options(options: &DiffOptions, backend: &dyn VcsBackend) -> Self {
+    pub fn from_options(options: &DiffOptions, backend: &GitBackend) -> Self {
         match &options.reference {
             None => DiffRefs::WorkingTree,
             Some(CommitReference::Single(sha)) => DiffRefs::Single(sha.clone()),
@@ -58,7 +58,7 @@ impl DiffRefs {
 }
 
 /// Get the list of files changed
-pub fn get_changed_files(options: &DiffOptions, backend: &dyn VcsBackend) -> Vec<String> {
+pub fn get_changed_files(options: &DiffOptions, backend: &GitBackend) -> Vec<String> {
     let refs = DiffRefs::from_options(options, backend);
 
     let files: Vec<String> = match refs {
@@ -69,9 +69,8 @@ pub fn get_changed_files(options: &DiffOptions, backend: &dyn VcsBackend) -> Vec
         DiffRefs::WorkingTree => backend.get_working_tree_changed_files().unwrap_or_default(),
         DiffRefs::RangeToWorkingTree { from } => {
             // Union of files changed in `from..HEAD` and files changed in the working tree.
-            let head_ref = backend.working_copy_parent_ref();
             let range_files = backend
-                .get_range_changed_files(&from, head_ref)
+                .get_range_changed_files(&from, "HEAD")
                 .unwrap_or_default();
             let wt_files = backend.get_working_tree_changed_files().unwrap_or_default();
             let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -93,7 +92,7 @@ pub fn get_changed_files(options: &DiffOptions, backend: &dyn VcsBackend) -> Vec
 }
 
 /// Get content of a file at the "old" side of the diff
-pub fn get_old_content(filename: &str, refs: &DiffRefs, backend: &dyn VcsBackend) -> String {
+pub fn get_old_content(filename: &str, refs: &DiffRefs, backend: &GitBackend) -> String {
     let ref_str = match refs {
         DiffRefs::Single(sha) => {
             // Use get_parent_ref_or_empty to handle root commits gracefully
@@ -101,7 +100,7 @@ pub fn get_old_content(filename: &str, refs: &DiffRefs, backend: &dyn VcsBackend
         }
         DiffRefs::Range { from, .. } => from.clone(),
         DiffRefs::RangeToWorkingTree { from } => from.clone(),
-        DiffRefs::WorkingTree => backend.working_copy_parent_ref().to_string(),
+        DiffRefs::WorkingTree => "HEAD".to_string(),
     };
 
     // Empty ref means root commit with no parent - return empty content
@@ -115,7 +114,7 @@ pub fn get_old_content(filename: &str, refs: &DiffRefs, backend: &dyn VcsBackend
 }
 
 /// Get content of a file at the "new" side of the diff
-pub fn get_new_content(filename: &str, refs: &DiffRefs, backend: &dyn VcsBackend) -> String {
+pub fn get_new_content(filename: &str, refs: &DiffRefs, backend: &GitBackend) -> String {
     match refs {
         DiffRefs::Single(sha) => backend
             .get_file_content_at_ref(sha, Path::new(filename))
@@ -130,7 +129,7 @@ pub fn get_new_content(filename: &str, refs: &DiffRefs, backend: &dyn VcsBackend
     }
 }
 
-pub fn load_file_diffs(options: &DiffOptions, backend: &dyn VcsBackend) -> Vec<FileDiff> {
+pub fn load_file_diffs(options: &DiffOptions, backend: &GitBackend) -> Vec<FileDiff> {
     let refs = DiffRefs::from_options(options, backend);
     get_changed_files(options, backend)
         .into_iter()
@@ -255,11 +254,11 @@ fn parse_changed_files_from_diff(diff: &str) -> Vec<String> {
 }
 
 /// Load file diffs for a single commit (comparing commit to its parent).
-/// Uses VcsBackend for backend-agnostic file content retrieval.
+/// Uses GitBackend for file content retrieval.
 pub fn load_single_commit_diffs(
     commit_id: &str,
     file_filter: &Option<Vec<String>>,
-    backend: &dyn VcsBackend,
+    backend: &GitBackend,
 ) -> Vec<FileDiff> {
     // Get the list of changed files for this commit
     let files = backend.get_changed_files(commit_id).unwrap_or_default();
