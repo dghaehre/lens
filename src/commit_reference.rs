@@ -1,28 +1,26 @@
 use std::str::FromStr;
 use thiserror::Error;
 
+/// A single git ref to diff the working tree against (e.g. `HEAD`, `main`,
+/// `HEAD~3`, a SHA). lens always diffs the worktree against this ref.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum CommitReference {
-    Single(String),
-    Range {
-        from: String,
-        to: String,
-    },
-    TripleDots {
-        from: String,
-        to: String,
-    },
-    /// Range from a ref to the working tree (uncommitted changes included).
-    /// Parsed from `<from>..-`.
-    RangeToWorkingTree {
-        from: String,
-    },
+pub struct CommitReference(pub String);
+
+impl CommitReference {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Debug, Error)]
 pub enum ReferenceParseError {
     #[error("empty reference string")]
     Empty,
+    #[error(
+        "ranges like `a..b`, `a...b`, and `a..-` are no longer supported. \
+         Pass a single ref to diff the working tree against (e.g. `main`)."
+    )]
+    RangeNotSupported,
 }
 
 impl FromStr for CommitReference {
@@ -32,34 +30,10 @@ impl FromStr for CommitReference {
         if s.is_empty() {
             return Err(ReferenceParseError::Empty);
         }
-
-        // Handle the ... and .. cases
-        if let Some((from, to)) = s.split_once("...") {
-            let from = if from.is_empty() { "HEAD" } else { from };
-            let to = if to.is_empty() { "HEAD" } else { to };
-
-            Ok(CommitReference::TripleDots {
-                from: from.to_string(),
-                to: to.to_string(),
-            })
-        } else if let Some((from, to)) = s.split_once("..") {
-            let from = if from.is_empty() { "HEAD" } else { from };
-
-            if to == "-" {
-                return Ok(CommitReference::RangeToWorkingTree {
-                    from: from.to_string(),
-                });
-            }
-
-            let to = if to.is_empty() { "HEAD" } else { to };
-
-            Ok(CommitReference::Range {
-                from: from.to_string(),
-                to: to.to_string(),
-            })
-        } else {
-            Ok(CommitReference::Single(s.to_string()))
+        if s.contains("..") {
+            return Err(ReferenceParseError::RangeNotSupported);
         }
+        Ok(CommitReference(s.to_string()))
     }
 }
 
@@ -74,91 +48,51 @@ mod tests {
     }
 
     #[test]
-    fn test_single_commit() {
+    fn test_single_ref() {
         assert_eq!(
             "HEAD".parse::<CommitReference>().unwrap(),
-            CommitReference::Single("HEAD".to_string())
+            CommitReference("HEAD".to_string())
         );
     }
 
     #[test]
-    fn test_full_range() {
+    fn test_short_ref_name() {
         assert_eq!(
-            "main..feature".parse::<CommitReference>().unwrap(),
-            CommitReference::Range {
-                from: "main".to_string(),
-                to: "feature".to_string(),
-            }
+            "abc123".parse::<CommitReference>().unwrap(),
+            CommitReference("abc123".to_string())
         );
     }
 
     #[test]
-    fn test_from_only_range() {
+    fn test_branch_ref() {
         assert_eq!(
-            "develop..".parse::<CommitReference>().unwrap(),
-            CommitReference::Range {
-                from: "develop".to_string(),
-                to: "HEAD".to_string(),
-            }
+            "main".parse::<CommitReference>().unwrap(),
+            CommitReference("main".to_string())
         );
     }
 
     #[test]
-    fn test_to_only_range() {
-        assert_eq!(
-            "..feature".parse::<CommitReference>().unwrap(),
-            CommitReference::Range {
-                from: "HEAD".to_string(),
-                to: "feature".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn test_clap_integration() {
-        // Test full range
-        let cli = TestCli::try_parse_from(["test", "main..feature"]).unwrap();
+    fn test_two_dot_range_rejected() {
         assert!(matches!(
-            cli.reference,
-            CommitReference::Range { from, to }
-            if from == "main" && to == "feature"
-        ));
-
-        // Test from-only range
-        let cli = TestCli::try_parse_from(["test", "develop.."]).unwrap();
-        assert!(matches!(
-            cli.reference,
-            CommitReference::Range { from, to }
-            if from == "develop" && to == "HEAD"
-        ));
-
-        // Test to-only range
-        let cli = TestCli::try_parse_from(["test", "..feature"]).unwrap();
-        assert!(matches!(
-            cli.reference,
-            CommitReference::Range { from, to }
-            if from == "HEAD" && to == "feature"
+            "main..feature".parse::<CommitReference>(),
+            Err(ReferenceParseError::RangeNotSupported)
         ));
     }
 
     #[test]
-    fn test_range_to_working_tree() {
-        assert_eq!(
-            "main..-".parse::<CommitReference>().unwrap(),
-            CommitReference::RangeToWorkingTree {
-                from: "main".to_string(),
-            }
-        );
+    fn test_three_dot_range_rejected() {
+        assert!(matches!(
+            "main...feature".parse::<CommitReference>(),
+            Err(ReferenceParseError::RangeNotSupported)
+        ));
     }
 
     #[test]
-    fn test_range_to_working_tree_empty_from() {
-        assert_eq!(
-            "..-".parse::<CommitReference>().unwrap(),
-            CommitReference::RangeToWorkingTree {
-                from: "HEAD".to_string(),
-            }
-        );
+    fn test_working_tree_range_rejected() {
+        assert!(matches!(
+            "main..-".parse::<CommitReference>(),
+            Err(ReferenceParseError::RangeNotSupported)
+        ));
     }
 
     #[test]
@@ -170,10 +104,8 @@ mod tests {
     }
 
     #[test]
-    fn test_short_ref_name() {
-        assert_eq!(
-            "abc123".parse::<CommitReference>().unwrap(),
-            CommitReference::Single("abc123".to_string())
-        );
+    fn test_clap_integration() {
+        let cli = TestCli::try_parse_from(["test", "main"]).unwrap();
+        assert_eq!(cli.reference, CommitReference("main".to_string()));
     }
 }
