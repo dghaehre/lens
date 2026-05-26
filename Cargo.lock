@@ -917,6 +917,50 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
+name = "lens"
+version = "2.24.0"
+dependencies = [
+ "arboard",
+ "clap",
+ "crossterm 0.28.1",
+ "dirs",
+ "git2",
+ "indoc",
+ "notify",
+ "notify-debouncer-mini",
+ "once_cell",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "sha2",
+ "similar",
+ "spinoff",
+ "streaming-iterator",
+ "tempfile",
+ "terminal-light",
+ "thiserror 1.0.65",
+ "tokio",
+ "tree-sitter",
+ "tree-sitter-bash",
+ "tree-sitter-c-sharp",
+ "tree-sitter-css",
+ "tree-sitter-elixir",
+ "tree-sitter-go",
+ "tree-sitter-highlight",
+ "tree-sitter-html",
+ "tree-sitter-javascript",
+ "tree-sitter-json",
+ "tree-sitter-md",
+ "tree-sitter-python",
+ "tree-sitter-ruby",
+ "tree-sitter-rust",
+ "tree-sitter-toml-ng",
+ "tree-sitter-typescript",
+ "tree-sitter-zig",
+ "tui-textarea",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.178"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1004,50 +1048,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "234cf4f4a04dc1f57e24b96cc0cd600cf2af460d4161ac5ecdd0af8e1f3b2a38"
 dependencies = [
  "hashbrown",
-]
-
-[[package]]
-name = "lumen"
-version = "2.24.0"
-dependencies = [
- "arboard",
- "clap",
- "crossterm 0.28.1",
- "dirs",
- "git2",
- "indoc",
- "notify",
- "notify-debouncer-mini",
- "once_cell",
- "ratatui",
- "serde",
- "serde_json",
- "sha2",
- "similar",
- "spinoff",
- "streaming-iterator",
- "tempfile",
- "terminal-light",
- "thiserror 1.0.65",
- "tokio",
- "tree-sitter",
- "tree-sitter-bash",
- "tree-sitter-c-sharp",
- "tree-sitter-css",
- "tree-sitter-elixir",
- "tree-sitter-go",
- "tree-sitter-highlight",
- "tree-sitter-html",
- "tree-sitter-javascript",
- "tree-sitter-json",
- "tree-sitter-md",
- "tree-sitter-python",
- "tree-sitter-ruby",
- "tree-sitter-rust",
- "tree-sitter-toml-ng",
- "tree-sitter-typescript",
- "tree-sitter-zig",
- "tui-textarea",
 ]
 
 [[package]]

@@ -29,7 +29,7 @@
       rust-analyzer = fenix.packages.${system}.rust-analyzer;
     in {
       packages = {
-        lumen = let
+        lens = let
           manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
         in
           pkgs.rustPlatform.buildRustPackage {
@@ -44,7 +44,7 @@
             buildInputs = [pkgs.openssl];
             doCheck = false;
           };
-        default = self.packages.${system}.lumen;
+        default = self.packages.${system}.lens;
       };
 
       devShells.default = pkgs.mkShell {
@@ -61,7 +61,7 @@
     })
     // {
       overlays.default = final: prev: {
-        inherit (self.packages.${final.system}) lumen;
+        inherit (self.packages.${final.system}) lens;
       };
     };
 }

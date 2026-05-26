@@ -3,7 +3,7 @@ use std::io;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum LumenError {
+pub enum LensError {
     #[error("{0}")]
     VcsError(#[from] VcsError),
 

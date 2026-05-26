@@ -3,11 +3,11 @@ use clap::{Parser, Subcommand};
 use crate::commit_reference::CommitReference;
 
 #[derive(Parser)]
-#[command(name = "lumen")]
+#[command(name = "lens")]
 #[command(about = "Interactive side-by-side git diff viewer", long_about = None)]
 #[command(version)]
 pub struct Cli {
-    /// Path to configuration file eg: ./path/to/lumen.config.json
+    /// Path to configuration file eg: ./path/to/lens.config.json
     #[arg(long)]
     pub config: Option<String>,
 
@@ -60,7 +60,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_diff_command() {
-        let cli = Cli::try_parse_from(["lumen", "diff"]).unwrap();
+        let cli = Cli::try_parse_from(["lens", "diff"]).unwrap();
         assert!(matches!(cli.command, Commands::Diff { .. }));
     }
 }

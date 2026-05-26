@@ -830,7 +830,7 @@ pub fn init(config_theme: Option<&str>) {
     // Priority: config file > env var > OS auto-detect
     let theme_name = config_theme
         .map(|s| s.to_string())
-        .or_else(|| std::env::var("LUMEN_THEME").ok());
+        .or_else(|| std::env::var("LENS_THEME").ok());
 
     let theme = if let Some(name) = theme_name {
         match name.parse::<ThemePreset>() {
