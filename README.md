@@ -145,7 +145,7 @@ Priority: CLI flag > config file > `LUMEN_THEME` env var > OS auto-detect.
 
 **Annotations**: Add review comments at three levels of granularity:
 - **Selection** — select lines with mouse, press `i` to annotate the selected range
-- **Hunk** — focus a hunk with `{`/`}`, press `i` to annotate the hunk
+- **Hunk** — focus a hunk with `[`/`]`, press `i` to annotate the hunk
 - **File** — press `i` with no selection or hunk focus to annotate the whole file
 
 Annotated lines display a `▍` gutter indicator. Use `I` to view, edit, delete, copy, or export all annotations.
@@ -153,7 +153,7 @@ Annotated lines display a `▍` gutter indicator. Use `I` to view, edit, delete,
 #### Keybindings
 
 - `j/k` or arrow keys: Navigate
-- `{/}`: Jump between hunks
+- `[`/`]`: Jump between hunks
 - `tab`: Toggle sidebar
 - `space`: Mark file as viewed
 - `e`: Open file in editor
