@@ -196,7 +196,7 @@ fn find_sbs_index_for_line(
 
 /// Format an annotation for display in the annotations list.
 fn format_annotation_preview(annotation: &super::state::Annotation) -> String {
-    let preview = annotation.content.lines().next().unwrap_or("");
+    let preview = annotation.root().content.lines().next().unwrap_or("");
     let preview = if preview.len() > 40 {
         format!("{}...", &preview[..40])
     } else {
@@ -672,7 +672,7 @@ fn run_app_internal(
                                         let editor = AnnotationEditor::new(
                                             ann.filename.clone(),
                                             ann.target.clone(),
-                                        ).with_existing(ann.id.clone(), &ann.content, ann.created_at);
+                                        ).with_existing(ann.id.clone(), &ann.root().content, ann.created_at());
                                         // Jump to the file
                                         let filename = ann.filename.clone();
                                         if let Some(file_index) = state.file_diffs.iter().position(|f| f.filename == filename) {
@@ -687,7 +687,7 @@ fn run_app_internal(
                                     // Refresh the modal if there are still annotations
                                     if !state.annotations.is_empty() {
                                         let mut sorted_annotations = state.annotations.clone();
-                                        sorted_annotations.sort_by_key(|a| a.created_at);
+                                        sorted_annotations.sort_by_key(|a| a.created_at());
                                         let items: Vec<String> = sorted_annotations
                                             .iter()
                                             .map(format_annotation_preview)
@@ -1638,7 +1638,7 @@ fn run_app_internal(
                             // Open annotations menu
                             if !state.annotations.is_empty() {
                                 let mut sorted_annotations = state.annotations.clone();
-                                sorted_annotations.sort_by_key(|a| a.created_at);
+                                sorted_annotations.sort_by_key(|a| a.created_at());
                                 let items: Vec<String> = sorted_annotations
                                     .iter()
                                     .map(format_annotation_preview)

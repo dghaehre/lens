@@ -1,5 +1,6 @@
 use super::{
-    Annotation, AnnotationError, AnnotationId, AnnotationStore, Capabilities, NewAnnotation,
+    Annotation, AnnotationError, AnnotationId, AnnotationStore, Author, Capabilities, Comment,
+    NewAnnotation,
 };
 
 const STORE_ID: &str = "local";
@@ -45,12 +46,17 @@ impl AnnotationStore for InMemoryStore {
             native: self.next_id.to_string(),
         };
         self.next_id += 1;
+        let root = Comment {
+            author: Author::local(),
+            content: draft.content,
+            created_at: draft.created_at,
+        };
         let annotation = Annotation {
             id,
             filename: draft.filename,
             target: draft.target,
-            content: draft.content,
-            created_at: draft.created_at,
+            comments: vec![root],
+            resolved: false,
         };
         self.annotations.push(annotation.clone());
         Ok(annotation)
@@ -62,7 +68,7 @@ impl AnnotationStore for InMemoryStore {
         }
         match self.annotations.iter_mut().find(|a| &a.id == id) {
             Some(ann) => {
-                ann.content = content;
+                ann.root_mut().content = content;
                 Ok(())
             }
             None => Err(AnnotationError::NotFound),

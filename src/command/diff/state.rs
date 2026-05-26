@@ -788,7 +788,7 @@ impl AppState {
     pub fn update_annotation(&mut self, id: &AnnotationId, content: String) {
         if self.store.update(id, content.clone()).is_ok() {
             if let Some(ann) = self.annotations.iter_mut().find(|a| &a.id == id) {
-                ann.content = content;
+                ann.root_mut().content = content;
             }
         }
     }
@@ -840,8 +840,9 @@ impl AppState {
                 }
             }
 
-            // Comment body
-            result.push_str(&ann.content);
+            // Comment body (root comment only for now; replies will be
+            // appended once the UI supports them).
+            result.push_str(&ann.root().content);
             result.push_str("\n\n");
         }
 

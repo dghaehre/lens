@@ -33,28 +33,77 @@ pub enum AnnotationTarget {
     },
 }
 
-/// An annotation attached to a file or line range.
+/// Who wrote a comment.
+#[allow(dead_code)] // `login` / `display_name` surfaced by UI once threads gain author display
+#[derive(Clone, Debug)]
+pub struct Author {
+    pub login: String,
+    pub display_name: Option<String>,
+}
+
+impl Author {
+    /// The author used for comments originating in the local in-memory store.
+    /// Real backends (git config, GitHub, etc.) will supply richer identities.
+    pub fn local() -> Self {
+        Self {
+            login: "you".to_string(),
+            display_name: None,
+        }
+    }
+}
+
+/// A single message inside an annotation thread.
+#[derive(Clone, Debug)]
+pub struct Comment {
+    #[allow(dead_code)] // surfaced by UI once threads gain author display
+    pub author: Author,
+    pub content: String,
+    pub created_at: SystemTime,
+}
+
+/// An annotation thread anchored at a file or line range.
+///
+/// `comments` is non-empty by invariant; `comments[0]` is the root (the
+/// originating comment), subsequent entries are replies. Today the UI only
+/// produces threads with a single comment — replies are a future story but
+/// the shape is in place for GitHub-style review threads.
 #[derive(Clone, Debug)]
 pub struct Annotation {
     pub id: AnnotationId,
     pub filename: String,
     pub target: AnnotationTarget,
-    pub content: String,
-    pub created_at: SystemTime,
+    pub comments: Vec<Comment>,
+    #[allow(dead_code)] // surfaced once the UI can resolve threads
+    pub resolved: bool,
 }
 
 impl Annotation {
+    /// The root comment of the thread.
+    pub fn root(&self) -> &Comment {
+        &self.comments[0]
+    }
+
+    /// Mutable access to the root comment.
+    pub fn root_mut(&mut self) -> &mut Comment {
+        &mut self.comments[0]
+    }
+
+    /// When the thread was started (creation time of the root comment).
+    pub fn created_at(&self) -> SystemTime {
+        self.root().created_at
+    }
+
     #[cfg(feature = "jj")]
     pub fn format_time(&self) -> String {
         use chrono::{DateTime, Local};
-        let datetime: DateTime<Local> = self.created_at.into();
+        let datetime: DateTime<Local> = self.created_at().into();
         datetime.format("%H:%M").to_string()
     }
 
     #[cfg(not(feature = "jj"))]
     pub fn format_time(&self) -> String {
         use std::time::UNIX_EPOCH;
-        let duration = self.created_at.duration_since(UNIX_EPOCH).unwrap_or_default();
+        let duration = self.created_at().duration_since(UNIX_EPOCH).unwrap_or_default();
         let secs = duration.as_secs();
         let hours = (secs / 3600) % 24;
         let minutes = (secs / 60) % 60;
@@ -163,9 +212,12 @@ pub trait AnnotationStore {
 
     fn list(&self) -> Result<Vec<Annotation>, AnnotationError>;
 
-    /// Create a new annotation. The store assigns the `AnnotationId`.
+    /// Create a new annotation thread with a single root comment. The store
+    /// assigns the `AnnotationId`.
     fn create(&mut self, draft: NewAnnotation) -> Result<Annotation, AnnotationError>;
 
+    /// Update the root comment's content. Adding/editing replies will be a
+    /// separate trait method once the UI grows reply support.
     fn update(&mut self, id: &AnnotationId, content: String) -> Result<(), AnnotationError>;
 
     fn delete(&mut self, id: &AnnotationId) -> Result<(), AnnotationError>;

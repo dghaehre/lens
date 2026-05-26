@@ -794,7 +794,7 @@ fn make_indicator_span(
 
 /// Total rendered height of file-level annotation overlays.
 fn file_annotation_height(annotations: &[&Annotation]) -> usize {
-    annotations.iter().map(|a| a.content.lines().count() + 2).sum()
+    annotations.iter().map(|a| a.root().content.lines().count() + 2).sum()
 }
 
 /// Render annotation overlays at specified positions.
@@ -818,7 +818,7 @@ fn render_annotation_overlays(
 
     for (line_pos, annotation) in overlays {
         let screen_y = content_start_y + *line_pos as u16;
-        let content_lines: Vec<&str> = annotation.content.lines().collect();
+        let content_lines: Vec<&str> = annotation.root().content.lines().collect();
         let num_lines = content_lines.len() + 2; // +2 for top and bottom borders
 
         // Check if annotation is visible
@@ -1131,7 +1131,7 @@ pub fn render_diff(
 
         // Show file-level annotations at top
         for annotation in &file_annotations {
-            let content_lines: Vec<&str> = annotation.content.lines().collect();
+            let content_lines: Vec<&str> = annotation.root().content.lines().collect();
             let num_lines = content_lines.len() + 2;
             let annotation_start = new_lines.len();
             for _ in 0..num_lines {
@@ -1200,7 +1200,7 @@ pub fn render_diff(
             for annotation in &line_annotations {
                 if let AnnotationTarget::LineRange { panel, end_line, .. } = &annotation.target {
                     if diff_line.line_number(*panel) == Some(*end_line) {
-                        let num_ann_lines = annotation.content.lines().count() + 2;
+                        let num_ann_lines = annotation.root().content.lines().count() + 2;
                         let line_pos = new_lines.len();
                         overlay_gaps.push((i, num_ann_lines));
                         for _ in 0..num_ann_lines {
@@ -1277,7 +1277,7 @@ pub fn render_diff(
 
         // Show file-level annotations at top
         for annotation in &file_annotations {
-            let content_lines: Vec<&str> = annotation.content.lines().collect();
+            let content_lines: Vec<&str> = annotation.root().content.lines().collect();
             let num_lines = content_lines.len() + 2;
             let annotation_start = old_lines.len();
             for _ in 0..num_lines {
@@ -1346,7 +1346,7 @@ pub fn render_diff(
             for annotation in &line_annotations {
                 if let AnnotationTarget::LineRange { panel, end_line, .. } = &annotation.target {
                     if diff_line.line_number(*panel) == Some(*end_line) {
-                        let num_ann_lines = annotation.content.lines().count() + 2;
+                        let num_ann_lines = annotation.root().content.lines().count() + 2;
                         let line_pos = old_lines.len();
                         overlay_gaps.push((i, num_ann_lines));
                         for _ in 0..num_ann_lines {
@@ -1481,7 +1481,7 @@ pub fn render_diff(
 
         // Add file-level annotations at the top (after context lines)
         for annotation in &file_annotations {
-            let content_lines_count = annotation.content.lines().count();
+            let content_lines_count = annotation.root().content.lines().count();
             let num_lines = content_lines_count + 2;
             let annotation_start = old_lines.len(); // same position in both panels
             for _ in 0..num_lines {
@@ -1715,7 +1715,7 @@ pub fn render_diff(
             for annotation in &line_annotations {
                 if let AnnotationTarget::LineRange { panel, end_line, .. } = &annotation.target {
                     if diff_line.line_number(*panel) == Some(*end_line) {
-                        let num_lines = annotation.content.lines().count() + 2;
+                        let num_lines = annotation.root().content.lines().count() + 2;
 
                         let line_pos = if old_area.is_some() {
                             old_lines.len()
@@ -1846,7 +1846,7 @@ pub fn render_diff(
             for &(line_pos, annotation) in &annotation_overlays {
                 if let AnnotationTarget::LineRange { panel, .. } = &annotation.target {
                     if matches!(panel, DiffPanelFocus::New | DiffPanelFocus::None) {
-                        let content_lines_count = annotation.content.lines().count();
+                        let content_lines_count = annotation.root().content.lines().count();
                         let num_rows = content_lines_count + 2;
                         for row_offset in 0..num_rows {
                             let screen_row = content_start + line_pos as u16 + row_offset as u16;
