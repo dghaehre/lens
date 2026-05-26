@@ -1,7 +1,5 @@
 use std::collections::VecDeque;
 use std::io;
-use std::sync::mpsc::TryRecvError;
-use std::time::Duration;
 
 use crossterm::{
     event::{
@@ -302,6 +300,14 @@ fn sync_viewed_files_from_github(pr_info: &PrInfo, state: &mut AppState) {
     }
 }
 
+/// Unified event source for the main loop: either a crossterm input event or
+/// a file-watcher event. Bridged into a single mpsc channel so the loop can
+/// block on a single `recv()`.
+enum AppEvent {
+    Input(Event),
+    Watch(WatchEvent),
+}
+
 fn run_app_internal(
     options: DiffOptions,
     pr_info: Option<PrInfo>,
@@ -364,20 +370,37 @@ fn run_app_internal(
     let mut active_modal: Option<Modal> = None;
     let mut annotation_editor: Option<AnnotationEditor> = None;
     let mut pending_watch_event: Option<WatchEvent> = None;
-    let mut pending_events: VecDeque<Event> = VecDeque::new();
+    let mut pending_events: VecDeque<AppEvent> = VecDeque::new();
+
+    // Bridge crossterm input and the file watcher into a single channel so the
+    // main loop can block on `recv()` and wake up only when something happens.
+    let (app_tx, app_rx) = std::sync::mpsc::channel::<AppEvent>();
+    {
+        let tx = app_tx.clone();
+        std::thread::spawn(move || loop {
+            match event::read() {
+                Ok(ev) => {
+                    if tx.send(AppEvent::Input(ev)).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        });
+    }
+    if let Some(rx) = watch_rx {
+        let tx = app_tx.clone();
+        std::thread::spawn(move || {
+            for ev in rx {
+                if tx.send(AppEvent::Watch(ev)).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    drop(app_tx);
 
     'main: loop {
-        if let Some(ref rx) = watch_rx {
-            match rx.try_recv() {
-                Ok(event) => {
-                    state.needs_reload = true;
-                    pending_watch_event = Some(event);
-                }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => {}
-            }
-        }
-
         if state.needs_reload {
             let file_diffs = if let Some(ref pr) = pr_info {
                 // In PR mode, reload from GitHub
@@ -562,13 +585,28 @@ fn run_app_internal(
             state.annotation_overlay_gaps = gaps_cell.into_inner();
         }
 
-        // Poll for new events if no pending events
-        if pending_events.is_empty() && event::poll(Duration::from_millis(100))? {
-            pending_events.push_back(event::read()?);
+        // Block waiting for the next event (input or watcher). Then drain any
+        // others that are immediately ready so a burst is handled together.
+        if pending_events.is_empty() {
+            match app_rx.recv() {
+                Ok(ev) => pending_events.push_back(ev),
+                Err(_) => break 'main,
+            }
+        }
+        while let Ok(ev) = app_rx.try_recv() {
+            pending_events.push_back(ev);
         }
 
         // Process all pending events
-        while let Some(current_event) = pending_events.pop_front() {
+        while let Some(app_event) = pending_events.pop_front() {
+            let current_event = match app_event {
+                AppEvent::Watch(w) => {
+                    state.needs_reload = true;
+                    pending_watch_event = Some(w);
+                    continue;
+                }
+                AppEvent::Input(ev) => ev,
+            };
             let visible_height = terminal.size()?.height.saturating_sub(2) as usize;
             let bottom_padding = 5;
             let max_scroll = if !state.file_diffs.is_empty() {
@@ -1000,21 +1038,20 @@ fn run_app_internal(
                             };
 
                             // Coalesce scroll events, but preserve non-scroll events
-                            while event::poll(Duration::from_millis(0))? {
-                                let next_event = event::read()?;
-                                match &next_event {
-                                    Event::Mouse(m) => match m.kind {
-                                        MouseEventKind::ScrollDown => scroll_delta += 3,
-                                        MouseEventKind::ScrollUp => scroll_delta -= 3,
-                                        _ => {
-                                            // Non-scroll mouse event - queue for processing
-                                            pending_events.push_back(next_event);
-                                            break;
-                                        }
-                                    },
-                                    _ => {
-                                        // Non-mouse event - queue for processing
-                                        pending_events.push_back(next_event);
+                            while let Ok(next) = app_rx.try_recv() {
+                                match next {
+                                    AppEvent::Input(Event::Mouse(m))
+                                        if matches!(m.kind, MouseEventKind::ScrollDown) =>
+                                    {
+                                        scroll_delta += 3;
+                                    }
+                                    AppEvent::Input(Event::Mouse(m))
+                                        if matches!(m.kind, MouseEventKind::ScrollUp) =>
+                                    {
+                                        scroll_delta -= 3;
+                                    }
+                                    other => {
+                                        pending_events.push_back(other);
                                         break;
                                     }
                                 }
@@ -1058,19 +1095,20 @@ fn run_app_internal(
                             };
 
                             // Coalesce horizontal scroll events
-                            while event::poll(Duration::from_millis(0))? {
-                                let next_event = event::read()?;
-                                match &next_event {
-                                    Event::Mouse(m) => match m.kind {
-                                        MouseEventKind::ScrollRight => h_scroll_delta += 4,
-                                        MouseEventKind::ScrollLeft => h_scroll_delta -= 4,
-                                        _ => {
-                                            pending_events.push_back(next_event);
-                                            break;
-                                        }
-                                    },
-                                    _ => {
-                                        pending_events.push_back(next_event);
+                            while let Ok(next) = app_rx.try_recv() {
+                                match next {
+                                    AppEvent::Input(Event::Mouse(m))
+                                        if matches!(m.kind, MouseEventKind::ScrollRight) =>
+                                    {
+                                        h_scroll_delta += 4;
+                                    }
+                                    AppEvent::Input(Event::Mouse(m))
+                                        if matches!(m.kind, MouseEventKind::ScrollLeft) =>
+                                    {
+                                        h_scroll_delta -= 4;
+                                    }
+                                    other => {
+                                        pending_events.push_back(other);
                                         break;
                                     }
                                 }

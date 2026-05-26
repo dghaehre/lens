@@ -215,7 +215,7 @@ impl<'a> AnnotationEditor<'a> {
             Span::styled("esc", Style::default().fg(t.ui.text_muted)),
             Span::styled(" cancel  ", Style::default().fg(t.ui.text_muted)),
             Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
-            Span::styled("shift+enter", Style::default().fg(t.ui.text_muted)),
+            Span::styled("ctrl+j", Style::default().fg(t.ui.text_muted)),
             Span::styled(" newline", Style::default().fg(t.ui.text_muted)),
         ]);
 

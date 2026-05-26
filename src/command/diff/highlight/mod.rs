@@ -242,6 +242,10 @@ mod tests {
             "Elixir script config should be loaded"
         );
         assert!(extensions.contains(&"zig"), "Zig config should be loaded");
+        assert!(
+            extensions.contains(&"swift"),
+            "Swift config should be loaded"
+        );
     }
 
     #[test]
@@ -307,6 +311,27 @@ end
         );
         let has_highlights = result.iter().any(|(_, h)| h.is_some());
         assert!(has_highlights, "Elixir code should have syntax highlights");
+    }
+
+    #[test]
+    fn test_swift_highlighting() {
+        let code = r#"import Foundation
+
+struct Greeter {
+    let name: String
+
+    func greet() -> String {
+        return "Hello, \(name)!"
+    }
+}
+"#;
+        let result = highlight_code(code, "test.swift");
+        assert!(
+            !result.is_empty(),
+            "Swift highlighting should produce output"
+        );
+        let has_highlights = result.iter().any(|(_, h)| h.is_some());
+        assert!(has_highlights, "Swift code should have syntax highlights");
     }
 
     #[test]
