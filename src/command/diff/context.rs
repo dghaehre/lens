@@ -1,8 +1,13 @@
+use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 
 use once_cell::sync::Lazy;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
+
+use super::types::expand_tabs;
 
 /// Configuration for context lines feature
 #[derive(Clone)]
@@ -232,24 +237,37 @@ fn get_language_context(filename: &str) -> Option<&'static LanguageContext> {
         .map(|(_, ctx)| ctx)
 }
 
-/// Compute context lines for a given scroll position using tree-sitter AST.
-///
-/// This function parses the source code, finds all context-worthy nodes (functions,
-/// classes, loops, etc.), and returns the ones that contain the scroll position
-/// but start above it (i.e., not fully visible).
-pub fn compute_context_lines(
-    source: &str,
-    filename: &str,
-    scroll_position: usize,
-    config: &ContextConfig,
-    tab_width: usize,
-) -> Vec<ContextLine> {
-    use super::types::expand_tabs;
+/// Internal: a context-worthy node collected from the AST. Scroll-position-independent,
+/// so it can be cached and reused across renders.
+#[derive(Clone)]
+struct ContextNode {
+    start_line: usize,
+    end_line: usize,
+    content: String,
+}
 
-    if !config.enabled || source.is_empty() || scroll_position == 0 {
-        return Vec::new();
-    }
+struct CacheEntry {
+    filename: String,
+    source_len: usize,
+    source_hash: u64,
+    nodes: Vec<ContextNode>,
+}
 
+const CACHE_CAPACITY: usize = 8;
+
+thread_local! {
+    static CONTEXT_CACHE: RefCell<Vec<CacheEntry>> = RefCell::new(Vec::with_capacity(CACHE_CAPACITY));
+}
+
+fn hash_source(s: &str) -> u64 {
+    let mut h = DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
+}
+
+/// Parse the source and collect every context-worthy node (sorted by start line, deduplicated).
+/// Does not depend on scroll position — the result is cacheable for the lifetime of the source.
+fn collect_context_nodes(source: &str, filename: &str, tab_width: usize) -> Vec<ContextNode> {
     let Some(lang_ctx) = get_language_context(filename) else {
         return Vec::new();
     };
@@ -264,49 +282,93 @@ pub fn compute_context_lines(
     };
 
     let mut cursor = QueryCursor::new();
-
     let lines: Vec<&str> = source.lines().collect();
 
-    // Collect all context nodes that contain the scroll position but start above it
-    let mut context_nodes: Vec<(usize, usize, String)> = Vec::new(); // (start_line, end_line, first_line_content)
-
+    let mut nodes: Vec<ContextNode> = Vec::new();
     let mut matches = cursor.matches(&lang_ctx.query, tree.root_node(), source.as_bytes());
     while let Some(m) = matches.next() {
         for capture in m.captures {
             let node = capture.node;
             let start_line = node.start_position().row;
             let end_line = node.end_position().row;
-
-            // Node must:
-            // 1. Start before the scroll position (not visible at top)
-            // 2. End at or after the scroll position (still contains current view)
-            if start_line < scroll_position && end_line >= scroll_position {
-                if let Some(line_content) = lines.get(start_line) {
-                    context_nodes.push((
-                        start_line,
-                        end_line,
-                        expand_tabs(line_content, tab_width),
-                    ));
-                }
+            if let Some(line_content) = lines.get(start_line) {
+                nodes.push(ContextNode {
+                    start_line,
+                    end_line,
+                    content: expand_tabs(line_content, tab_width),
+                });
             }
         }
     }
 
-    // Sort by start line (outermost scopes first)
-    context_nodes.sort_by_key(|(start, _, _)| *start);
+    nodes.sort_by_key(|n| n.start_line);
+    nodes.dedup_by_key(|n| n.start_line);
+    nodes
+}
 
-    // Remove duplicates (same start line) - prefer the first occurrence
-    context_nodes.dedup_by_key(|(start, _, _)| *start);
-
-    // Convert to ContextLine and limit to max_lines
-    let result: Vec<ContextLine> = context_nodes
-        .into_iter()
-        .take(config.max_lines)
-        .map(|(start_line, _, content)| ContextLine {
-            line_number: start_line + 1, // 1-indexed for display
-            content,
+fn filter_to_lines(nodes: &[ContextNode], scroll_position: usize, max_lines: usize) -> Vec<ContextLine> {
+    nodes
+        .iter()
+        .filter(|n| n.start_line < scroll_position && n.end_line >= scroll_position)
+        .take(max_lines)
+        .map(|n| ContextLine {
+            line_number: n.start_line + 1,
+            content: n.content.clone(),
         })
-        .collect();
+        .collect()
+}
+
+/// Compute context lines for a given scroll position using tree-sitter AST.
+///
+/// Tree-sitter parsing is cached per (filename, source) — only the cheap filter
+/// step runs on each call. This makes scroll-induced re-renders essentially free.
+pub fn compute_context_lines(
+    source: &str,
+    filename: &str,
+    scroll_position: usize,
+    config: &ContextConfig,
+    tab_width: usize,
+) -> Vec<ContextLine> {
+    if !config.enabled || source.is_empty() || scroll_position == 0 {
+        return Vec::new();
+    }
+
+    if get_language_context(filename).is_none() {
+        return Vec::new();
+    }
+
+    let source_len = source.len();
+    let source_hash = hash_source(source);
+
+    let cached = CONTEXT_CACHE.with(|cache| {
+        let cache = cache.borrow();
+        cache
+            .iter()
+            .find(|e| {
+                e.source_len == source_len && e.source_hash == source_hash && e.filename == filename
+            })
+            .map(|e| filter_to_lines(&e.nodes, scroll_position, config.max_lines))
+    });
+
+    if let Some(result) = cached {
+        return result;
+    }
+
+    let nodes = collect_context_nodes(source, filename, tab_width);
+    let result = filter_to_lines(&nodes, scroll_position, config.max_lines);
+
+    CONTEXT_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= CACHE_CAPACITY {
+            cache.remove(0);
+        }
+        cache.push(CacheEntry {
+            filename: filename.to_string(),
+            source_len,
+            source_hash,
+            nodes,
+        });
+    });
 
     result
 }
