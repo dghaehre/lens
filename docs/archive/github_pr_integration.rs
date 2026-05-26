@@ -1,13 +1,13 @@
 // ARCHIVED: GitHub / `gh` runtime integration.
 //
-// This file is intentionally NOT registered in `mod.rs` and is not compiled.
+// This file lives outside `src/` on purpose — it is not part of the build.
 // It preserves the GitHub PR review code that was removed when lens moved
-// to a "diff worktree against <ref>" model. Kept here so the integration
-// can be revived later without digging through git history.
+// to a "diff worktree against <ref>" model, so the integration can be
+// revived later without digging through git history.
 //
 // To revive:
-//   1. Add `pub mod _archived_github;` to `src/command/diff/mod.rs`
-//      (rename the module on the way in).
+//   1. Move this file back to `src/command/diff/` (e.g. as `github.rs`)
+//      and add `pub mod github;` to `src/command/diff/mod.rs`.
 //   2. Re-add the runtime deps to Cargo.toml:
 //        spinoff = { version = "0.8.0", features = ["dots"] }
 //        sha2 = "0.10"
