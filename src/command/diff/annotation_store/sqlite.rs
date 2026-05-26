@@ -11,6 +11,10 @@ use super::{
 
 const STORE_ID: &str = "local";
 
+/// Bump when the on-disk schema changes. A DB stamped with a different
+/// version triggers a hard panic in `open` — see the version check there.
+const SCHEMA_VERSION: u32 = 1;
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS annotations (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -22,7 +26,11 @@ CREATE TABLE IF NOT EXISTS annotations (
     content     TEXT    NOT NULL,
     author      TEXT    NOT NULL,
     created_at  INTEGER NOT NULL,
-    resolved    INTEGER NOT NULL DEFAULT 0
+    resolved    INTEGER NOT NULL DEFAULT 0,
+    CHECK (
+        (target_kind = 'file'       AND panel IS NULL     AND start_line IS NULL AND end_line IS NULL) OR
+        (target_kind = 'line_range' AND panel IS NOT NULL AND start_line IS NOT NULL AND end_line IS NOT NULL)
+    )
 );
 CREATE INDEX IF NOT EXISTS idx_annotations_filename ON annotations(filename);
 ";
@@ -35,6 +43,27 @@ impl SqliteStore {
     pub fn open(db_path: &Path) -> Result<Self, AnnotationError> {
         let conn = Connection::open(db_path).map_err(backend_err)?;
         conn.execute_batch(SCHEMA).map_err(backend_err)?;
+
+        let db_version: u32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(backend_err)?;
+
+        if db_version == 0 {
+            conn.execute(
+                &format!("PRAGMA user_version = {}", SCHEMA_VERSION),
+                [],
+            )
+            .map_err(backend_err)?;
+        } else {
+            assert!(
+                db_version == SCHEMA_VERSION,
+                "lens.db schema version mismatch at {}: db reports v{}, this build expects v{}. Refusing to continue to avoid data corruption.",
+                db_path.display(),
+                db_version,
+                SCHEMA_VERSION,
+            );
+        }
+
         Ok(Self { conn })
     }
 }
