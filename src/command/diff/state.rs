@@ -1,15 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 
-use crate::command::diff::annotation_store::{
-    AnnotationStore, InMemoryStore, NewAnnotation,
+use crate::command::diff::annotation_store::{AnnotationStore, InMemoryStore, NewAnnotation};
+use crate::command::diff::diff_algo::{
+    compute_side_by_side, count_added_removed, find_hunk_starts,
 };
-use crate::command::diff::diff_algo::{compute_side_by_side, count_added_removed, find_hunk_starts};
 use crate::command::diff::highlight::FileHighlighter;
 
 use crate::command::diff::search::SearchState;
 use crate::command::diff::types::{
-    build_file_tree, CursorPosition, DiffFullscreen, DiffLine, DiffPanelFocus,
+    build_file_tree, ChangeType, CursorPosition, DiffFullscreen, DiffLine, DiffPanelFocus,
     DiffViewSettings, FileDiff, FocusedPanel, Selection, SelectionMode, SidebarItem,
 };
 use crate::vcs::StackedCommitInfo;
@@ -21,6 +21,19 @@ pub enum PendingKey {
     #[default]
     None,
     G,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HunkLineSelectionMode {
+    Single,
+    Range,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HunkLineSelection {
+    pub hunk_index: usize,
+    pub panel: DiffPanelFocus,
+    pub mode: HunkLineSelectionMode,
 }
 
 fn sidebar_item_path(item: &SidebarItem) -> &str {
@@ -117,6 +130,8 @@ pub struct AppState {
     pub diff_panel_focus: DiffPanelFocus,
     /// Current text selection
     pub selection: Selection,
+    /// Keyboard-driven line/range selection scoped to the focused hunk.
+    pub hunk_line_selection: Option<HunkLineSelection>,
     /// Whether a mouse drag is in progress
     pub is_dragging: bool,
     /// Whether to show the selection action tooltip
@@ -232,6 +247,7 @@ impl AppState {
             diff_reference: None,
             diff_panel_focus: DiffPanelFocus::default(),
             selection: Selection::default(),
+            hunk_line_selection: None,
             is_dragging: false,
             show_selection_tooltip: false,
             cached_side_by_side: None,
@@ -443,12 +459,19 @@ impl AppState {
     pub fn clear_selection(&mut self) {
         self.diff_panel_focus = DiffPanelFocus::None;
         self.selection = Selection::default();
+        self.hunk_line_selection = None;
         self.is_dragging = false;
         self.show_selection_tooltip = false;
     }
 
     /// Start a new selection
-    pub fn start_selection(&mut self, panel: DiffPanelFocus, pos: CursorPosition, mode: SelectionMode) {
+    pub fn start_selection(
+        &mut self,
+        panel: DiffPanelFocus,
+        pos: CursorPosition,
+        mode: SelectionMode,
+    ) {
+        self.hunk_line_selection = None;
         self.diff_panel_focus = panel;
         self.selection = Selection {
             panel,
@@ -464,6 +487,116 @@ impl AppState {
         if self.is_dragging {
             self.selection.head = pos;
         }
+    }
+
+    fn selectable_hunk_lines(&mut self, hunk_index: usize, panel: DiffPanelFocus) -> Vec<usize> {
+        self.ensure_cache();
+        let sbs = self.side_by_side_ref();
+        let hunks = self.hunks_ref();
+        let Some(&hunk_start) = hunks.get(hunk_index) else {
+            return Vec::new();
+        };
+        let next_hunk_start = hunks.get(hunk_index + 1).copied().unwrap_or(sbs.len());
+
+        (hunk_start..next_hunk_start)
+            .filter(|&idx| {
+                sbs.get(idx).map_or(false, |line| {
+                    !matches!(line.change_type, ChangeType::Equal)
+                        && line.line_number(panel).is_some()
+                })
+            })
+            .collect()
+    }
+
+    pub fn start_hunk_line_selection(
+        &mut self,
+        hunk_index: usize,
+        panel: DiffPanelFocus,
+    ) -> Option<usize> {
+        let line_idx = self
+            .selectable_hunk_lines(hunk_index, panel)
+            .into_iter()
+            .next()?;
+        let pos = CursorPosition {
+            line: line_idx,
+            column: 0,
+        };
+
+        self.diff_panel_focus = panel;
+        self.selection = Selection {
+            panel,
+            anchor: pos,
+            head: pos,
+            mode: SelectionMode::Line,
+        };
+        self.hunk_line_selection = Some(HunkLineSelection {
+            hunk_index,
+            panel,
+            mode: HunkLineSelectionMode::Single,
+        });
+        self.is_dragging = false;
+        self.show_selection_tooltip = false;
+
+        Some(line_idx)
+    }
+
+    pub fn begin_hunk_line_range(&mut self) -> Option<usize> {
+        let active = self.hunk_line_selection.as_mut()?;
+        active.mode = HunkLineSelectionMode::Range;
+        self.selection.panel = active.panel;
+        self.selection.anchor = self.selection.head;
+        self.selection.mode = SelectionMode::Line;
+        self.diff_panel_focus = active.panel;
+        self.is_dragging = false;
+        self.show_selection_tooltip = false;
+
+        Some(self.selection.head.line)
+    }
+
+    pub fn move_hunk_line_selection(&mut self, direction: isize) -> Option<usize> {
+        let active = self.hunk_line_selection?;
+        let lines = self.selectable_hunk_lines(active.hunk_index, active.panel);
+        if lines.is_empty() {
+            return None;
+        }
+
+        let current = self.selection.head.line;
+        let current_pos = lines
+            .iter()
+            .position(|&line| line == current)
+            .unwrap_or_else(|| {
+                let next_after_current = lines
+                    .iter()
+                    .position(|&line| line > current)
+                    .unwrap_or(lines.len());
+                if direction < 0 {
+                    next_after_current.saturating_sub(1)
+                } else {
+                    next_after_current.min(lines.len().saturating_sub(1))
+                }
+            });
+        let next_pos = if direction < 0 {
+            current_pos.saturating_sub(1)
+        } else {
+            (current_pos + 1).min(lines.len().saturating_sub(1))
+        };
+        let next_line = lines[next_pos];
+        let pos = CursorPosition {
+            line: next_line,
+            column: 0,
+        };
+
+        self.selection.panel = active.panel;
+        self.selection.head = pos;
+        self.selection.mode = SelectionMode::Line;
+        self.diff_panel_focus = active.panel;
+        if matches!(active.mode, HunkLineSelectionMode::Single) {
+            self.selection.anchor = pos;
+        }
+        self.is_dragging = false;
+        self.show_selection_tooltip = false;
+
+        Some(next_line)
     }
 
     /// End the drag operation but keep the selection
@@ -684,7 +817,11 @@ impl AppState {
         // so behavior matches the pre-refactor "annotations for vanished files
         // are gone" semantics. A persistent store may want to keep them around
         // and just hide them from the cache — that's a future call.
-        let filenames: HashSet<&str> = self.file_diffs.iter().map(|f| f.filename.as_str()).collect();
+        let filenames: HashSet<&str> = self
+            .file_diffs
+            .iter()
+            .map(|f| f.filename.as_str())
+            .collect();
         let to_delete: Vec<AnnotationId> = self
             .annotations
             .iter()
@@ -694,8 +831,10 @@ impl AppState {
         for id in &to_delete {
             let _ = self.store.delete(id);
         }
-        self.annotations.retain(|ann| filenames.contains(ann.filename.as_str()));
-        self.viewed_hunks.retain(|fname, _| filenames.contains(fname.as_str()));
+        self.annotations
+            .retain(|ann| filenames.contains(ann.filename.as_str()));
+        self.viewed_hunks
+            .retain(|fname, _| filenames.contains(fname.as_str()));
 
         // Convert viewed filenames back to indices in the new file_diffs
         self.viewed_files = self
@@ -772,7 +911,12 @@ impl AppState {
         content: String,
         created_at: SystemTime,
     ) -> Option<AnnotationId> {
-        let draft = NewAnnotation { filename, target, content, created_at };
+        let draft = NewAnnotation {
+            filename,
+            target,
+            content,
+            created_at,
+        };
         match self.store.create(draft) {
             Ok(annotation) => {
                 let id = annotation.id.clone();
@@ -821,7 +965,12 @@ impl AppState {
                 AnnotationTarget::File => {
                     result.push_str(&format!("**{}**\n\n", ann.filename));
                 }
-                AnnotationTarget::LineRange { panel, start_line, end_line, .. } => {
+                AnnotationTarget::LineRange {
+                    panel,
+                    start_line,
+                    end_line,
+                    ..
+                } => {
                     let side = match panel {
                         DiffPanelFocus::Old => "LEFT",
                         _ => "RIGHT",
@@ -916,6 +1065,70 @@ mod tests {
         }
     }
 
+    fn make_modified_file_diff(filename: &str, old_content: &str, new_content: &str) -> FileDiff {
+        FileDiff {
+            filename: filename.to_string(),
+            old_content: old_content.to_string(),
+            new_content: new_content.to_string(),
+            status: FileStatus::Modified,
+            is_binary: false,
+        }
+    }
+
+    #[test]
+    fn test_hunk_line_selection_moves_single_line() {
+        let diffs = vec![make_modified_file_diff(
+            "src/lib.rs",
+            "one\ntwo\nthree\nfour\n",
+            "one\nTWO\nTHREE\nfour\n",
+        )];
+        let mut state = AppState::new(diffs, None);
+
+        let first_line = state
+            .start_hunk_line_selection(0, DiffPanelFocus::New)
+            .expect("hunk line selection should start");
+        assert_eq!(first_line, 1);
+        assert_eq!(state.selection.panel, DiffPanelFocus::New);
+        assert_eq!(state.selection.anchor.line, first_line);
+        assert_eq!(state.selection.head.line, first_line);
+
+        let second_line = state
+            .move_hunk_line_selection(1)
+            .expect("hunk line selection should move");
+        assert_eq!(second_line, 2);
+        assert_eq!(state.selection.anchor.line, second_line);
+        assert_eq!(state.selection.head.line, second_line);
+    }
+
+    #[test]
+    fn test_hunk_line_selection_space_starts_range() {
+        let diffs = vec![make_modified_file_diff(
+            "src/lib.rs",
+            "one\ntwo\nthree\nfour\n",
+            "one\nTWO\nTHREE\nfour\n",
+        )];
+        let mut state = AppState::new(diffs, None);
+
+        state
+            .start_hunk_line_selection(0, DiffPanelFocus::New)
+            .expect("hunk line selection should start");
+        state
+            .move_hunk_line_selection(1)
+            .expect("hunk line selection should move");
+        state.begin_hunk_line_range();
+        state
+            .move_hunk_line_selection(-1)
+            .expect("hunk line selection should move");
+
+        let (start, end) = state.selection.normalized_range();
+        assert_eq!(start.line, 1);
+        assert_eq!(end.line, 2);
+        assert!(matches!(
+            state.hunk_line_selection.map(|s| s.mode),
+            Some(HunkLineSelectionMode::Range)
+        ));
+    }
+
     #[test]
     fn test_focus_selects_matching_file() {
         let diffs = vec![
@@ -959,7 +1172,9 @@ mod tests {
 
         let state = AppState::new(diffs, Some("ccc.rs"));
 
-        if let Some(SidebarItem::File { file_index, .. }) = state.sidebar_item_at_visible(state.sidebar_selected) {
+        if let Some(SidebarItem::File { file_index, .. }) =
+            state.sidebar_item_at_visible(state.sidebar_selected)
+        {
             assert_eq!(*file_index, state.current_file);
         } else {
             panic!("sidebar_selected should point to a file");

@@ -132,6 +132,7 @@ Priority: CLI flag > config file > `LENS_THEME` env var > OS auto-detect.
 
 **Annotations**: Add review comments at three levels of granularity:
 - **Selection** — select lines with mouse, press `i` to annotate the selected range
+- **Hunk line/range** — focus a hunk with `[`/`]`, press `v`, move with `j/k`, press `space` to start a range, then press `i`
 - **Hunk** — focus a hunk with `[`/`]`, press `i` to annotate the hunk
 - **File** — press `i` with no selection or hunk focus to annotate the whole file
 
@@ -141,6 +142,7 @@ Annotated lines display a `▍` gutter indicator. Use `I` to view, edit, delete,
 
 - `j/k` or arrow keys: Navigate
 - `[`/`]`: Jump between hunks
+- `v`: Select a line inside the focused hunk
 - `tab`: Toggle sidebar
 - `space`: Mark file as viewed
 - `e`: Open file in editor
