@@ -34,9 +34,9 @@ pub struct DiffArgs {
     #[arg(short, long)]
     pub file: Option<Vec<String>>,
 
-    /// Watch for file changes and auto-reload
-    #[arg(short, long)]
-    pub watch: bool,
+    /// Disable watching for file changes (auto-reload is on by default).
+    #[arg(long)]
+    pub no_watch: bool,
 
     /// Color theme (e.g., dracula, nord, gruvbox-dark, catppuccin-mocha)
     #[arg(short, long)]

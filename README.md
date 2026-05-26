@@ -56,8 +56,9 @@ lens main
 # Filter to specific files
 lens --file src/main.rs --file src/lib.rs
 
-# Watch mode - auto-refresh on file changes
-lens --watch
+# Auto-refresh on file changes is enabled by default.
+# Disable it with --no-watch
+lens --no-watch
 
 # Stacked mode - walk commits in <ref>..HEAD one by one
 lens main --stacked
