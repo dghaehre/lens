@@ -4,8 +4,8 @@ mod app;
 mod context;
 mod coordinates;
 mod diff_algo;
-pub mod git;
 pub mod highlight;
+mod loader;
 mod render;
 mod search;
 mod state;
@@ -22,7 +22,7 @@ use std::thread;
 use spinoff::{spinners, Color, Spinner};
 
 use crate::commit_reference::CommitReference;
-use crate::vcs::VcsBackend;
+use crate::vcs::GitBackend;
 
 pub struct DiffOptions {
     pub reference: Option<CommitReference>,
@@ -97,7 +97,10 @@ fn resolve_origin_repo() -> Result<String, String> {
     if parts.len() >= 2 {
         Ok(format!("{}/{}", parts[0], parts[1]))
     } else {
-        Err(format!("Could not parse owner/repo from origin URL: {}", url))
+        Err(format!(
+            "Could not parse owner/repo from origin URL: {}",
+            url
+        ))
     }
 }
 
@@ -315,7 +318,7 @@ fn unmark_file_as_viewed_sync(node_id: &str, file_path: &str) -> Result<(), Stri
     Ok(())
 }
 
-pub fn run_diff_ui(options: DiffOptions, backend: &dyn VcsBackend) -> io::Result<()> {
+pub fn run_diff_ui(options: DiffOptions, backend: &GitBackend) -> io::Result<()> {
     // Handle PR mode
     if let Some(ref pr_input) = options.pr {
         let spinner_msg = match parse_pr_input(pr_input) {

@@ -14,7 +14,7 @@ use crossterm::{
 use ratatui::prelude::*;
 
 use super::coordinates::{extract_selected_text, PanelLayout};
-use super::git::{
+use super::loader::{
     get_current_branch, load_file_diffs, load_pr_file_diffs, load_single_commit_diffs,
 };
 use super::highlight;
@@ -36,7 +36,7 @@ use super::{
 use spinoff::{spinners, Color, Spinner};
 
 use crate::commit_reference::CommitReference;
-use crate::vcs::{StackedCommitInfo, VcsBackend};
+use crate::vcs::{GitBackend, StackedCommitInfo};
 
 /// Navigate to a different commit in stacked mode.
 /// Returns true if navigation was successful.
@@ -44,7 +44,7 @@ fn navigate_stacked_commit(
     state: &mut AppState,
     new_index: usize,
     options: &DiffOptions,
-    backend: &dyn VcsBackend,
+    backend: &GitBackend,
 ) -> bool {
     if new_index >= state.stacked_commits.len() {
         return false;
@@ -228,7 +228,7 @@ fn format_annotation_preview(annotation: &super::state::Annotation) -> String {
 pub fn run_app_with_pr(
     options: DiffOptions,
     pr_info: PrInfo,
-    backend: &dyn VcsBackend,
+    backend: &GitBackend,
 ) -> io::Result<()> {
     let mut spinner = Spinner::new(
         spinners::Dots,
@@ -253,7 +253,7 @@ pub fn run_app_with_pr(
 pub fn run_app(
     options: DiffOptions,
     pr_info: Option<PrInfo>,
-    backend: &dyn VcsBackend,
+    backend: &GitBackend,
 ) -> io::Result<()> {
     let file_diffs = load_file_diffs(&options, backend);
     run_app_internal(options, pr_info, file_diffs, None, backend)
@@ -262,7 +262,7 @@ pub fn run_app(
 pub fn run_app_stacked(
     options: DiffOptions,
     commits: Vec<StackedCommitInfo>,
-    backend: &dyn VcsBackend,
+    backend: &GitBackend,
 ) -> io::Result<()> {
     // Load the first commit's diff
     let first_commit = &commits[0];
@@ -287,7 +287,7 @@ fn run_app_internal(
     pr_info: Option<PrInfo>,
     file_diffs: Vec<super::types::FileDiff>,
     stacked_commits: Option<Vec<StackedCommitInfo>>,
-    backend: &dyn VcsBackend,
+    backend: &GitBackend,
 ) -> io::Result<()> {
     theme::init(options.theme.as_deref());
     highlight::init();

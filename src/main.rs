@@ -28,7 +28,7 @@ async fn run() -> Result<(), LensError> {
 
     // Discover the Git backend from the current directory.
     let cwd = std::env::current_dir()?;
-    let backend = vcs::get_backend(&cwd)?;
+    let backend = vcs::GitBackend::new(&cwd)?;
 
     match cli.command {
         Commands::Diff {
@@ -51,7 +51,7 @@ async fn run() -> Result<(), LensError> {
                 focus,
                 origin,
             };
-            command::diff::run_diff_ui(options, backend.as_ref())?;
+            command::diff::run_diff_ui(options, &backend)?;
         }
     }
 

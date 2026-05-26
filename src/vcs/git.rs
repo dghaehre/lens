@@ -2,7 +2,7 @@ use std::path::Path;
 
 use git2::{Commit, DiffFormat, DiffOptions, Repository, StatusOptions, Time, Tree};
 
-use super::backend::{CommitInfo, StackedCommitInfo, VcsBackend, VcsError};
+use super::types::{CommitInfo, StackedCommitInfo, VcsError};
 
 /// Format a duration in seconds as relative time (e.g., "2 hours ago").
 fn format_relative_time(secs_ago: i64) -> String {
@@ -137,16 +137,9 @@ impl GitBackend {
     /// Open a git repository at the given path.
     /// Uses git2::Repository::discover to find the repo from any subdirectory.
     pub fn new(path: &Path) -> Result<Self, VcsError> {
-        let discover_result = Repository::discover(path);//map_err(|_| VcsError::NotARepository)?;
-        return match discover_result {
-            Ok(repo) =>  Ok(GitBackend { repo }),
-            Err(error) => {
-                // Print libgit2 so there is a chance to diagnose any errors with git
-                println!("Error on repository discovery: {error:?}");
-                return Err(VcsError::NotARepository)
-            },
-        };
-
+        Repository::discover(path)
+            .map(|repo| GitBackend { repo })
+            .map_err(|_| VcsError::NotARepository)
     }
 
     /// Open a git repository from the current working directory.
@@ -227,8 +220,8 @@ impl GitBackend {
     }
 }
 
-impl VcsBackend for GitBackend {
-    fn get_commit(&self, reference: &str) -> Result<CommitInfo, VcsError> {
+impl GitBackend {
+    pub fn get_commit(&self, reference: &str) -> Result<CommitInfo, VcsError> {
         let reference = reference.trim();
         Self::validate_ref_format(reference)?;
 
@@ -269,7 +262,7 @@ impl VcsBackend for GitBackend {
         })
     }
 
-    fn get_working_tree_diff(&self, staged: bool) -> Result<String, VcsError> {
+    pub fn get_working_tree_diff(&self, staged: bool) -> Result<String, VcsError> {
         let mut opts = DiffOptions::new();
         opts.show_binary(true);
         opts.context_lines(3);
@@ -319,7 +312,12 @@ impl VcsBackend for GitBackend {
         Ok(output)
     }
 
-    fn get_range_diff(&self, from: &str, to: &str, three_dot: bool) -> Result<String, VcsError> {
+    pub fn get_range_diff(
+        &self,
+        from: &str,
+        to: &str,
+        three_dot: bool,
+    ) -> Result<String, VcsError> {
         Self::validate_ref_format(from)?;
         Self::validate_ref_format(to)?;
 
@@ -405,7 +403,7 @@ impl VcsBackend for GitBackend {
         Ok(output)
     }
 
-    fn get_changed_files(&self, reference: &str) -> Result<Vec<String>, VcsError> {
+    pub fn get_changed_files(&self, reference: &str) -> Result<Vec<String>, VcsError> {
         let reference = reference.trim();
 
         // Check if this is a range (contains ..)
@@ -492,7 +490,11 @@ impl VcsBackend for GitBackend {
             .collect())
     }
 
-    fn get_file_content_at_ref(&self, reference: &str, path: &Path) -> Result<String, VcsError> {
+    pub fn get_file_content_at_ref(
+        &self,
+        reference: &str,
+        path: &Path,
+    ) -> Result<String, VcsError> {
         let reference = reference.trim();
         Self::validate_ref_format(reference)?;
 
@@ -522,7 +524,7 @@ impl VcsBackend for GitBackend {
         Ok(String::from_utf8_lossy(blob.content()).into_owned())
     }
 
-    fn get_current_branch(&self) -> Result<Option<String>, VcsError> {
+    pub fn get_current_branch(&self) -> Result<Option<String>, VcsError> {
         let head = self
             .repo
             .head()
@@ -536,7 +538,7 @@ impl VcsBackend for GitBackend {
         }
     }
 
-    fn get_commit_log_for_fzf(&self) -> Result<String, VcsError> {
+    pub fn get_commit_log_for_fzf(&self) -> Result<String, VcsError> {
         let mut revwalk = self
             .repo
             .revwalk()
@@ -576,7 +578,7 @@ impl VcsBackend for GitBackend {
         Ok(output)
     }
 
-    fn resolve_ref(&self, reference: &str) -> Result<String, VcsError> {
+    pub fn resolve_ref(&self, reference: &str) -> Result<String, VcsError> {
         let reference = reference.trim();
         Self::validate_ref_format(reference)?;
 
@@ -593,7 +595,7 @@ impl VcsBackend for GitBackend {
         Ok(commit.id().to_string())
     }
 
-    fn get_working_tree_changed_files(&self) -> Result<Vec<String>, VcsError> {
+    pub fn get_working_tree_changed_files(&self) -> Result<Vec<String>, VcsError> {
         use std::collections::HashSet;
 
         let mut opts = StatusOptions::new();
@@ -615,7 +617,7 @@ impl VcsBackend for GitBackend {
         Ok(files.into_iter().collect())
     }
 
-    fn get_merge_base(&self, ref1: &str, ref2: &str) -> Result<String, VcsError> {
+    pub fn get_merge_base(&self, ref1: &str, ref2: &str) -> Result<String, VcsError> {
         let ref1 = ref1.trim();
         let ref2 = ref2.trim();
 
@@ -648,7 +650,7 @@ impl VcsBackend for GitBackend {
         Ok(merge_base.to_string())
     }
 
-    fn get_range_changed_files(&self, from: &str, to: &str) -> Result<Vec<String>, VcsError> {
+    pub fn get_range_changed_files(&self, from: &str, to: &str) -> Result<Vec<String>, VcsError> {
         let from = from.trim();
         let to = to.trim();
 
@@ -690,7 +692,7 @@ impl VcsBackend for GitBackend {
             .collect())
     }
 
-    fn get_parent_ref_or_empty(&self, reference: &str) -> Result<String, VcsError> {
+    pub fn get_parent_ref_or_empty(&self, reference: &str) -> Result<String, VcsError> {
         let reference = reference.trim();
         Self::validate_ref_format(reference)?;
 
@@ -712,7 +714,7 @@ impl VcsBackend for GitBackend {
         }
     }
 
-    fn get_commits_in_range(
+    pub fn get_commits_in_range(
         &self,
         from: &str,
         to: &str,
