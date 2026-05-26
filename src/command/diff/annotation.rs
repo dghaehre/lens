@@ -7,7 +7,7 @@ use ratatui::{
 };
 use tui_textarea::TextArea;
 
-use super::state::AnnotationTarget;
+use super::state::{AnnotationId, AnnotationTarget};
 use super::theme;
 use crate::command::diff::types::DiffPanelFocus;
 
@@ -29,7 +29,7 @@ pub struct AnnotationEditor<'a> {
     pub filename: String,
     pub target: AnnotationTarget,
     /// If editing an existing annotation, its id
-    pub id: Option<u64>,
+    pub id: Option<AnnotationId>,
     is_edit: bool,
     /// Original creation time (preserved when editing)
     original_created_at: Option<SystemTime>,
@@ -54,7 +54,7 @@ impl<'a> AnnotationEditor<'a> {
         }
     }
 
-    pub fn with_existing(mut self, id: u64, content: &str, created_at: SystemTime) -> Self {
+    pub fn with_existing(mut self, id: AnnotationId, content: &str, created_at: SystemTime) -> Self {
         self.textarea = TextArea::new(content.lines().map(String::from).collect());
         self.id = Some(id);
         self.is_edit = true;

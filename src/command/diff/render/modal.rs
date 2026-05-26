@@ -4,7 +4,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
-use crate::command::diff::state::Annotation;
+use crate::command::diff::state::{Annotation, AnnotationId};
 use crate::command::diff::theme;
 
 #[derive(Clone)]
@@ -78,9 +78,9 @@ pub enum ModalResult {
     #[allow(dead_code)]
     Selected(usize, String),
     FileSelected(usize),
-    AnnotationJump { annotation_id: u64 },
-    AnnotationEdit { annotation_id: u64 },
-    AnnotationDelete { annotation_id: u64 },
+    AnnotationJump { annotation_id: AnnotationId },
+    AnnotationEdit { annotation_id: AnnotationId },
+    AnnotationDelete { annotation_id: AnnotationId },
     AnnotationCopyAll,
     AnnotationExport(String),
 }
@@ -920,17 +920,17 @@ impl Modal {
                         }
                         KeyCode::Enter => annotations.get(*selected).map(|ann| {
                             ModalResult::AnnotationJump {
-                                annotation_id: ann.id,
+                                annotation_id: ann.id.clone(),
                             }
                         }),
                         KeyCode::Char('e') => annotations.get(*selected).map(|ann| {
                             ModalResult::AnnotationEdit {
-                                annotation_id: ann.id,
+                                annotation_id: ann.id.clone(),
                             }
                         }),
                         KeyCode::Char('d') => annotations.get(*selected).map(|ann| {
                             ModalResult::AnnotationDelete {
-                                annotation_id: ann.id,
+                                annotation_id: ann.id.clone(),
                             }
                         }),
                         KeyCode::Char('y') => Some(ModalResult::AnnotationCopyAll),

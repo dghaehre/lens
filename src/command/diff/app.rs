@@ -598,7 +598,7 @@ fn run_app_internal(
                             AnnotationEditorResult::Continue => {}
                             AnnotationEditorResult::Save => {
                                 let content = editor.content();
-                                if let Some(id) = editor.id {
+                                if let Some(ref id) = editor.id {
                                     // Editing existing annotation
                                     state.update_annotation(id, content);
                                 } else {
@@ -613,7 +613,7 @@ fn run_app_internal(
                                 annotation_editor = None;
                             }
                             AnnotationEditorResult::Delete => {
-                                if let Some(id) = editor.id {
+                                if let Some(ref id) = editor.id {
                                     state.remove_annotation(id);
                                 }
                                 annotation_editor = None;
@@ -643,7 +643,7 @@ fn run_app_internal(
                                     active_modal = None;
                                 }
                                 ModalResult::AnnotationJump { annotation_id } => {
-                                    if let Some(ann) = state.get_annotation_by_id(annotation_id) {
+                                    if let Some(ann) = state.get_annotation_by_id(&annotation_id) {
                                         let filename = ann.filename.clone();
                                         let target = ann.target.clone();
                                         // Find and switch to the file
@@ -668,11 +668,11 @@ fn run_app_internal(
                                     active_modal = None;
                                 }
                                 ModalResult::AnnotationEdit { annotation_id } => {
-                                    if let Some(ann) = state.get_annotation_by_id(annotation_id) {
+                                    if let Some(ann) = state.get_annotation_by_id(&annotation_id) {
                                         let editor = AnnotationEditor::new(
                                             ann.filename.clone(),
                                             ann.target.clone(),
-                                        ).with_existing(ann.id, &ann.content, ann.created_at);
+                                        ).with_existing(ann.id.clone(), &ann.content, ann.created_at);
                                         // Jump to the file
                                         let filename = ann.filename.clone();
                                         if let Some(file_index) = state.file_diffs.iter().position(|f| f.filename == filename) {
@@ -683,7 +683,7 @@ fn run_app_internal(
                                     active_modal = None;
                                 }
                                 ModalResult::AnnotationDelete { annotation_id } => {
-                                    state.remove_annotation(annotation_id);
+                                    state.remove_annotation(&annotation_id);
                                     // Refresh the modal if there are still annotations
                                     if !state.annotations.is_empty() {
                                         let mut sorted_annotations = state.annotations.clone();

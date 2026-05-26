@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 
+use crate::command::diff::annotation_store::{
+    AnnotationStore, InMemoryStore, NewAnnotation,
+};
 use crate::command::diff::diff_algo::{compute_side_by_side, count_added_removed, find_hunk_starts};
 use crate::command::diff::highlight::FileHighlighter;
 
@@ -10,6 +13,8 @@ use crate::command::diff::types::{
     DiffViewSettings, FileDiff, FocusedPanel, Selection, SelectionMode, SidebarItem,
 };
 use crate::vcs::StackedCommitInfo;
+
+pub use crate::command::diff::annotation_store::{Annotation, AnnotationId, AnnotationTarget};
 
 #[derive(Default, Clone, Copy, PartialEq)]
 pub enum PendingKey {
@@ -66,79 +71,6 @@ fn build_sidebar_visible_indices(
     visible
 }
 
-/// The target of an annotation: either a whole file or a specific line range on one panel.
-#[derive(Clone)]
-pub enum AnnotationTarget {
-    /// Annotation applies to the whole file
-    File,
-    /// Annotation applies to a range of lines on a specific panel
-    LineRange {
-        panel: DiffPanelFocus,
-        start_line: usize,
-        end_line: usize,
-    },
-}
-
-/// An annotation attached to a file or line range.
-///
-/// Annotations allow users to add notes to code changes during review.
-/// Each annotation is uniquely identified by its `id`.
-#[derive(Clone)]
-pub struct Annotation {
-    pub id: u64,
-    pub filename: String,
-    pub target: AnnotationTarget,
-    pub content: String,
-    pub created_at: SystemTime,
-}
-
-impl Annotation {
-    /// Format the creation time as HH:MM in local time
-    #[cfg(feature = "jj")]
-    pub fn format_time(&self) -> String {
-        use chrono::{DateTime, Local};
-        let datetime: DateTime<Local> = self.created_at.into();
-        datetime.format("%H:%M").to_string()
-    }
-
-    /// Format the creation time as HH:MM (UTC fallback when chrono unavailable)
-    #[cfg(not(feature = "jj"))]
-    pub fn format_time(&self) -> String {
-        use std::time::UNIX_EPOCH;
-        let duration = self.created_at.duration_since(UNIX_EPOCH).unwrap_or_default();
-        let secs = duration.as_secs();
-        let hours = (secs / 3600) % 24;
-        let minutes = (secs / 60) % 60;
-        format!("{:02}:{:02}", hours, minutes)
-    }
-
-    /// Get a display label for the target type
-    pub fn target_label(&self) -> &'static str {
-        match &self.target {
-            AnnotationTarget::File => "file",
-            AnnotationTarget::LineRange { panel, .. } => match panel {
-                DiffPanelFocus::Old => "old",
-                DiffPanelFocus::New => "new",
-                DiffPanelFocus::None => "new",
-            },
-        }
-    }
-
-    /// Get the line range display string
-    pub fn line_range_display(&self) -> String {
-        match &self.target {
-            AnnotationTarget::File => String::new(),
-            AnnotationTarget::LineRange { start_line, end_line, .. } => {
-                if start_line == end_line {
-                    format!("L{}", start_line)
-                } else {
-                    format!("L{}-{}", start_line, end_line)
-                }
-            }
-        }
-    }
-}
-
 pub struct AppState {
     pub file_diffs: Vec<FileDiff>,
     pub sidebar_items: Vec<SidebarItem>,
@@ -163,8 +95,13 @@ pub struct AppState {
     pub needs_reload: bool,
     pub focused_hunk: Option<usize>,
     // Annotation fields
+    /// Render-time read cache. Populated from `store` on writes and reloads;
+    /// the render path reads this directly and must not pay a `store.list()`
+    /// cost per frame.
     pub annotations: Vec<Annotation>,
-    annotation_next_id: u64,
+    /// Persistence backend for annotations. Designed to be swappable so we
+    /// can plug in file-backed / remote stores later.
+    store: Box<dyn AnnotationStore>,
     // Stacked mode fields
     pub stacked_mode: bool,
     pub stacked_commits: Vec<StackedCommitInfo>,
@@ -286,7 +223,7 @@ impl AppState {
             needs_reload: false,
             focused_hunk,
             annotations: Vec::new(),
-            annotation_next_id: 0,
+            store: Box::new(InMemoryStore::new()),
             stacked_mode: false,
             stacked_commits: Vec::new(),
             current_commit_index: 0,
@@ -743,8 +680,20 @@ impl AppState {
         self.total_removed = total_removed;
         self.sidebar_items = build_file_tree(&self.file_diffs);
 
-        // Retain annotations whose file still exists
+        // Retain annotations whose file still exists. Drop from the store too
+        // so behavior matches the pre-refactor "annotations for vanished files
+        // are gone" semantics. A persistent store may want to keep them around
+        // and just hide them from the cache — that's a future call.
         let filenames: HashSet<&str> = self.file_diffs.iter().map(|f| f.filename.as_str()).collect();
+        let to_delete: Vec<AnnotationId> = self
+            .annotations
+            .iter()
+            .filter(|ann| !filenames.contains(ann.filename.as_str()))
+            .map(|ann| ann.id.clone())
+            .collect();
+        for id in &to_delete {
+            let _ = self.store.delete(id);
+        }
         self.annotations.retain(|ann| filenames.contains(ann.filename.as_str()));
         self.viewed_hunks.retain(|fname, _| filenames.contains(fname.as_str()));
 
@@ -800,12 +749,12 @@ impl AppState {
         self.focused_hunk = if hunks.is_empty() { None } else { Some(0) };
     }
 
-    /// Get annotation by id
-    pub fn get_annotation_by_id(&self, id: u64) -> Option<&Annotation> {
-        self.annotations.iter().find(|a| a.id == id)
+    /// Get annotation by id (reads from cache; fine in render path)
+    pub fn get_annotation_by_id(&self, id: &AnnotationId) -> Option<&Annotation> {
+        self.annotations.iter().find(|a| &a.id == id)
     }
 
-    /// Get all annotations for a file
+    /// Get all annotations for a file (reads from cache)
     #[allow(dead_code)]
     pub fn get_annotations_for_file(&self, filename: &str) -> Vec<&Annotation> {
         self.annotations
@@ -814,30 +763,41 @@ impl AppState {
             .collect()
     }
 
-    /// Add a new annotation, returns its id
-    pub fn add_annotation(&mut self, filename: String, target: AnnotationTarget, content: String, created_at: SystemTime) -> u64 {
-        let id = self.annotation_next_id;
-        self.annotation_next_id += 1;
-        self.annotations.push(Annotation {
-            id,
-            filename,
-            target,
-            content,
-            created_at,
-        });
-        id
-    }
-
-    /// Update an existing annotation's content
-    pub fn update_annotation(&mut self, id: u64, content: String) {
-        if let Some(ann) = self.annotations.iter_mut().find(|a| a.id == id) {
-            ann.content = content;
+    /// Add a new annotation. Returns the assigned `AnnotationId` on success,
+    /// `None` if the underlying store rejected the write.
+    pub fn add_annotation(
+        &mut self,
+        filename: String,
+        target: AnnotationTarget,
+        content: String,
+        created_at: SystemTime,
+    ) -> Option<AnnotationId> {
+        let draft = NewAnnotation { filename, target, content, created_at };
+        match self.store.create(draft) {
+            Ok(annotation) => {
+                let id = annotation.id.clone();
+                self.annotations.push(annotation);
+                Some(id)
+            }
+            Err(_) => None,
         }
     }
 
-    /// Remove an annotation by id
-    pub fn remove_annotation(&mut self, id: u64) {
-        self.annotations.retain(|a| a.id != id);
+    /// Update an existing annotation's content. Errors from the store are
+    /// swallowed; the cache is only updated if the store accepted the write.
+    pub fn update_annotation(&mut self, id: &AnnotationId, content: String) {
+        if self.store.update(id, content.clone()).is_ok() {
+            if let Some(ann) = self.annotations.iter_mut().find(|a| &a.id == id) {
+                ann.content = content;
+            }
+        }
+    }
+
+    /// Remove an annotation by id. Errors from the store are swallowed.
+    pub fn remove_annotation(&mut self, id: &AnnotationId) {
+        if self.store.delete(id).is_ok() {
+            self.annotations.retain(|a| &a.id != id);
+        }
     }
 
     /// Format all annotations for export (GitHub PR review comment style).
