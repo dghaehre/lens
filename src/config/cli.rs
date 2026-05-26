@@ -1,15 +1,6 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 
 use crate::commit_reference::CommitReference;
-
-/// VCS backend override option
-#[derive(Copy, Clone, PartialEq, Eq, ValueEnum, Debug)]
-pub enum VcsOverride {
-    /// Use git backend
-    Git,
-    /// Use jj (Jujutsu) backend
-    Jj,
-}
 
 #[derive(Parser)]
 #[command(name = "lens")]
@@ -19,10 +10,6 @@ pub struct Cli {
     /// Path to configuration file eg: ./path/to/lens.config.json
     #[arg(long)]
     pub config: Option<String>,
-
-    /// Version control system to use (auto-detected if not specified)
-    #[arg(value_enum, long = "vcs")]
-    pub vcs: Option<VcsOverride>,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -72,20 +59,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_vcs_git_parses() {
-        let cli = Cli::try_parse_from(["lens", "--vcs", "git", "diff"]).unwrap();
-        assert_eq!(cli.vcs, Some(VcsOverride::Git));
-    }
-
-    #[test]
-    fn test_vcs_jj_parses() {
-        let cli = Cli::try_parse_from(["lens", "--vcs", "jj", "diff"]).unwrap();
-        assert_eq!(cli.vcs, Some(VcsOverride::Jj));
-    }
-
-    #[test]
-    fn test_vcs_not_specified() {
+    fn test_cli_parses_diff_command() {
         let cli = Cli::try_parse_from(["lens", "diff"]).unwrap();
-        assert_eq!(cli.vcs, None);
+        assert!(matches!(cli.command, Commands::Diff { .. }));
     }
 }
