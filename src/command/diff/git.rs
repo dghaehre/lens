@@ -144,8 +144,7 @@ pub fn load_file_diffs(options: &DiffOptions, backend: &dyn VcsBackend) -> Vec<F
             } else {
                 FileStatus::Modified
             };
-            let is_binary =
-                is_binary_content(&old_content) || is_binary_content(&new_content);
+            let is_binary = is_binary_content(&old_content) || is_binary_content(&new_content);
             FileDiff {
                 filename,
                 old_content,
@@ -204,8 +203,7 @@ pub fn load_pr_file_diffs(pr_info: &PrInfo) -> Result<Vec<FileDiff>, String> {
                 FileStatus::Modified
             };
 
-            let is_binary =
-                is_binary_content(&old_content) || is_binary_content(&new_content);
+            let is_binary = is_binary_content(&old_content) || is_binary_content(&new_content);
             FileDiff {
                 filename,
                 old_content,
@@ -304,8 +302,7 @@ pub fn load_single_commit_diffs(
                 FileStatus::Modified
             };
 
-            let is_binary =
-                is_binary_content(&old_content) || is_binary_content(&new_content);
+            let is_binary = is_binary_content(&old_content) || is_binary_content(&new_content);
             FileDiff {
                 filename,
                 old_content,
@@ -418,9 +415,11 @@ mod tests {
 
         let backend = crate::vcs::GitBackend::from_cwd().expect("should open repo");
         let options = super::super::DiffOptions {
-            reference: Some(crate::commit_reference::CommitReference::RangeToWorkingTree {
-                from: "HEAD~1".to_string(),
-            }),
+            reference: Some(
+                crate::commit_reference::CommitReference::RangeToWorkingTree {
+                    from: "HEAD~1".to_string(),
+                },
+            ),
             pr: None,
             file: None,
             watch: false,
@@ -456,7 +455,10 @@ mod tests {
         assert_eq!(base.new_content, "base modified\n");
 
         // committed.txt: old=empty (not in HEAD~1), new=fs content
-        let committed = diffs.iter().find(|d| d.filename == "committed.txt").unwrap();
+        let committed = diffs
+            .iter()
+            .find(|d| d.filename == "committed.txt")
+            .unwrap();
         assert_eq!(committed.old_content, "");
         assert_eq!(committed.new_content, "committed\n");
 

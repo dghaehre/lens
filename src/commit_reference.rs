@@ -4,11 +4,19 @@ use thiserror::Error;
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum CommitReference {
     Single(String),
-    Range { from: String, to: String },
-    TripleDots { from: String, to: String },
+    Range {
+        from: String,
+        to: String,
+    },
+    TripleDots {
+        from: String,
+        to: String,
+    },
     /// Range from a ref to the working tree (uncommitted changes included).
     /// Parsed from `<from>..-`.
-    RangeToWorkingTree { from: String },
+    RangeToWorkingTree {
+        from: String,
+    },
 }
 
 #[derive(Debug, Error)]

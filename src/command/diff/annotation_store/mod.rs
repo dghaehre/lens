@@ -103,7 +103,10 @@ impl Annotation {
     #[cfg(not(feature = "jj"))]
     pub fn format_time(&self) -> String {
         use std::time::UNIX_EPOCH;
-        let duration = self.created_at().duration_since(UNIX_EPOCH).unwrap_or_default();
+        let duration = self
+            .created_at()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
         let secs = duration.as_secs();
         let hours = (secs / 3600) % 24;
         let minutes = (secs / 60) % 60;
@@ -124,7 +127,11 @@ impl Annotation {
     pub fn line_range_display(&self) -> String {
         match &self.target {
             AnnotationTarget::File => String::new(),
-            AnnotationTarget::LineRange { start_line, end_line, .. } => {
+            AnnotationTarget::LineRange {
+                start_line,
+                end_line,
+                ..
+            } => {
                 if start_line == end_line {
                     format!("L{}", start_line)
                 } else {

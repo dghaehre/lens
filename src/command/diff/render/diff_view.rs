@@ -91,7 +91,10 @@ fn render_stacked_header(
         Span::styled(" ", spacer_style),
         Span::styled(&id_label, badge_style.fg(t.ui.footer_branch_fg)),
         Span::styled("  ", spacer_style),
-        Span::styled(&truncated_msg, Style::default().fg(t.ui.text_secondary).bg(bg)),
+        Span::styled(
+            &truncated_msg,
+            Style::default().fg(t.ui.text_secondary).bg(bg),
+        ),
     ];
 
     // Calculate widths for centering
@@ -482,7 +485,9 @@ const SELECTION_ALPHA: f32 = 0.4;
 fn blend_with_selection(base: Color) -> Color {
     match base {
         Color::Rgb(br, bg, bb) => {
-            let Color::Rgb(sr, sg, sb) = SELECTION_TINT else { return base };
+            let Color::Rgb(sr, sg, sb) = SELECTION_TINT else {
+                return base;
+            };
             let r = ((br as f32) * (1.0 - SELECTION_ALPHA) + (sr as f32) * SELECTION_ALPHA) as u8;
             let g = ((bg as f32) * (1.0 - SELECTION_ALPHA) + (sg as f32) * SELECTION_ALPHA) as u8;
             let b = ((bb as f32) * (1.0 - SELECTION_ALPHA) + (sb as f32) * SELECTION_ALPHA) as u8;
@@ -634,7 +639,11 @@ struct DiffLineStyle {
 }
 
 impl DiffLineStyle {
-    fn for_change_type(change_type: ChangeType, bg: Color, t: &crate::command::diff::theme::Theme) -> Self {
+    fn for_change_type(
+        change_type: ChangeType,
+        bg: Color,
+        t: &crate::command::diff::theme::Theme,
+    ) -> Self {
         match change_type {
             ChangeType::Equal => Self {
                 old_bg: Some(bg),
@@ -736,7 +745,13 @@ fn compute_ann_index_ranges(
 ) -> Vec<(usize, usize, DiffPanelFocus)> {
     let mut ranges = Vec::new();
     for ann in line_annotations {
-        if let AnnotationTarget::LineRange { panel, start_line, end_line, .. } = &ann.target {
+        if let AnnotationTarget::LineRange {
+            panel,
+            start_line,
+            end_line,
+            ..
+        } = &ann.target
+        {
             let mut first_idx: Option<usize> = None;
             let mut last_idx: Option<usize> = None;
             for (idx, dl) in side_by_side.iter().enumerate() {
@@ -786,7 +801,10 @@ fn make_indicator_span(
     };
     if line_selected {
         let ind_bg = indicator.style.bg.unwrap_or(bg);
-        Span::styled(indicator.content, indicator.style.bg(blend_with_selection(ind_bg)))
+        Span::styled(
+            indicator.content,
+            indicator.style.bg(blend_with_selection(ind_bg)),
+        )
     } else {
         indicator
     }
@@ -794,7 +812,10 @@ fn make_indicator_span(
 
 /// Total rendered height of file-level annotation overlays.
 fn file_annotation_height(annotations: &[&Annotation]) -> usize {
-    annotations.iter().map(|a| a.root().content.lines().count() + 2).sum()
+    annotations
+        .iter()
+        .map(|a| a.root().content.lines().count() + 2)
+        .sum()
 }
 
 /// Render annotation overlays at specified positions.
@@ -847,7 +868,8 @@ fn render_annotation_overlays(
         // For line-range annotations, show a gutter indicator connecting to the lines above.
         // Suppressed for new-panel annotations in side-by-side mode, where the indicator
         // is rendered on the shared border via buffer_mut() instead.
-        let has_gutter = !suppress_gutter && matches!(annotation.target, AnnotationTarget::LineRange { .. });
+        let has_gutter =
+            !suppress_gutter && matches!(annotation.target, AnnotationTarget::LineRange { .. });
 
         // Add top border — gutter indicator continues into the box
         if has_gutter {
@@ -863,7 +885,10 @@ fn render_annotation_overlays(
         }
 
         // Add content lines
-        for content_line in content_lines.iter().take(available_height.saturating_sub(2)) {
+        for content_line in content_lines
+            .iter()
+            .take(available_height.saturating_sub(2))
+        {
             let content_width_inner = border_width.saturating_sub(1);
             let padded_content = format!("{:<width$}", content_line, width = content_width_inner);
             if has_gutter {
@@ -1100,7 +1125,10 @@ pub fn render_diff(
         // Collect line-range annotations for this file (New panel only)
         let line_annotations: Vec<&Annotation> = annotations
             .iter()
-            .filter(|a| a.filename == diff.filename && matches!(a.target, AnnotationTarget::LineRange { .. }))
+            .filter(|a| {
+                a.filename == diff.filename
+                    && matches!(a.target, AnnotationTarget::LineRange { .. })
+            })
             .collect();
 
         let annotation_height = file_annotation_height(&file_annotations);
@@ -1144,14 +1172,15 @@ pub fn render_diff(
         let annotation_indicator_style = Style::default().fg(t.ui.highlight);
         let focus_style = Style::default().fg(t.ui.border_focused);
 
-        let row_target_width =
-            (main_area.width as usize).saturating_sub(2) + h_scroll as usize;
+        let row_target_width = (main_area.width as usize).saturating_sub(2) + h_scroll as usize;
 
         for (i, diff_line) in visible_lines.iter().enumerate() {
             let line_idx = scroll_usize + i;
-            let new_selection_range = get_selection_range_for_line(line_idx, DiffPanelFocus::New, selection);
+            let new_selection_range =
+                get_selection_range_for_line(line_idx, DiffPanelFocus::New, selection);
             let in_annotation = is_in_ann_range(line_idx, None, &ann_index_ranges);
-            let new_line_selected = new_selection_range.map_or(false, |(s, e)| s == 0 && e == usize::MAX);
+            let new_line_selected =
+                new_selection_range.map_or(false, |(s, e)| s == 0 && e == usize::MAX);
             let hunk_viewed = {
                 let h_idx = hunks.iter().rposition(|&h| h <= line_idx);
                 !matches!(diff_line.change_type, ChangeType::Equal)
@@ -1160,7 +1189,14 @@ pub fn render_diff(
 
             if let Some((num, text)) = &diff_line.new_line {
                 let mut spans: Vec<Span> = Vec::new();
-                spans.push(make_indicator_span(false, in_annotation, new_line_selected, bg, focus_style, annotation_indicator_style));
+                spans.push(make_indicator_span(
+                    false,
+                    in_annotation,
+                    new_line_selected,
+                    bg,
+                    focus_style,
+                    annotation_indicator_style,
+                ));
 
                 let prefix = format!("{:4} ", num);
                 let gutter_bg = t.diff.added_gutter_bg;
@@ -1171,9 +1207,7 @@ pub fn render_diff(
                 };
                 spans.push(Span::styled(
                     prefix,
-                    Style::default()
-                        .fg(t.diff.added_gutter_fg)
-                        .bg(gutter_bg),
+                    Style::default().fg(t.diff.added_gutter_fg).bg(gutter_bg),
                 ));
                 let matches = search_state.get_matches_for_line(line_idx, MatchPanel::New);
                 let line_bg = if hunk_viewed { bg } else { t.diff.added_bg };
@@ -1186,11 +1220,8 @@ pub fn render_diff(
                     Some(*num),
                     settings.tab_width,
                 );
-                let content_spans = apply_selection_to_spans(
-                    content_spans,
-                    new_selection_range,
-                    line_bg,
-                );
+                let content_spans =
+                    apply_selection_to_spans(content_spans, new_selection_range, line_bg);
                 spans.extend(content_spans);
                 let spans = pad_line_bg(spans, row_target_width, line_bg);
                 new_lines.push(Line::from(spans));
@@ -1198,7 +1229,10 @@ pub fn render_diff(
 
             // Check if this line is the end_line for any line-range annotation
             for annotation in &line_annotations {
-                if let AnnotationTarget::LineRange { panel, end_line, .. } = &annotation.target {
+                if let AnnotationTarget::LineRange {
+                    panel, end_line, ..
+                } = &annotation.target
+                {
                     if diff_line.line_number(*panel) == Some(*end_line) {
                         let num_ann_lines = annotation.root().content.lines().count() + 2;
                         let line_pos = new_lines.len();
@@ -1224,7 +1258,17 @@ pub fn render_diff(
         let content_x = main_area.x + 1;
         let content_start_y = main_area.y + 1;
         let content_width = main_area.width.saturating_sub(2);
-        render_annotation_overlays(frame, &annotation_overlays, content_x, content_start_y, content_width, main_area, bg, t, false);
+        render_annotation_overlays(
+            frame,
+            &annotation_overlays,
+            content_x,
+            content_start_y,
+            content_width,
+            main_area,
+            bg,
+            t,
+            false,
+        );
     } else if is_deleted_file {
         let visible_height = main_area.height.saturating_sub(2) as usize;
         let old_context = compute_context_lines(
@@ -1246,7 +1290,10 @@ pub fn render_diff(
         // Collect line-range annotations for this file (Old panel only)
         let line_annotations: Vec<&Annotation> = annotations
             .iter()
-            .filter(|a| a.filename == diff.filename && matches!(a.target, AnnotationTarget::LineRange { .. }))
+            .filter(|a| {
+                a.filename == diff.filename
+                    && matches!(a.target, AnnotationTarget::LineRange { .. })
+            })
             .collect();
 
         let annotation_height = file_annotation_height(&file_annotations);
@@ -1290,14 +1337,15 @@ pub fn render_diff(
         let annotation_indicator_style = Style::default().fg(t.ui.highlight);
         let focus_style = Style::default().fg(t.ui.border_focused);
 
-        let row_target_width =
-            (main_area.width as usize).saturating_sub(2) + h_scroll as usize;
+        let row_target_width = (main_area.width as usize).saturating_sub(2) + h_scroll as usize;
 
         for (i, diff_line) in visible_lines.iter().enumerate() {
             let line_idx = scroll_usize + i;
-            let old_selection_range = get_selection_range_for_line(line_idx, DiffPanelFocus::Old, selection);
+            let old_selection_range =
+                get_selection_range_for_line(line_idx, DiffPanelFocus::Old, selection);
             let in_annotation = is_in_ann_range(line_idx, None, &ann_index_ranges);
-            let old_line_selected = old_selection_range.map_or(false, |(s, e)| s == 0 && e == usize::MAX);
+            let old_line_selected =
+                old_selection_range.map_or(false, |(s, e)| s == 0 && e == usize::MAX);
             let hunk_viewed = {
                 let h_idx = hunks.iter().rposition(|&h| h <= line_idx);
                 !matches!(diff_line.change_type, ChangeType::Equal)
@@ -1306,7 +1354,14 @@ pub fn render_diff(
 
             if let Some((num, text)) = &diff_line.old_line {
                 let mut spans: Vec<Span> = Vec::new();
-                spans.push(make_indicator_span(false, in_annotation, old_line_selected, bg, focus_style, annotation_indicator_style));
+                spans.push(make_indicator_span(
+                    false,
+                    in_annotation,
+                    old_line_selected,
+                    bg,
+                    focus_style,
+                    annotation_indicator_style,
+                ));
 
                 let prefix = format!("{:4} ", num);
                 let gutter_bg = t.diff.deleted_gutter_bg;
@@ -1317,9 +1372,7 @@ pub fn render_diff(
                 };
                 spans.push(Span::styled(
                     prefix,
-                    Style::default()
-                        .fg(t.diff.deleted_gutter_fg)
-                        .bg(gutter_bg),
+                    Style::default().fg(t.diff.deleted_gutter_fg).bg(gutter_bg),
                 ));
                 let matches = search_state.get_matches_for_line(line_idx, MatchPanel::Old);
                 let line_bg = if hunk_viewed { bg } else { t.diff.deleted_bg };
@@ -1332,11 +1385,8 @@ pub fn render_diff(
                     Some(*num),
                     settings.tab_width,
                 );
-                let content_spans = apply_selection_to_spans(
-                    content_spans,
-                    old_selection_range,
-                    line_bg,
-                );
+                let content_spans =
+                    apply_selection_to_spans(content_spans, old_selection_range, line_bg);
                 spans.extend(content_spans);
                 let spans = pad_line_bg(spans, row_target_width, line_bg);
                 old_lines.push(Line::from(spans));
@@ -1344,7 +1394,10 @@ pub fn render_diff(
 
             // Check if this line is the end_line for any line-range annotation
             for annotation in &line_annotations {
-                if let AnnotationTarget::LineRange { panel, end_line, .. } = &annotation.target {
+                if let AnnotationTarget::LineRange {
+                    panel, end_line, ..
+                } = &annotation.target
+                {
                     if diff_line.line_number(*panel) == Some(*end_line) {
                         let num_ann_lines = annotation.root().content.lines().count() + 2;
                         let line_pos = old_lines.len();
@@ -1370,7 +1423,17 @@ pub fn render_diff(
         let content_x = main_area.x + 1;
         let content_start_y = main_area.y + 1;
         let content_width = main_area.width.saturating_sub(2);
-        render_annotation_overlays(frame, &annotation_overlays, content_x, content_start_y, content_width, main_area, bg, t, false);
+        render_annotation_overlays(
+            frame,
+            &annotation_overlays,
+            content_x,
+            content_start_y,
+            content_width,
+            main_area,
+            bg,
+            t,
+            false,
+        );
     } else {
         let (old_area, new_area) = match diff_fullscreen {
             DiffFullscreen::OldOnly => (Some(main_area), None),
@@ -1424,7 +1487,10 @@ pub fn render_diff(
         // Collect line-range annotations for this file
         let line_annotations: Vec<&Annotation> = annotations
             .iter()
-            .filter(|a| a.filename == diff.filename && matches!(a.target, AnnotationTarget::LineRange { .. }))
+            .filter(|a| {
+                a.filename == diff.filename
+                    && matches!(a.target, AnnotationTarget::LineRange { .. })
+            })
             .collect();
 
         let file_ann_height = file_annotation_height(&file_annotations);
@@ -1453,9 +1519,8 @@ pub fn render_diff(
             }
         }
 
-        let hunk_index_for_line = |line_idx: usize| -> Option<usize> {
-            hunks.iter().rposition(|&h| h <= line_idx)
-        };
+        let hunk_index_for_line =
+            |line_idx: usize| -> Option<usize> { hunks.iter().rposition(|&h| h <= line_idx) };
         let is_line_in_viewed_hunk = |line_idx: usize, change_type: ChangeType| -> bool {
             if matches!(change_type, ChangeType::Equal) {
                 return false;
@@ -1533,28 +1598,49 @@ pub fn render_diff(
                 }
             }
 
-            let old_selection_range = get_selection_range_for_line(line_idx, DiffPanelFocus::Old, selection);
-            let new_selection_range = get_selection_range_for_line(line_idx, DiffPanelFocus::New, selection);
+            let old_selection_range =
+                get_selection_range_for_line(line_idx, DiffPanelFocus::Old, selection);
+            let new_selection_range =
+                get_selection_range_for_line(line_idx, DiffPanelFocus::New, selection);
 
-            let old_in_annotation = is_in_ann_range(line_idx, Some(DiffPanelFocus::Old), &ann_index_ranges);
-            let new_in_annotation = is_in_ann_range(line_idx, Some(DiffPanelFocus::New), &ann_index_ranges);
+            let old_in_annotation =
+                is_in_ann_range(line_idx, Some(DiffPanelFocus::Old), &ann_index_ranges);
+            let new_in_annotation =
+                is_in_ann_range(line_idx, Some(DiffPanelFocus::New), &ann_index_ranges);
 
             if new_in_annotation {
                 border_marker_rows.push(rendered_row);
             }
             rendered_row += 1;
 
-            let old_line_selected = old_selection_range.map_or(false, |(s, e)| s == 0 && e == usize::MAX);
-            let new_line_selected = new_selection_range.map_or(false, |(s, e)| s == 0 && e == usize::MAX);
+            let old_line_selected =
+                old_selection_range.map_or(false, |(s, e)| s == 0 && e == usize::MAX);
+            let new_line_selected =
+                new_selection_range.map_or(false, |(s, e)| s == 0 && e == usize::MAX);
 
             if old_area.is_some() {
                 let mut old_spans: Vec<Span> = Vec::new();
-                old_spans.push(make_indicator_span(in_focused, old_in_annotation, old_line_selected, bg, focus_style, annotation_indicator_style));
+                old_spans.push(make_indicator_span(
+                    in_focused,
+                    old_in_annotation,
+                    old_line_selected,
+                    bg,
+                    focus_style,
+                    annotation_indicator_style,
+                ));
                 match &diff_line.old_line {
                     Some((num, _text)) => {
                         let prefix = format!("{:4} ", num);
                         let gutter_bg = style.old_gutter_bg.unwrap_or(Color::Reset);
-                        let gutter_bg = if old_line_selected { blend_with_selection(if gutter_bg == Color::Reset { bg } else { gutter_bg }) } else { gutter_bg };
+                        let gutter_bg = if old_line_selected {
+                            blend_with_selection(if gutter_bg == Color::Reset {
+                                bg
+                            } else {
+                                gutter_bg
+                            })
+                        } else {
+                            gutter_bg
+                        };
                         old_spans.push(Span::styled(
                             prefix,
                             Style::default()
@@ -1564,7 +1650,9 @@ pub fn render_diff(
                         let matches = search_state.get_matches_for_line(line_idx, MatchPanel::Old);
 
                         // Use word-level rendering for modified lines if segments are available
-                        let content_spans = if matches!(diff_line.change_type, ChangeType::Modified) && !hunk_viewed {
+                        let content_spans = if matches!(diff_line.change_type, ChangeType::Modified)
+                            && !hunk_viewed
+                        {
                             if let Some(ref segments) = diff_line.old_segments {
                                 let emphasis_ranges = segments_to_emphasis_ranges(segments);
                                 apply_word_emphasis_highlight(
@@ -1620,24 +1708,36 @@ pub fn render_diff(
                         ));
                     }
                 }
-                let old_spans = pad_line_bg(
-                    old_spans,
-                    old_row_target_width,
-                    style.old_bg.unwrap_or(bg),
-                );
+                let old_spans =
+                    pad_line_bg(old_spans, old_row_target_width, style.old_bg.unwrap_or(bg));
                 old_lines.push(Line::from(old_spans));
             }
 
             if new_area.is_some() {
                 let mut new_spans: Vec<Span> = Vec::new();
                 if old_area.is_none() {
-                    new_spans.push(make_indicator_span(in_focused, new_in_annotation, new_line_selected, bg, focus_style, annotation_indicator_style));
+                    new_spans.push(make_indicator_span(
+                        in_focused,
+                        new_in_annotation,
+                        new_line_selected,
+                        bg,
+                        focus_style,
+                        annotation_indicator_style,
+                    ));
                 }
                 match &diff_line.new_line {
                     Some((num, _text)) => {
                         let prefix = format!("{:4} ", num);
                         let gutter_bg = style.new_gutter_bg.unwrap_or(Color::Reset);
-                        let gutter_bg = if new_line_selected { blend_with_selection(if gutter_bg == Color::Reset { bg } else { gutter_bg }) } else { gutter_bg };
+                        let gutter_bg = if new_line_selected {
+                            blend_with_selection(if gutter_bg == Color::Reset {
+                                bg
+                            } else {
+                                gutter_bg
+                            })
+                        } else {
+                            gutter_bg
+                        };
                         new_spans.push(Span::styled(
                             prefix,
                             Style::default()
@@ -1647,7 +1747,9 @@ pub fn render_diff(
                         let matches = search_state.get_matches_for_line(line_idx, MatchPanel::New);
 
                         // Use word-level rendering for modified lines if segments are available
-                        let content_spans = if matches!(diff_line.change_type, ChangeType::Modified) && !hunk_viewed {
+                        let content_spans = if matches!(diff_line.change_type, ChangeType::Modified)
+                            && !hunk_viewed
+                        {
                             if let Some(ref segments) = diff_line.new_segments {
                                 let emphasis_ranges = segments_to_emphasis_ranges(segments);
                                 apply_word_emphasis_highlight(
@@ -1703,17 +1805,17 @@ pub fn render_diff(
                         ));
                     }
                 }
-                let new_spans = pad_line_bg(
-                    new_spans,
-                    new_row_target_width,
-                    style.new_bg.unwrap_or(bg),
-                );
+                let new_spans =
+                    pad_line_bg(new_spans, new_row_target_width, style.new_bg.unwrap_or(bg));
                 new_lines.push(Line::from(new_spans));
             }
 
             // Check if this line is the end_line for any line-range annotation
             for annotation in &line_annotations {
-                if let AnnotationTarget::LineRange { panel, end_line, .. } = &annotation.target {
+                if let AnnotationTarget::LineRange {
+                    panel, end_line, ..
+                } = &annotation.target
+                {
                     if diff_line.line_number(*panel) == Some(*end_line) {
                         let num_lines = annotation.root().content.lines().count() + 2;
 
@@ -1786,7 +1888,9 @@ pub fn render_diff(
             for &para_row in &border_marker_rows {
                 let screen_row = content_start + para_row as u16;
                 if screen_row < old_a.y + old_a.height - 1 {
-                    if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(border_x, screen_row)) {
+                    if let Some(cell) =
+                        buf.cell_mut(ratatui::layout::Position::new(border_x, screen_row))
+                    {
                         cell.set_fg(t.ui.highlight);
                         cell.set_char('▎');
                     }
@@ -1798,7 +1902,9 @@ pub fn render_diff(
         // spanning both panels for file-level annotations
         let is_side_by_side = old_area.is_some() && new_area.is_some();
         for &(line_pos, annotation) in &annotation_overlays {
-            let (overlay_x, overlay_width, overlay_start_y, suppress_gutter) = match &annotation.target {
+            let (overlay_x, overlay_width, overlay_start_y, suppress_gutter) = match &annotation
+                .target
+            {
                 AnnotationTarget::File => {
                     // File-level: span both panels
                     let render_area = old_area.or(new_area).unwrap_or(main_area);
@@ -1821,7 +1927,12 @@ pub fn render_diff(
                     // shared border (via buffer_mut) instead of an inline gutter indicator,
                     // so suppress the gutter in the overlay.
                     let suppress = is_new_panel && is_side_by_side;
-                    (area.x + 1, area.width.saturating_sub(2), area.y + 1, suppress)
+                    (
+                        area.x + 1,
+                        area.width.saturating_sub(2),
+                        area.y + 1,
+                        suppress,
+                    )
                 }
             };
             render_annotation_overlays(
@@ -1851,7 +1962,9 @@ pub fn render_diff(
                         for row_offset in 0..num_rows {
                             let screen_row = content_start + line_pos as u16 + row_offset as u16;
                             if screen_row < old_a.y + old_a.height - 1 {
-                                if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(border_x, screen_row)) {
+                                if let Some(cell) = buf
+                                    .cell_mut(ratatui::layout::Position::new(border_x, screen_row))
+                                {
                                     cell.set_fg(t.ui.highlight);
                                     cell.set_char('▎');
                                 }
@@ -1876,8 +1989,7 @@ pub fn render_diff(
             cell.set_fg(border_color);
         }
         if bottom_y > top_y {
-            if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(junction_x, bottom_y))
-            {
+            if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(junction_x, bottom_y)) {
                 cell.set_char('┴');
                 cell.set_fg(border_color);
             }

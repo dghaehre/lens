@@ -54,7 +54,12 @@ impl<'a> AnnotationEditor<'a> {
         }
     }
 
-    pub fn with_existing(mut self, id: AnnotationId, content: &str, created_at: SystemTime) -> Self {
+    pub fn with_existing(
+        mut self,
+        id: AnnotationId,
+        content: &str,
+        created_at: SystemTime,
+    ) -> Self {
         self.textarea = TextArea::new(content.lines().map(String::from).collect());
         self.id = Some(id);
         self.is_edit = true;
@@ -62,7 +67,8 @@ impl<'a> AnnotationEditor<'a> {
 
         let t = theme::get();
         self.textarea.set_cursor_line_style(Style::default());
-        self.textarea.set_cursor_style(Style::default().bg(t.ui.text_primary).fg(t.ui.bg));
+        self.textarea
+            .set_cursor_style(Style::default().bg(t.ui.text_primary).fg(t.ui.bg));
         self.textarea.set_block(Block::default());
 
         self.textarea.move_cursor(tui_textarea::CursorMove::Bottom);
@@ -104,7 +110,10 @@ impl<'a> AnnotationEditor<'a> {
             }
 
             KeyCode::Enter => {
-                if key.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL) {
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL)
+                {
                     self.textarea.insert_char('\n');
                     AnnotationEditorResult::Continue
                 } else {
@@ -156,15 +165,16 @@ impl<'a> AnnotationEditor<'a> {
 
         frame.render_widget(Clear, modal_area);
 
-        let short_filename = self
-            .filename
-            .rsplit('/')
-            .next()
-            .unwrap_or(&self.filename);
+        let short_filename = self.filename.rsplit('/').next().unwrap_or(&self.filename);
 
         let title = match &self.target {
             AnnotationTarget::File => format!(" {} [file] ", short_filename),
-            AnnotationTarget::LineRange { panel, start_line, end_line, .. } => {
+            AnnotationTarget::LineRange {
+                panel,
+                start_line,
+                end_line,
+                ..
+            } => {
                 let panel_label = match panel {
                     DiffPanelFocus::Old => "old",
                     DiffPanelFocus::New | DiffPanelFocus::None => "new",
@@ -172,7 +182,10 @@ impl<'a> AnnotationEditor<'a> {
                 if start_line == end_line {
                     format!(" {} · L{} [{}] ", short_filename, start_line, panel_label)
                 } else {
-                    format!(" {} · L{}-{} [{}] ", short_filename, start_line, end_line, panel_label)
+                    format!(
+                        " {} · L{}-{} [{}] ",
+                        short_filename, start_line, end_line, panel_label
+                    )
                 }
             }
         };

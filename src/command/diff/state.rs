@@ -1,16 +1,16 @@
 use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 
-use crate::command::diff::annotation_store::{
-    AnnotationStore, InMemoryStore, NewAnnotation,
+use crate::command::diff::annotation_store::{AnnotationStore, InMemoryStore, NewAnnotation};
+use crate::command::diff::diff_algo::{
+    compute_side_by_side, count_added_removed, find_hunk_starts,
 };
-use crate::command::diff::diff_algo::{compute_side_by_side, count_added_removed, find_hunk_starts};
 use crate::command::diff::highlight::FileHighlighter;
 
 use crate::command::diff::search::SearchState;
 use crate::command::diff::types::{
-    build_file_tree, CursorPosition, DiffFullscreen, DiffLine, DiffPanelFocus,
-    DiffViewSettings, FileDiff, FocusedPanel, Selection, SelectionMode, SidebarItem,
+    build_file_tree, CursorPosition, DiffFullscreen, DiffLine, DiffPanelFocus, DiffViewSettings,
+    FileDiff, FocusedPanel, Selection, SelectionMode, SidebarItem,
 };
 use crate::vcs::StackedCommitInfo;
 
@@ -448,7 +448,12 @@ impl AppState {
     }
 
     /// Start a new selection
-    pub fn start_selection(&mut self, panel: DiffPanelFocus, pos: CursorPosition, mode: SelectionMode) {
+    pub fn start_selection(
+        &mut self,
+        panel: DiffPanelFocus,
+        pos: CursorPosition,
+        mode: SelectionMode,
+    ) {
         self.diff_panel_focus = panel;
         self.selection = Selection {
             panel,
@@ -684,7 +689,11 @@ impl AppState {
         // so behavior matches the pre-refactor "annotations for vanished files
         // are gone" semantics. A persistent store may want to keep them around
         // and just hide them from the cache — that's a future call.
-        let filenames: HashSet<&str> = self.file_diffs.iter().map(|f| f.filename.as_str()).collect();
+        let filenames: HashSet<&str> = self
+            .file_diffs
+            .iter()
+            .map(|f| f.filename.as_str())
+            .collect();
         let to_delete: Vec<AnnotationId> = self
             .annotations
             .iter()
@@ -694,8 +703,10 @@ impl AppState {
         for id in &to_delete {
             let _ = self.store.delete(id);
         }
-        self.annotations.retain(|ann| filenames.contains(ann.filename.as_str()));
-        self.viewed_hunks.retain(|fname, _| filenames.contains(fname.as_str()));
+        self.annotations
+            .retain(|ann| filenames.contains(ann.filename.as_str()));
+        self.viewed_hunks
+            .retain(|fname, _| filenames.contains(fname.as_str()));
 
         // Convert viewed filenames back to indices in the new file_diffs
         self.viewed_files = self
@@ -772,7 +783,12 @@ impl AppState {
         content: String,
         created_at: SystemTime,
     ) -> Option<AnnotationId> {
-        let draft = NewAnnotation { filename, target, content, created_at };
+        let draft = NewAnnotation {
+            filename,
+            target,
+            content,
+            created_at,
+        };
         match self.store.create(draft) {
             Ok(annotation) => {
                 let id = annotation.id.clone();
@@ -821,7 +837,12 @@ impl AppState {
                 AnnotationTarget::File => {
                     result.push_str(&format!("**{}**\n\n", ann.filename));
                 }
-                AnnotationTarget::LineRange { panel, start_line, end_line, .. } => {
+                AnnotationTarget::LineRange {
+                    panel,
+                    start_line,
+                    end_line,
+                    ..
+                } => {
                     let side = match panel {
                         DiffPanelFocus::Old => "LEFT",
                         _ => "RIGHT",
@@ -959,7 +980,9 @@ mod tests {
 
         let state = AppState::new(diffs, Some("ccc.rs"));
 
-        if let Some(SidebarItem::File { file_index, .. }) = state.sidebar_item_at_visible(state.sidebar_selected) {
+        if let Some(SidebarItem::File { file_index, .. }) =
+            state.sidebar_item_at_visible(state.sidebar_selected)
+        {
             assert_eq!(*file_index, state.current_file);
         } else {
             panic!("sidebar_selected should point to a file");

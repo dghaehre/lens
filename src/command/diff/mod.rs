@@ -97,7 +97,10 @@ fn resolve_origin_repo() -> Result<String, String> {
     if parts.len() >= 2 {
         Ok(format!("{}/{}", parts[0], parts[1]))
     } else {
-        Err(format!("Could not parse owner/repo from origin URL: {}", url))
+        Err(format!(
+            "Could not parse owner/repo from origin URL: {}",
+            url
+        ))
     }
 }
 

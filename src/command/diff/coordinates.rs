@@ -61,7 +61,9 @@ impl PanelLayout {
                 let old_width = half_width.saturating_sub(border_width);
                 // New panel shares border with old panel
                 let new_x = diff_area_start + half_width;
-                let new_width = diff_area_width.saturating_sub(half_width).saturating_sub(border_width);
+                let new_width = diff_area_width
+                    .saturating_sub(half_width)
+                    .saturating_sub(border_width);
                 (old_x, old_width, new_x, new_width)
             }
         };
@@ -84,23 +86,35 @@ impl PanelLayout {
     pub fn panel_at_x(&self, x: u16) -> Option<DiffPanelFocus> {
         match self.diff_fullscreen {
             DiffFullscreen::OldOnly => {
-                if self.old_panel_width > 0 && x >= self.old_panel_x && x < self.old_panel_x + self.old_panel_width {
+                if self.old_panel_width > 0
+                    && x >= self.old_panel_x
+                    && x < self.old_panel_x + self.old_panel_width
+                {
                     Some(DiffPanelFocus::Old)
                 } else {
                     None
                 }
             }
             DiffFullscreen::NewOnly => {
-                if self.new_panel_width > 0 && x >= self.new_panel_x && x < self.new_panel_x + self.new_panel_width {
+                if self.new_panel_width > 0
+                    && x >= self.new_panel_x
+                    && x < self.new_panel_x + self.new_panel_width
+                {
                     Some(DiffPanelFocus::New)
                 } else {
                     None
                 }
             }
             DiffFullscreen::None => {
-                if self.old_panel_width > 0 && x >= self.old_panel_x && x < self.old_panel_x + self.old_panel_width {
+                if self.old_panel_width > 0
+                    && x >= self.old_panel_x
+                    && x < self.old_panel_x + self.old_panel_width
+                {
                     Some(DiffPanelFocus::Old)
-                } else if self.new_panel_width > 0 && x >= self.new_panel_x && x < self.new_panel_x + self.new_panel_width {
+                } else if self.new_panel_width > 0
+                    && x >= self.new_panel_x
+                    && x < self.new_panel_x + self.new_panel_width
+                {
                     Some(DiffPanelFocus::New)
                 } else {
                     None
