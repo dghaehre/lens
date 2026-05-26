@@ -1,5 +1,3 @@
-<p align="center"><img src="https://github.com/user-attachments/assets/896f9239-134a-4428-9bb5-50ea59cdb5c3" alt="lens" /></p>
-
 # lens
 
 A fast terminal diff viewer and code review TUI, written in Rust.
@@ -15,8 +13,6 @@ Review `git diff`, commits, branches, or GitHub PRs side-by-side without leaving
 - Annotate selections, hunks, or whole files
 - Watch mode and stacked-commit review
 - Works with Git repositories
-
-[![Demo](https://github.com/user-attachments/assets/dc425871-3826-4368-88d8-931b9403f0ec)](https://github.com/user-attachments/assets/70d07324-8394-423c-bbc3-9460ed84877b)
 
 ## Table of Contents
 - [Getting Started](#getting-started-)
@@ -49,8 +45,6 @@ cargo install lens
 
 ### Visual Diff Viewer
 
-Launch an interactive side-by-side diff viewer in your terminal:
-<img width="3456" height="2122" alt="image" src="https://github.com/user-attachments/assets/757e1187-1615-4e90-bee2-5a1f59ec0960" />
 
 ```bash
 # View uncommitted changes
