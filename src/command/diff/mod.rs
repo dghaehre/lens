@@ -1,5 +1,5 @@
 mod annotation;
-mod annotation_store;
+pub mod annotation_store;
 mod app;
 mod context;
 mod coordinates;
@@ -11,7 +11,7 @@ mod search;
 mod state;
 mod sticky_lines;
 pub mod theme;
-mod types;
+pub mod types;
 mod watcher;
 
 use std::io;

@@ -1,6 +1,6 @@
 use super::{
-    Annotation, AnnotationError, AnnotationId, AnnotationStore, Author, Capabilities, Comment,
-    NewAnnotation,
+    is_local_origin, Annotation, AnnotationError, AnnotationId, AnnotationStore, Author,
+    Capabilities, Comment, NewAnnotation, NewReply,
 };
 
 const STORE_ID: &str = "local";
@@ -9,15 +9,23 @@ const STORE_ID: &str = "local";
 /// as strings — stable only for the lifetime of this process.
 pub struct InMemoryStore {
     annotations: Vec<Annotation>,
-    next_id: u64,
+    next_annotation_id: u64,
+    next_comment_id: u64,
 }
 
 impl InMemoryStore {
     pub fn new() -> Self {
         Self {
             annotations: Vec::new(),
-            next_id: 0,
+            next_annotation_id: 0,
+            next_comment_id: 0,
         }
+    }
+
+    fn alloc_comment_id(&mut self) -> String {
+        let id = self.next_comment_id;
+        self.next_comment_id += 1;
+        id.to_string()
     }
 }
 
@@ -41,13 +49,16 @@ impl AnnotationStore for InMemoryStore {
     }
 
     fn create(&mut self, draft: NewAnnotation) -> Result<Annotation, AnnotationError> {
+        let native = self.next_annotation_id.to_string();
+        self.next_annotation_id += 1;
         let id = AnnotationId {
-            origin: STORE_ID.to_string(),
-            native: self.next_id.to_string(),
+            origin: draft.origin.clone(),
+            native,
         };
-        self.next_id += 1;
         let root = Comment {
-            author: Author::local(),
+            native_id: Some(self.alloc_comment_id()),
+            author: Author::for_origin(&draft.origin),
+            origin: draft.origin,
             content: draft.content,
             created_at: draft.created_at,
         };
@@ -63,10 +74,14 @@ impl AnnotationStore for InMemoryStore {
     }
 
     fn update(&mut self, id: &AnnotationId, content: String) -> Result<(), AnnotationError> {
-        if id.origin != STORE_ID {
+        if !is_local_origin(&id.origin) {
             return Err(AnnotationError::WrongOrigin);
         }
-        match self.annotations.iter_mut().find(|a| &a.id == id) {
+        match self
+            .annotations
+            .iter_mut()
+            .find(|a| a.id.native == id.native)
+        {
             Some(ann) => {
                 ann.root_mut().content = content;
                 Ok(())
@@ -75,12 +90,36 @@ impl AnnotationStore for InMemoryStore {
         }
     }
 
+    fn reply(
+        &mut self,
+        id: &AnnotationId,
+        reply: NewReply,
+    ) -> Result<Annotation, AnnotationError> {
+        if !is_local_origin(&id.origin) {
+            return Err(AnnotationError::WrongOrigin);
+        }
+        let comment_id = self.alloc_comment_id();
+        let ann = self
+            .annotations
+            .iter_mut()
+            .find(|a| a.id.native == id.native)
+            .ok_or(AnnotationError::NotFound)?;
+        ann.comments.push(Comment {
+            native_id: Some(comment_id),
+            author: Author::for_origin(&reply.origin),
+            origin: reply.origin,
+            content: reply.content,
+            created_at: reply.created_at,
+        });
+        Ok(ann.clone())
+    }
+
     fn delete(&mut self, id: &AnnotationId) -> Result<(), AnnotationError> {
-        if id.origin != STORE_ID {
+        if !is_local_origin(&id.origin) {
             return Err(AnnotationError::WrongOrigin);
         }
         let before = self.annotations.len();
-        self.annotations.retain(|a| &a.id != id);
+        self.annotations.retain(|a| a.id.native != id.native);
         if self.annotations.len() == before {
             Err(AnnotationError::NotFound)
         } else {

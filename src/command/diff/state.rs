@@ -954,6 +954,7 @@ impl AppState {
             filename,
             target,
             content,
+            origin: "ui".to_string(),
             created_at,
         };
         match self.store.create(draft) {

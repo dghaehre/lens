@@ -1,5 +1,5 @@
 use clap::Parser;
-use config::cli::Cli;
+use config::cli::{Cli, Command};
 use config::LensConfig;
 use error::LensError;
 use std::process;
@@ -21,24 +21,24 @@ async fn main() {
 async fn run() -> Result<(), LensError> {
     let cli = Cli::parse();
 
-    let config = match LensConfig::build(&cli) {
-        Ok(config) => config,
-        Err(e) => return Err(e),
-    };
+    let config = LensConfig::build(&cli)?;
 
-    // Discover the Git backend from the current directory.
     let cwd = std::env::current_dir()?;
     let backend = vcs::GitBackend::new(&cwd)?;
 
-    let options = command::diff::DiffOptions {
-        reference: cli.reference,
-        file: cli.file,
-        watch: cli.watch,
-        theme: cli.theme.or(config.theme.clone()),
-        stacked: cli.stacked,
-        focus: cli.focus,
-    };
-    command::diff::run_diff_ui(options, &backend)?;
-
-    Ok(())
+    match cli.command {
+        Some(Command::Annotation(cmd)) => command::annotation::run(cmd, &backend),
+        None => {
+            let options = command::diff::DiffOptions {
+                reference: cli.diff.reference,
+                file: cli.diff.file,
+                watch: cli.diff.watch,
+                theme: cli.diff.theme.or(config.theme.clone()),
+                stacked: cli.diff.stacked,
+                focus: cli.diff.focus,
+            };
+            command::diff::run_diff_ui(options, &backend)?;
+            Ok(())
+        }
+    }
 }

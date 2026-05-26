@@ -8,15 +8,27 @@ pub mod sqlite;
 pub use memory::InMemoryStore;
 pub use sqlite::SqliteStore;
 
-/// Identifier for an annotation backend (e.g., "local", "github:owner/repo#123").
+/// Identifier for an annotation backend (e.g., "ui", "cli", "agent",
+/// "github:owner/repo#123").
 pub type BackendId = String;
 
-/// Globally-unique annotation identifier composed of the backend origin and
+/// Origins that live in the local SQLite store. The store accepts updates,
+/// replies, and deletes for any id whose `origin` is in this set. The actual
+/// origin recorded against an annotation reflects who created its root
+/// comment ("ui" from the diff viewer, "cli"/"agent" from the CLI).
+pub const LOCAL_ORIGINS: &[&str] = &["ui", "cli", "agent"];
+
+pub fn is_local_origin(origin: &str) -> bool {
+    LOCAL_ORIGINS.iter().any(|o| *o == origin)
+}
+
+/// Globally-unique annotation identifier composed of the source origin and
 /// the backend's native ID.
 ///
-/// The composite shape exists so updates and deletes can be routed back to
-/// the specific store that owns the annotation, and so multiple stores can
-/// coexist without ID collisions.
+/// `origin` reflects the source of the annotation's root comment: "ui" for
+/// annotations created in the diff viewer, "cli" or "agent" for ones created
+/// via the CLI. Future remote origins (e.g., "github:owner/repo#123") will
+/// route to other stores.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AnnotationId {
     pub origin: BackendId,
@@ -44,11 +56,15 @@ pub struct Author {
 }
 
 impl Author {
-    /// The author used for comments originating in the local in-memory store.
-    /// Real backends (git config, GitHub, etc.) will supply richer identities.
-    pub fn local() -> Self {
+    /// Default author for a given origin string. Used when the caller hasn't
+    /// supplied a richer identity (e.g., git config name, GitHub login).
+    pub fn for_origin(origin: &str) -> Self {
+        let login = match origin {
+            "ui" => "you",
+            other => other,
+        };
         Self {
-            login: "you".to_string(),
+            login: login.to_string(),
             display_name: None,
         }
     }
@@ -57,8 +73,14 @@ impl Author {
 /// A single message inside an annotation thread.
 #[derive(Clone, Debug)]
 pub struct Comment {
+    /// Stable id of this individual comment within its store. Currently the
+    /// CLI only exposes annotation-level ids, but per-comment ids are useful
+    /// for replies, edits, and audit display.
+    pub native_id: Option<String>,
     #[allow(dead_code)] // surfaced by UI once threads gain author display
     pub author: Author,
+    /// Where this specific comment came from ("ui", "cli", "agent", ...).
+    pub origin: String,
     pub content: String,
     pub created_at: SystemTime,
 }
@@ -143,6 +165,16 @@ pub struct NewAnnotation {
     pub filename: String,
     pub target: AnnotationTarget,
     pub content: String,
+    /// Source of this annotation's root comment ("ui", "cli", "agent").
+    pub origin: String,
+    pub created_at: SystemTime,
+}
+
+/// A draft reply appended to an existing annotation thread.
+#[derive(Debug, Clone)]
+pub struct NewReply {
+    pub content: String,
+    pub origin: String,
     pub created_at: SystemTime,
 }
 
@@ -230,9 +262,17 @@ pub trait AnnotationStore {
     /// assigns the `AnnotationId`.
     fn create(&mut self, draft: NewAnnotation) -> Result<Annotation, AnnotationError>;
 
-    /// Update the root comment's content. Adding/editing replies will be a
-    /// separate trait method once the UI grows reply support.
+    /// Update the root comment's content. Editing replies is not yet
+    /// supported through this trait.
     fn update(&mut self, id: &AnnotationId, content: String) -> Result<(), AnnotationError>;
+
+    /// Append a reply to an existing annotation thread. Returns the
+    /// refreshed annotation including the new comment.
+    fn reply(
+        &mut self,
+        id: &AnnotationId,
+        reply: NewReply,
+    ) -> Result<Annotation, AnnotationError>;
 
     fn delete(&mut self, id: &AnnotationId) -> Result<(), AnnotationError>;
 }
