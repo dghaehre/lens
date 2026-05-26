@@ -6,6 +6,9 @@ use super::queries::*;
 // Elixir uses the bundled highlight queries from tree-sitter-elixir
 const ELIXIR_HIGHLIGHTS: &str = tree_sitter_elixir::HIGHLIGHTS_QUERY;
 
+// Swift uses the bundled highlight queries from tree-sitter-swift
+const SWIFT_HIGHLIGHTS: &str = tree_sitter_swift::HIGHLIGHTS_QUERY;
+
 pub const HIGHLIGHT_NAMES: &[&str] = &[
     "attribute",
     "comment",
@@ -219,6 +222,14 @@ pub static CONFIGS: Lazy<Vec<(&'static str, LanguageConfig)>> = Lazy::new(|| {
         "zig",
         ZIG_HIGHLIGHTS,
         "zig",
+        &mut configs,
+    );
+
+    load_config(
+        tree_sitter_swift::LANGUAGE.into(),
+        "swift",
+        SWIFT_HIGHLIGHTS,
+        "swift",
         &mut configs,
     );
 
