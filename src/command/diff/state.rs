@@ -174,7 +174,18 @@ fn compute_total_line_stats(file_diffs: &[FileDiff]) -> (usize, usize) {
 }
 
 impl AppState {
+    /// In-memory-store constructor; kept for tests. Production code uses
+    /// `with_store` to inject a persistent backend.
+    #[allow(dead_code)]
     pub fn new(file_diffs: Vec<FileDiff>, focus_file: Option<&str>) -> Self {
+        Self::with_store(file_diffs, focus_file, Box::new(InMemoryStore::new()))
+    }
+
+    pub fn with_store(
+        file_diffs: Vec<FileDiff>,
+        focus_file: Option<&str>,
+        store: Box<dyn AnnotationStore>,
+    ) -> Self {
         let sidebar_items = build_file_tree(&file_diffs);
         let collapsed_dirs = HashSet::new();
         let sidebar_visible = build_sidebar_visible_indices(&sidebar_items, &collapsed_dirs);
@@ -214,7 +225,7 @@ impl AppState {
             (0, None)
         };
 
-        Self {
+        let mut state = Self {
             file_diffs,
             sidebar_items,
             sidebar_visible,
@@ -236,7 +247,7 @@ impl AppState {
             needs_reload: false,
             focused_hunk,
             annotations: Vec::new(),
-            store: Box::new(InMemoryStore::new()),
+            store,
             stacked_mode: false,
             stacked_commits: Vec::new(),
             current_commit_index: 0,
@@ -256,6 +267,23 @@ impl AppState {
             annotation_overlay_gaps: Vec::new(),
             total_added,
             total_removed,
+        };
+        state.load_annotations_for_current_files();
+        state
+    }
+
+    /// Repopulate `self.annotations` from the backing store, filtered to files
+    /// present in the current diff. Errors from the store are swallowed —
+    /// the cache simply stays empty if the store can't be read.
+    fn load_annotations_for_current_files(&mut self) {
+        let filenames: Vec<String> = self
+            .file_diffs
+            .iter()
+            .map(|f| f.filename.clone())
+            .collect();
+        match self.store.list_for_files(&filenames) {
+            Ok(list) => self.annotations = list,
+            Err(_) => self.annotations.clear(),
         }
     }
 
@@ -805,26 +833,15 @@ impl AppState {
         self.total_removed = total_removed;
         self.sidebar_items = build_file_tree(&self.file_diffs);
 
-        // Retain annotations whose file still exists. Drop from the store too
-        // so behavior matches the pre-refactor "annotations for vanished files
-        // are gone" semantics. A persistent store may want to keep them around
-        // and just hide them from the cache — that's a future call.
+        // Repopulate annotations from the store for the new file set.
+        // Annotations for files no longer in the diff remain in persistent
+        // storage but are dropped from the cache.
+        self.load_annotations_for_current_files();
         let filenames: HashSet<&str> = self
             .file_diffs
             .iter()
             .map(|f| f.filename.as_str())
             .collect();
-        let to_delete: Vec<AnnotationId> = self
-            .annotations
-            .iter()
-            .filter(|ann| !filenames.contains(ann.filename.as_str()))
-            .map(|ann| ann.id.clone())
-            .collect();
-        for id in &to_delete {
-            let _ = self.store.delete(id);
-        }
-        self.annotations
-            .retain(|ann| filenames.contains(ann.filename.as_str()));
         self.viewed_hunks
             .retain(|fname, _| filenames.contains(fname.as_str()));
 
@@ -892,6 +909,36 @@ impl AppState {
             .iter()
             .filter(|a| a.filename == filename)
             .collect()
+    }
+
+    /// Whether this annotation's anchor still exists in the current diff.
+    ///
+    /// File-targeted annotations are orphaned only if the file is no longer
+    /// in the diff. Line-range annotations are orphaned if the file is gone
+    /// or if the saved line range falls outside the relevant panel's content.
+    pub fn is_annotation_orphaned(&self, ann: &Annotation) -> bool {
+        let Some(file_diff) = self
+            .file_diffs
+            .iter()
+            .find(|f| f.filename == ann.filename)
+        else {
+            return true;
+        };
+        match &ann.target {
+            AnnotationTarget::File => false,
+            AnnotationTarget::LineRange {
+                panel,
+                start_line,
+                end_line,
+            } => {
+                let content = match panel {
+                    DiffPanelFocus::Old => &file_diff.old_content,
+                    _ => &file_diff.new_content,
+                };
+                let line_count = content.lines().count();
+                *start_line == 0 || *end_line == 0 || *end_line > line_count
+            }
+        }
     }
 
     /// Add a new annotation. Returns the assigned `AnnotationId` on success,

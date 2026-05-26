@@ -3,8 +3,10 @@ use std::time::SystemTime;
 use super::types::DiffPanelFocus;
 
 pub mod memory;
+pub mod sqlite;
 
 pub use memory::InMemoryStore;
+pub use sqlite::SqliteStore;
 
 /// Identifier for an annotation backend (e.g., "local", "github:owner/repo#123").
 pub type BackendId = String;
@@ -210,6 +212,19 @@ pub trait AnnotationStore {
     fn capabilities(&self) -> Capabilities;
 
     fn list(&self) -> Result<Vec<Annotation>, AnnotationError>;
+
+    /// List annotations whose `filename` is in `filenames`. Default impl
+    /// post-filters `list()`; SQL-backed stores should override with an
+    /// indexed `WHERE filename IN (...)` query.
+    fn list_for_files(&self, filenames: &[String]) -> Result<Vec<Annotation>, AnnotationError> {
+        use std::collections::HashSet;
+        let set: HashSet<&str> = filenames.iter().map(|s| s.as_str()).collect();
+        Ok(self
+            .list()?
+            .into_iter()
+            .filter(|a| set.contains(a.filename.as_str()))
+            .collect())
+    }
 
     /// Create a new annotation thread with a single root comment. The store
     /// assigns the `AnnotationId`.

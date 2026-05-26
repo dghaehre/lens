@@ -12,6 +12,7 @@ use crossterm::{
 use ratatui::prelude::*;
 
 use super::annotation::{AnnotationEditor, AnnotationEditorResult};
+use super::annotation_store::{AnnotationStore, InMemoryStore, SqliteStore};
 use super::coordinates::{extract_selected_text, PanelLayout};
 use super::highlight;
 use super::loader::{
@@ -213,7 +214,7 @@ fn alternate_diff_panel(panel: DiffPanelFocus) -> DiffPanelFocus {
 }
 
 /// Format an annotation for display in the annotations list.
-fn format_annotation_preview(annotation: &super::state::Annotation) -> String {
+fn format_annotation_preview(annotation: &super::state::Annotation, orphaned: bool) -> String {
     let preview = annotation.root().content.lines().next().unwrap_or("");
     let preview = if preview.len() > 40 {
         format!("{}...", &preview[..40])
@@ -223,24 +224,55 @@ fn format_annotation_preview(annotation: &super::state::Annotation) -> String {
     let truncated_filename = truncate_path(&annotation.filename, 30);
     let line_display = annotation.line_range_display();
     let label = annotation.target_label();
+    let orphan_tag = if orphaned { " (orphaned)" } else { "" };
     if line_display.is_empty() {
         format!(
-            "{} [{}] | {} | {}",
+            "{} [{}]{} | {} | {}",
             truncated_filename,
             label,
+            orphan_tag,
             preview,
             annotation.format_time()
         )
     } else {
         format!(
-            "{}:{} [{}] | {} | {}",
+            "{}:{} [{}]{} | {} | {}",
             truncated_filename,
             line_display,
             label,
+            orphan_tag,
             preview,
             annotation.format_time()
         )
     }
+}
+
+/// Build the items + annotations vectors for the `I` (all-annotations) modal.
+/// Active annotations come first, orphaned (anchor missing) ones after, so
+/// the user can act on stale entries from one list.
+fn build_annotation_list(state: &AppState) -> (Vec<String>, Vec<super::state::Annotation>) {
+    let mut active: Vec<&super::state::Annotation> = Vec::new();
+    let mut orphaned: Vec<&super::state::Annotation> = Vec::new();
+    for ann in &state.annotations {
+        if state.is_annotation_orphaned(ann) {
+            orphaned.push(ann);
+        } else {
+            active.push(ann);
+        }
+    }
+    let mut items: Vec<String> = active
+        .iter()
+        .map(|a| format_annotation_preview(a, false))
+        .collect();
+    items.extend(
+        orphaned
+            .iter()
+            .map(|a| format_annotation_preview(a, true)),
+    );
+    let mut annotations: Vec<super::state::Annotation> =
+        active.into_iter().cloned().collect();
+    annotations.extend(orphaned.into_iter().cloned());
+    (items, annotations)
 }
 
 pub fn run_app_with_pr(
@@ -318,8 +350,22 @@ fn run_app_internal(
     theme::init(options.theme.as_deref());
     highlight::init();
 
-    // Initialize state before TUI so we can sync viewed files
-    let mut state = AppState::new(file_diffs, options.focus.as_deref());
+    // Initialize state before TUI so we can sync viewed files. Annotations
+    // persist in `<git_dir>/lens.db`; fall back to in-memory if SQLite open
+    // fails so the TUI still works.
+    let db_path = backend.git_dir().join("lens.db");
+    let store: Box<dyn AnnotationStore> = match SqliteStore::open(&db_path) {
+        Ok(s) => Box::new(s),
+        Err(e) => {
+            eprintln!(
+                "\x1b[93mwarning:\x1b[0m could not open annotation DB at {}: {} \u{2014} annotations will not persist this session",
+                db_path.display(),
+                e
+            );
+            Box::new(InMemoryStore::new())
+        }
+    };
+    let mut state = AppState::with_store(file_diffs, options.focus.as_deref(), store);
 
     // Set diff reference for annotation export context
     let diff_ref_str = if let Some(pr) = &pr_info {
@@ -767,16 +813,11 @@ fn run_app_internal(
                                     state.remove_annotation(&annotation_id);
                                     // Refresh the modal if there are still annotations
                                     if !state.annotations.is_empty() {
-                                        let mut sorted_annotations = state.annotations.clone();
-                                        sorted_annotations.sort_by_key(|a| a.created_at());
-                                        let items: Vec<String> = sorted_annotations
-                                            .iter()
-                                            .map(format_annotation_preview)
-                                            .collect();
+                                        let (items, annotations) = build_annotation_list(&state);
                                         active_modal = Some(Modal::annotations(
                                             "Annotations",
                                             items,
-                                            sorted_annotations,
+                                            annotations,
                                         ));
                                     } else {
                                         active_modal = None;
@@ -1796,16 +1837,11 @@ fn run_app_internal(
                         KeyCode::Char('I') => {
                             // Open annotations menu
                             if !state.annotations.is_empty() {
-                                let mut sorted_annotations = state.annotations.clone();
-                                sorted_annotations.sort_by_key(|a| a.created_at());
-                                let items: Vec<String> = sorted_annotations
-                                    .iter()
-                                    .map(format_annotation_preview)
-                                    .collect();
+                                let (items, annotations) = build_annotation_list(&state);
                                 active_modal = Some(Modal::annotations(
                                     "Annotations",
                                     items,
-                                    sorted_annotations,
+                                    annotations,
                                 ));
                             }
                         }

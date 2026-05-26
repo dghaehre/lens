@@ -149,6 +149,12 @@ impl GitBackend {
         Self::new(Path::new("."))
     }
 
+    /// Path to the repository's `.git` directory (the gitdir, not the
+    /// worktree). Useful for siting per-repo state files such as `lens.db`.
+    pub fn git_dir(&self) -> &Path {
+        self.repo.path()
+    }
+
     /// Validate that a reference doesn't look like a flag (defense in depth).
     fn validate_ref_format(reference: &str) -> Result<(), VcsError> {
         if reference.trim().starts_with('-') {
