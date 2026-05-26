@@ -242,7 +242,7 @@ impl JjBackend {
         let mut diff_output = String::new();
 
         // Use the tree diff stream to iterate over changes.
-        // Note: We use pollster::block_on() because lumen is a single-threaded CLI tool
+        // Note: We use pollster::block_on() because lens is a single-threaded CLI tool
         // that doesn't need async concurrency. jj-lib's async APIs are primarily for
         // I/O operations that complete quickly in our use case.
         let diff_stream = parent_tree.diff_stream(&commit_tree, &EverythingMatcher);

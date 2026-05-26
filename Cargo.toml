@@ -1,12 +1,12 @@
 [package]
-name = "lumen"
+name = "lens"
 version = "2.24.0"
 edition = "2021"
 license = "MIT"
-description = "lumen is an interactive side-by-side git diff viewer for the terminal."
+description = "lens is an interactive side-by-side git diff viewer for the terminal."
 keywords = ["cli", "terminal", "diff", "git", "review"]
 categories = ["command-line-interface", "command-line-utilities"]
-repository = "https://github.com/jnsahaj/lumen"
+repository = "https://github.com/dghaehre/lens"
 
 [dependencies]
 clap = { version = "4.4", features = ["derive", "env"] }

@@ -1,7 +1,7 @@
 use clap::Parser;
 use config::cli::{Cli, Commands};
-use config::LumenConfig;
-use error::LumenError;
+use config::LensConfig;
+use error::LensError;
 use std::process;
 use vcs::VcsBackendType;
 
@@ -19,10 +19,10 @@ async fn main() {
     }
 }
 
-async fn run() -> Result<(), LumenError> {
+async fn run() -> Result<(), LensError> {
     let cli = Cli::parse();
 
-    let config = match LumenConfig::build(&cli) {
+    let config = match LensConfig::build(&cli) {
         Ok(config) => config,
         Err(e) => return Err(e),
     };

@@ -12,11 +12,11 @@ pub enum VcsOverride {
 }
 
 #[derive(Parser)]
-#[command(name = "lumen")]
+#[command(name = "lens")]
 #[command(about = "Interactive side-by-side git diff viewer", long_about = None)]
 #[command(version)]
 pub struct Cli {
-    /// Path to configuration file eg: ./path/to/lumen.config.json
+    /// Path to configuration file eg: ./path/to/lens.config.json
     #[arg(long)]
     pub config: Option<String>,
 
@@ -73,19 +73,19 @@ mod tests {
 
     #[test]
     fn test_vcs_git_parses() {
-        let cli = Cli::try_parse_from(["lumen", "--vcs", "git", "diff"]).unwrap();
+        let cli = Cli::try_parse_from(["lens", "--vcs", "git", "diff"]).unwrap();
         assert_eq!(cli.vcs, Some(VcsOverride::Git));
     }
 
     #[test]
     fn test_vcs_jj_parses() {
-        let cli = Cli::try_parse_from(["lumen", "--vcs", "jj", "diff"]).unwrap();
+        let cli = Cli::try_parse_from(["lens", "--vcs", "jj", "diff"]).unwrap();
         assert_eq!(cli.vcs, Some(VcsOverride::Jj));
     }
 
     #[test]
     fn test_vcs_not_specified() {
-        let cli = Cli::try_parse_from(["lumen", "diff"]).unwrap();
+        let cli = Cli::try_parse_from(["lens", "diff"]).unwrap();
         assert_eq!(cli.vcs, None);
     }
 }

@@ -1,4 +1,4 @@
 pub mod cli;
 pub mod configuration;
 
-pub use configuration::LumenConfig;
+pub use configuration::LensConfig;

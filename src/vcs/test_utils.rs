@@ -9,7 +9,7 @@ use std::process::Command;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use git2::{Repository, Signature};
+use git2::{Repository, RepositoryInitOptions, Signature};
 
 /// Global lock for tests that change the current working directory.
 /// Prevents concurrent tests from interfering with each other.
@@ -40,7 +40,9 @@ pub fn git(dir: &Path, args: &[&str]) {
 
     match args[0] {
         "init" => {
-            Repository::init(dir).expect("failed to init repo");
+            let mut opts = RepositoryInitOptions::new();
+            opts.initial_head("main");
+            Repository::init_opts(dir, &opts).expect("failed to init repo");
         }
         "config" if args.len() >= 3 => {
             let repo = Repository::open(dir).expect("failed to open repo");
@@ -152,10 +154,12 @@ impl RepoGuard {
             Err(poisoned) => poisoned.into_inner(),
         };
         let original = env::current_dir().expect("failed to get cwd");
-        let dir = make_temp_dir("lumen-test");
+        let dir = make_temp_dir("lens-test");
 
         // Initialize repo with git2
-        let repo = Repository::init(&dir).expect("failed to init repo");
+        let mut opts = RepositoryInitOptions::new();
+        opts.initial_head("main");
+        let repo = Repository::init_opts(&dir, &opts).expect("failed to init repo");
 
         // Set config
         let mut config = repo.config().expect("failed to get config");
@@ -190,9 +194,6 @@ impl RepoGuard {
             &[], // No parents for initial commit
         )
         .expect("failed to create commit");
-
-        // Need to also set up main branch ref (git2 doesn't auto-create it on first commit like CLI)
-        // The commit above should have already created HEAD pointing to the commit
 
         env::set_current_dir(&dir).expect("failed to set cwd");
 
@@ -231,7 +232,7 @@ impl JjRepoGuard {
             Err(poisoned) => poisoned.into_inner(),
         };
         let original = env::current_dir().expect("failed to get cwd");
-        let dir = make_temp_dir("lumen-jj-test");
+        let dir = make_temp_dir("lens-jj-test");
 
         // Initialize jj repo using CLI (for test setup only)
         if !jj(&dir, &["git", "init"]) {

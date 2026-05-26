@@ -1,30 +1,22 @@
-<p align="center"><img src="https://github.com/user-attachments/assets/896f9239-134a-4428-9bb5-50ea59cdb5c3" alt="lumen" /></p>
+<p align="center"><img src="https://github.com/user-attachments/assets/896f9239-134a-4428-9bb5-50ea59cdb5c3" alt="lens" /></p>
 
-# lumen
+# lens
 
 A fast terminal diff viewer and code review TUI, written in Rust.
 
-[![Crates.io Total Downloads](https://img.shields.io/crates/d/lumen?label=downloads%20%40crates.io)](https://crates.io/crates/lumen)
-[![GitHub Releases](https://img.shields.io/github/downloads/jnsahaj/lumen/total?label=dowloads%20%40releases)](https://github.com/jnsahaj/lumen/releases)
-![GitHub License](https://img.shields.io/github/license/jnsahaj/lumen)
-![Crates.io Size](https://img.shields.io/crates/size/lumen)
+[![GitHub Releases](https://img.shields.io/github/downloads/dghaehre/lens/total?label=dowloads%20%40releases)](https://github.com/jnsahaj/lens/releases)
+![GitHub License](https://img.shields.io/github/license/dghaehre/lens)
+![Crates.io Size](https://img.shields.io/crates/size/lens)
 
 Review `git diff`, commits, branches, or GitHub PRs side-by-side without leaving your terminal. Ships as a single static Rust binary and stays snappy on multi-thousand-line diffs.
 
 - Side-by-side diff viewer with tree-sitter syntax highlighting
-- Review GitHub Pull Requests with `lumen diff --pr 123`
+- Review GitHub Pull Requests with `lens diff --pr 123`
 - Annotate selections, hunks, or whole files
 - Watch mode and stacked-commit review
 - Works with Git and Jujutsu (jj)
 
 [![Demo](https://github.com/user-attachments/assets/dc425871-3826-4368-88d8-931b9403f0ec)](https://github.com/user-attachments/assets/70d07324-8394-423c-bbc3-9460ed84877b)
-
-## Special Thanks
-<div align="center">
-  <a href="https://coderabbit.link/lumen-oss">
-    <img width="2152" height="313" alt="image" src="https://github.com/user-attachments/assets/a2039a9d-5c9c-4a8e-a063-753c319f2e20" />
-  </a>
-</div>
 
 ## Table of Contents
 - [Getting Started](#getting-started-)
@@ -44,18 +36,13 @@ Before you begin, ensure you have:
 
 ### Installation
 
-#### Using Homebrew (MacOS and Linux)
-```bash
-brew install jnsahaj/lumen/lumen
-```
-
 #### Using Cargo
 > [!IMPORTANT]
 > `cargo` is a package manager for `rust`,
 > and is installed automatically when you install `rust`.
 > See [installation guide](https://doc.rust-lang.org/cargo/getting-started/installation.html)
 ```bash
-cargo install lumen
+cargo install lens
 ```
 
 ## Usage 🔅
@@ -67,29 +54,29 @@ Launch an interactive side-by-side diff viewer in your terminal:
 
 ```bash
 # View uncommitted changes
-lumen diff
+lens diff
 
 # View changes for a specific commit
-lumen diff HEAD~1
+lens diff HEAD~1
 
 # View changes between branches
-lumen diff main..feature/A
+lens diff main..feature/A
 
 # View changes in a GitHub Pull Request
-lumen diff --pr 123 # (--pr is optional)
-lumen diff https://github.com/owner/repo/pull/123
+lens diff --pr 123 # (--pr is optional)
+lens diff https://github.com/owner/repo/pull/123
 
 # Filter to specific files
-lumen diff --file src/main.rs --file src/lib.rs
+lens diff --file src/main.rs --file src/lib.rs
 
 # Watch mode - auto-refresh on file changes
-lumen diff --watch
+lens diff --watch
 
 # Stacked mode - review commits one by one
-lumen diff main..feature --stacked
+lens diff main..feature --stacked
 
 # Jump to a specific file on open
-lumen diff --focus src/main.rs
+lens diff --focus src/main.rs
 ```
 
 #### Stacked Diff Mode
@@ -97,8 +84,8 @@ lumen diff --focus src/main.rs
 Review a range of commits one at a time with `--stacked`:
 
 ```bash
-lumen diff main..feature --stacked
-lumen diff HEAD~5..HEAD --stacked
+lens diff main..feature --stacked
+lens diff HEAD~5..HEAD --stacked
 ```
 
 This displays each commit individually, letting you navigate through them:
@@ -115,12 +102,12 @@ Customize the diff viewer colors with preset themes:
 
 ```bash
 # Using CLI flag
-lumen diff --theme dracula
+lens diff --theme dracula
 
 # Using environment variable
-LUMEN_THEME=catppuccin-mocha lumen diff
+LENS_THEME=catppuccin-mocha lens diff
 
-# Or set permanently in config file (~/.config/lumen/lumen.config.json)
+# Or set permanently in config file (~/.config/lens/lens.config.json)
 {
   "theme": "dracula"
 }
@@ -137,7 +124,7 @@ LUMEN_THEME=catppuccin-mocha lumen diff
 | Gruvbox | `gruvbox-dark`, `gruvbox-light` |
 | Solarized | `solarized-dark`, `solarized-light` |
 
-Priority: CLI flag > config file > `LUMEN_THEME` env var > OS auto-detect.
+Priority: CLI flag > config file > `LENS_THEME` env var > OS auto-detect.
 
 #### Selection & Annotations
 
@@ -166,19 +153,19 @@ Annotated lines display a `▍` gutter indicator. Use `I` to view, edit, delete,
 ## Advanced Configuration 🔅
 
 ### Configuration File
-Lumen supports configuration through a JSON file. You can place the configuration file in one of the following locations:
+Lens supports configuration through a JSON file. You can place the configuration file in one of the following locations:
 
-1. Project Root: Create a lumen.config.json file in your project's root directory.
+1. Project Root: Create a lens.config.json file in your project's root directory.
 2. Custom Path: Specify a custom path using the --config CLI option.
-3. Global Configuration (Optional): Place a lumen.config.json file in your system's default configuration directory:
-    - Linux/macOS: `~/.config/lumen/lumen.config.json`
-    - Windows: `%USERPROFILE%\.config\lumen\lumen.config.json`
+3. Global Configuration (Optional): Place a lens.config.json file in your system's default configuration directory:
+    - Linux/macOS: `~/.config/lens/lens.config.json`
+    - Windows: `%USERPROFILE%\.config\lens\lens.config.json`
 
-Lumen will load configurations in the following order of priority:
+Lens will load configurations in the following order of priority:
 
 1. CLI arguments (highest priority)
 2. Configuration file specified by --config
-3. Project root lumen.config.json
+3. Project root lens.config.json
 4. Global configuration file (lowest priority)
 
 ```json
@@ -195,8 +182,8 @@ Options are applied in the following order (highest to lowest priority):
 4. Default options
 ## Contributors
 
-<a href="https://github.com/jnsahaj/lumen/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=jnsahaj/lumen" />
+<a href="https://github.com/dghaehre/lens/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=dghaehre/lens" />
 </a>
 
 Made with [contrib.rocks](https://contrib.rocks).
@@ -208,10 +195,10 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 # Star History
 
 <p align="center">
-  <a target="_blank" href="https://star-history.com/#jnsahaj/lumen&Date">
+  <a target="_blank" href="https://star-history.com/#dghaehre/lens&Date">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=jnsahaj/lumen&type=Date&theme=dark">
-      <img alt="GitHub Star History for jnsahaj/lumen" src="https://api.star-history.com/svg?repos=jnsahaj/lumen&type=Date">
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=jnsahaj/lens&type=Date&theme=dark">
+      <img alt="GitHub Star History for jnsahaj/lens" src="https://api.star-history.com/svg?repos=jnsahaj/lens&type=Date">
     </picture>
   </a>
 </p>
