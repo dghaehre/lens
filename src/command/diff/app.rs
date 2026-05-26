@@ -15,10 +15,10 @@ use ratatui::prelude::*;
 
 use super::annotation::{AnnotationEditor, AnnotationEditorResult};
 use super::coordinates::{extract_selected_text, PanelLayout};
+use super::highlight;
 use super::loader::{
     get_current_branch, load_file_diffs, load_pr_file_diffs, load_single_commit_diffs,
 };
-use super::highlight;
 use super::render::{
     render_diff, render_empty_state, truncate_path, FilePickerItem, KeyBind, KeyBindSection, Modal,
     ModalContent, ModalFileStatus, ModalResult,

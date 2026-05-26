@@ -86,11 +86,8 @@ fn render_stacked_header(
     ];
 
     // Calculate widths for centering
-    let center_width: usize = nav_indicator.len()
-        + 1
-        + id_label.len()
-        + 2
-        + truncated_msg.chars().count();
+    let center_width: usize =
+        nav_indicator.len() + 1 + id_label.len() + 2 + truncated_msg.chars().count();
     // " ‹ " + " ctrl+h " = 12 chars, same for right side
     let side_width = 12;
 
