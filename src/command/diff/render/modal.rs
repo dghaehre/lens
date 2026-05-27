@@ -87,6 +87,9 @@ pub enum ModalResult {
     AnnotationEdit {
         annotation_id: AnnotationId,
     },
+    AnnotationReply {
+        annotation_id: AnnotationId,
+    },
     AnnotationDelete {
         annotation_id: AnnotationId,
     },
@@ -720,6 +723,9 @@ impl Modal {
                 Span::styled("e", Style::default().fg(t.ui.text_muted)),
                 Span::styled(" edit  ", Style::default().fg(t.ui.text_muted)),
                 Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
+                Span::styled("r", Style::default().fg(t.ui.text_muted)),
+                Span::styled(" reply  ", Style::default().fg(t.ui.text_muted)),
+                Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
                 Span::styled("d", Style::default().fg(t.ui.text_muted)),
                 Span::styled(" del  ", Style::default().fg(t.ui.text_muted)),
                 Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
@@ -979,6 +985,13 @@ impl Modal {
                             annotations
                                 .get(*selected)
                                 .map(|ann| ModalResult::AnnotationEdit {
+                                    annotation_id: ann.id.clone(),
+                                })
+                        }
+                        KeyCode::Char('r') => {
+                            annotations
+                                .get(*selected)
+                                .map(|ann| ModalResult::AnnotationReply {
                                     annotation_id: ann.id.clone(),
                                 })
                         }

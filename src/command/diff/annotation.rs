@@ -28,9 +28,13 @@ pub struct AnnotationEditor<'a> {
     textarea: TextArea<'a>,
     pub filename: String,
     pub target: AnnotationTarget,
-    /// If editing an existing annotation, its id
+    /// If editing an existing annotation, or replying to one, its id.
     pub id: Option<AnnotationId>,
     is_edit: bool,
+    /// True when this editor is composing a reply to an existing annotation.
+    /// The thread referenced by `id` receives a new comment on save; the root
+    /// comment is untouched.
+    is_reply: bool,
     /// Original creation time (preserved when editing)
     original_created_at: Option<SystemTime>,
 }
@@ -50,6 +54,7 @@ impl<'a> AnnotationEditor<'a> {
             target,
             id: None,
             is_edit: false,
+            is_reply: false,
             original_created_at: None,
         }
     }
@@ -75,6 +80,23 @@ impl<'a> AnnotationEditor<'a> {
         self.textarea.move_cursor(tui_textarea::CursorMove::End);
 
         self
+    }
+
+    /// Configure the editor to compose a reply to an existing annotation
+    /// thread. `parent_id` identifies the thread that will receive the new
+    /// comment on save.
+    pub fn with_reply(mut self, parent_id: AnnotationId) -> Self {
+        self.id = Some(parent_id);
+        self.is_edit = false;
+        self.is_reply = true;
+        self.original_created_at = None;
+        self
+    }
+
+    /// Whether this editor is composing a reply rather than a new or edited
+    /// root annotation.
+    pub fn is_reply(&self) -> bool {
+        self.is_reply
     }
 
     /// Get the annotation content
@@ -122,6 +144,8 @@ impl<'a> AnnotationEditor<'a> {
                         if self.is_edit {
                             AnnotationEditorResult::Delete
                         } else {
+                            // Empty reply / new annotation → cancel without
+                            // saving (avoid posting blank comments).
                             AnnotationEditorResult::Cancel
                         }
                     } else {
@@ -167,8 +191,10 @@ impl<'a> AnnotationEditor<'a> {
 
         let short_filename = self.filename.rsplit('/').next().unwrap_or(&self.filename);
 
+        let kind_prefix = if self.is_reply { "reply · " } else { "" };
+
         let title = match &self.target {
-            AnnotationTarget::File => format!(" {} [file] ", short_filename),
+            AnnotationTarget::File => format!(" {}{} [file] ", kind_prefix, short_filename),
             AnnotationTarget::LineRange {
                 panel,
                 start_line,
@@ -180,11 +206,14 @@ impl<'a> AnnotationEditor<'a> {
                     DiffPanelFocus::New | DiffPanelFocus::None => "new",
                 };
                 if start_line == end_line {
-                    format!(" {} · L{} [{}] ", short_filename, start_line, panel_label)
+                    format!(
+                        " {}{} · L{} [{}] ",
+                        kind_prefix, short_filename, start_line, panel_label
+                    )
                 } else {
                     format!(
-                        " {} · L{}-{} [{}] ",
-                        short_filename, start_line, end_line, panel_label
+                        " {}{} · L{}-{} [{}] ",
+                        kind_prefix, short_filename, start_line, end_line, panel_label
                     )
                 }
             }

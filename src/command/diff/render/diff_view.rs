@@ -792,12 +792,165 @@ fn make_indicator_span(
     }
 }
 
+/// One row of the inner (between borders) area of an annotation overlay.
+///
+/// Built from the annotation's comments: the root's content lines, then for
+/// each reply a `Separator` row labelling the author/time followed by the
+/// reply's content lines.
+enum OverlayRow {
+    Text(String),
+    Separator(String),
+}
+
+fn annotation_text_width(content_width: u16) -> usize {
+    content_width.saturating_sub(4).max(1) as usize
+}
+
+fn split_at_char_count(s: &str, count: usize) -> (&str, &str) {
+    if count == 0 {
+        return ("", s);
+    }
+
+    match s.char_indices().nth(count) {
+        Some((idx, _)) => s.split_at(idx),
+        None => (s, ""),
+    }
+}
+
+fn wrap_annotation_line(line: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    if line.trim().is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut rows = Vec::new();
+    let mut current = String::new();
+
+    for word in line.split_whitespace() {
+        let mut remaining = word;
+        while !remaining.is_empty() {
+            if current.is_empty() {
+                if remaining.chars().count() <= width {
+                    current.push_str(remaining);
+                    break;
+                }
+
+                let (chunk, rest) = split_at_char_count(remaining, width);
+                rows.push(chunk.to_string());
+                remaining = rest;
+            } else if current.chars().count() + 1 + remaining.chars().count() <= width {
+                current.push(' ');
+                current.push_str(remaining);
+                break;
+            } else {
+                rows.push(std::mem::take(&mut current));
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        rows.push(current);
+    }
+
+    if rows.is_empty() {
+        rows.push(String::new());
+    }
+
+    rows
+}
+
+fn wrap_annotation_text(text: &str, width: usize) -> Vec<String> {
+    let mut rows = Vec::new();
+    for line in text.split('\n') {
+        rows.extend(wrap_annotation_line(line, width));
+    }
+
+    if rows.is_empty() {
+        rows.push(String::new());
+    }
+
+    rows
+}
+
+fn fit_to_char_width(text: &str, width: usize) -> String {
+    let mut fitted: String = text.chars().take(width).collect();
+    let fitted_len = fitted.chars().count();
+    if fitted_len < width {
+        fitted.push_str(&" ".repeat(width - fitted_len));
+    }
+    fitted
+}
+
+/// Build the inner rows of an annotation overlay: root content + one separator
+/// per reply followed by the reply content.
+fn annotation_inner_rows(annotation: &Annotation, text_width: usize) -> Vec<OverlayRow> {
+    let mut rows: Vec<OverlayRow> = Vec::new();
+    for line in wrap_annotation_text(&annotation.root().content, text_width) {
+        rows.push(OverlayRow::Text(line));
+    }
+    for reply in annotation.comments.iter().skip(1) {
+        let time_str = format_clock(reply.created_at);
+        let label = format!("@{} · {}", reply.author.login, time_str);
+        rows.push(OverlayRow::Separator(label));
+        for line in wrap_annotation_text(&reply.content, text_width) {
+            rows.push(OverlayRow::Text(line));
+        }
+    }
+    rows
+}
+
+/// Total rendered height of a single annotation overlay (inner rows + borders).
+fn annotation_overlay_height(annotation: &Annotation, content_width: u16) -> usize {
+    annotation_inner_rows(annotation, annotation_text_width(content_width)).len() + 2
+}
+
+/// HH:MM formatter mirroring `Annotation::format_time` but for a single comment.
+fn format_clock(t: std::time::SystemTime) -> String {
+    use std::time::UNIX_EPOCH;
+    let duration = t.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let secs = duration.as_secs();
+    let hours = (secs / 3600) % 24;
+    let minutes = (secs / 60) % 60;
+    format!("{:02}:{:02}", hours, minutes)
+}
+
 /// Total rendered height of file-level annotation overlays.
-fn file_annotation_height(annotations: &[&Annotation]) -> usize {
+fn file_annotation_height(annotations: &[&Annotation], content_width: u16) -> usize {
     annotations
         .iter()
-        .map(|a| a.root().content.lines().count() + 2)
+        .copied()
+        .map(|annotation| annotation_overlay_height(annotation, content_width))
         .sum()
+}
+
+fn overlay_content_width(
+    annotation: &Annotation,
+    old_area: Option<Rect>,
+    new_area: Option<Rect>,
+    main_area: Rect,
+) -> u16 {
+    let is_side_by_side = old_area.is_some() && new_area.is_some();
+    match &annotation.target {
+        AnnotationTarget::File => {
+            let render_area = old_area.or(new_area).unwrap_or(main_area);
+            if is_side_by_side {
+                old_area
+                    .unwrap()
+                    .width
+                    .saturating_add(new_area.unwrap().width)
+                    .saturating_sub(2)
+            } else {
+                render_area.width.saturating_sub(2)
+            }
+        }
+        AnnotationTarget::LineRange { panel, .. } => {
+            let area = match panel {
+                DiffPanelFocus::Old => old_area.unwrap_or(main_area),
+                _ => new_area.unwrap_or(main_area),
+            };
+            area.width.saturating_sub(2)
+        }
+    }
 }
 
 /// Render annotation overlays at specified positions.
@@ -821,8 +974,9 @@ fn render_annotation_overlays(
 
     for (line_pos, annotation) in overlays {
         let screen_y = content_start_y + *line_pos as u16;
-        let content_lines: Vec<&str> = annotation.root().content.lines().collect();
-        let num_lines = content_lines.len() + 2; // +2 for top and bottom borders
+        let content_width_inner = annotation_text_width(content_width);
+        let inner_rows = annotation_inner_rows(annotation, content_width_inner);
+        let num_lines = inner_rows.len() + 2; // +2 for top and bottom borders
 
         // Check if annotation is visible
         if screen_y >= max_area.y + max_area.height {
@@ -843,6 +997,7 @@ fn render_annotation_overlays(
         // Build annotation lines
         let mut ann_lines: Vec<Line> = Vec::new();
         let note_style = Style::default().fg(t.ui.text_secondary);
+        let separator_style = Style::default().fg(t.ui.text_muted);
         let border_style_ann = Style::default().fg(ann_accent);
         let indicator_style = Style::default().fg(ann_accent);
         let border_width = content_width.saturating_sub(3) as usize;
@@ -866,27 +1021,45 @@ fn render_annotation_overlays(
             )]));
         }
 
-        // Add content lines
-        for content_line in content_lines
-            .iter()
-            .take(available_height.saturating_sub(2))
-        {
-            let content_width_inner = border_width.saturating_sub(1);
-            let padded_content = format!("{:<width$}", content_line, width = content_width_inner);
-            if has_gutter {
-                ann_lines.push(Line::from(vec![
-                    Span::styled("▍", indicator_style),
-                    Span::styled("│ ", border_style_ann),
-                    Span::styled(padded_content, note_style),
-                    Span::styled("│", border_style_ann),
-                ]));
+        // Add inner rows (root content, separators, replies)
+        for row in inner_rows.iter().take(available_height.saturating_sub(2)) {
+            let (text_span, is_separator) = match row {
+                OverlayRow::Text(line) => (
+                    Span::styled(fit_to_char_width(line, content_width_inner), note_style),
+                    false,
+                ),
+                OverlayRow::Separator(label) => {
+                    // Render as: "── label ─────────"
+                    let label_with_pad = format!("── {} ", label);
+                    let label_chars = label_with_pad.chars().count();
+                    let separator = if label_chars >= content_width_inner {
+                        fit_to_char_width(&label_with_pad, content_width_inner)
+                    } else {
+                        let trailing = content_width_inner - label_chars;
+                        format!("{}{}", label_with_pad, "─".repeat(trailing))
+                    };
+                    (Span::styled(separator, separator_style), true)
+                }
+            };
+
+            let left_indicator: Span<'static> = if has_gutter {
+                Span::styled("▍", indicator_style)
             } else {
-                ann_lines.push(Line::from(vec![
-                    Span::styled(" │ ", border_style_ann),
-                    Span::styled(padded_content, note_style),
-                    Span::styled("│", border_style_ann),
-                ]));
-            }
+                Span::styled(" ", Style::default())
+            };
+            // Use a thinner left/right bar for separators so they read as
+            // dividers inside the thread rather than another comment line.
+            let (left_bar, right_bar) = if is_separator {
+                ("├─", "┤")
+            } else {
+                ("│ ", "│")
+            };
+            ann_lines.push(Line::from(vec![
+                left_indicator,
+                Span::styled(left_bar, border_style_ann),
+                text_span,
+                Span::styled(right_bar, border_style_ann),
+            ]));
         }
 
         // Add bottom border with time if there's room
@@ -1109,7 +1282,8 @@ pub fn render_diff(
             })
             .collect();
 
-        let annotation_height = file_annotation_height(&file_annotations);
+        let overlay_width = main_area.width.saturating_sub(2);
+        let annotation_height = file_annotation_height(&file_annotations, overlay_width);
         content_row_offset = context_count + annotation_height;
 
         let base_content_height = visible_height.saturating_sub(context_count);
@@ -1137,8 +1311,7 @@ pub fn render_diff(
 
         // Show file-level annotations at top
         for annotation in &file_annotations {
-            let content_lines: Vec<&str> = annotation.root().content.lines().collect();
-            let num_lines = content_lines.len() + 2;
+            let num_lines = annotation_overlay_height(annotation, overlay_width);
             let annotation_start = new_lines.len();
             for _ in 0..num_lines {
                 new_lines.push(Line::from(vec![Span::raw("")]));
@@ -1212,7 +1385,7 @@ pub fn render_diff(
                 } = &annotation.target
                 {
                     if diff_line.line_number(*panel) == Some(*end_line) {
-                        let num_ann_lines = annotation.root().content.lines().count() + 2;
+                        let num_ann_lines = annotation_overlay_height(annotation, overlay_width);
                         let line_pos = new_lines.len();
                         overlay_gaps.push((i, num_ann_lines));
                         for _ in 0..num_ann_lines {
@@ -1274,7 +1447,8 @@ pub fn render_diff(
             })
             .collect();
 
-        let annotation_height = file_annotation_height(&file_annotations);
+        let overlay_width = main_area.width.saturating_sub(2);
+        let annotation_height = file_annotation_height(&file_annotations, overlay_width);
         content_row_offset = context_count + annotation_height;
 
         let base_content_height = visible_height.saturating_sub(context_count);
@@ -1302,8 +1476,7 @@ pub fn render_diff(
 
         // Show file-level annotations at top
         for annotation in &file_annotations {
-            let content_lines: Vec<&str> = annotation.root().content.lines().collect();
-            let num_lines = content_lines.len() + 2;
+            let num_lines = annotation_overlay_height(annotation, overlay_width);
             let annotation_start = old_lines.len();
             for _ in 0..num_lines {
                 old_lines.push(Line::from(vec![Span::raw("")]));
@@ -1377,7 +1550,7 @@ pub fn render_diff(
                 } = &annotation.target
                 {
                     if diff_line.line_number(*panel) == Some(*end_line) {
-                        let num_ann_lines = annotation.root().content.lines().count() + 2;
+                        let num_ann_lines = annotation_overlay_height(annotation, overlay_width);
                         let line_pos = old_lines.len();
                         overlay_gaps.push((i, num_ann_lines));
                         for _ in 0..num_ann_lines {
@@ -1471,7 +1644,16 @@ pub fn render_diff(
             })
             .collect();
 
-        let file_ann_height = file_annotation_height(&file_annotations);
+        let file_overlay_width = if old_area.is_some() && new_area.is_some() {
+            old_area
+                .unwrap()
+                .width
+                .saturating_add(new_area.unwrap().width)
+                .saturating_sub(2)
+        } else {
+            reference_area.width.saturating_sub(2)
+        };
+        let file_ann_height = file_annotation_height(&file_annotations, file_overlay_width);
         content_row_offset = context_count + file_ann_height;
 
         if settings.context.enabled && context_count > 0 {
@@ -1524,8 +1706,7 @@ pub fn render_diff(
 
         // Add file-level annotations at the top (after context lines)
         for annotation in &file_annotations {
-            let content_lines_count = annotation.root().content.lines().count();
-            let num_lines = content_lines_count + 2;
+            let num_lines = annotation_overlay_height(annotation, file_overlay_width);
             let annotation_start = old_lines.len(); // same position in both panels
             for _ in 0..num_lines {
                 if old_area.is_some() {
@@ -1795,7 +1976,9 @@ pub fn render_diff(
                 } = &annotation.target
                 {
                     if diff_line.line_number(*panel) == Some(*end_line) {
-                        let num_lines = annotation.root().content.lines().count() + 2;
+                        let annotation_width =
+                            overlay_content_width(annotation, old_area, new_area, main_area);
+                        let num_lines = annotation_overlay_height(annotation, annotation_width);
 
                         let line_pos = if old_area.is_some() {
                             old_lines.len()
@@ -1888,7 +2071,11 @@ pub fn render_diff(
                     let render_area = old_area.or(new_area).unwrap_or(main_area);
                     let x = render_area.x + 1;
                     let w = if is_side_by_side {
-                        old_area.unwrap().width + new_area.unwrap().width - 2
+                        old_area
+                            .unwrap()
+                            .width
+                            .saturating_add(new_area.unwrap().width)
+                            .saturating_sub(2)
                     } else {
                         render_area.width.saturating_sub(2)
                     };
@@ -1935,8 +2122,9 @@ pub fn render_diff(
             for &(line_pos, annotation) in &annotation_overlays {
                 if let AnnotationTarget::LineRange { panel, .. } = &annotation.target {
                     if matches!(panel, DiffPanelFocus::New | DiffPanelFocus::None) {
-                        let content_lines_count = annotation.root().content.lines().count();
-                        let num_rows = content_lines_count + 2;
+                        let annotation_width =
+                            overlay_content_width(annotation, old_area, new_area, main_area);
+                        let num_rows = annotation_overlay_height(annotation, annotation_width);
                         for row_offset in 0..num_rows {
                             let screen_row = content_start + line_pos as u16 + row_offset as u16;
                             if screen_row < old_a.y + old_a.height - 1 {
@@ -1993,4 +2181,61 @@ pub fn render_diff(
     );
 
     (content_row_offset, overlay_gaps)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::diff::annotation_store::{AnnotationId, Author, Comment};
+    use std::time::UNIX_EPOCH;
+
+    fn comment(origin: &str, content: &str) -> Comment {
+        Comment {
+            native_id: None,
+            author: Author::for_origin(origin),
+            origin: origin.to_string(),
+            content: content.to_string(),
+            created_at: UNIX_EPOCH,
+        }
+    }
+
+    fn annotation(root: &str, replies: &[&str]) -> Annotation {
+        let mut comments = vec![comment("ui", root)];
+        comments.extend(replies.iter().map(|reply| comment("agent", reply)));
+
+        Annotation {
+            id: AnnotationId {
+                origin: "ui".to_string(),
+                native: "1".to_string(),
+            },
+            filename: "src/main.rs".to_string(),
+            target: AnnotationTarget::File,
+            comments,
+            resolved: false,
+        }
+    }
+
+    #[test]
+    fn wrap_annotation_text_preserves_multiline_breaks() {
+        assert_eq!(
+            wrap_annotation_text("hello wide world\n\nnext line", 8),
+            vec!["hello", "wide", "world", "", "next", "line"]
+        );
+    }
+
+    #[test]
+    fn wrap_annotation_text_splits_long_words() {
+        assert_eq!(
+            wrap_annotation_text("superlongword", 5),
+            vec!["super", "longw", "ord"]
+        );
+    }
+
+    #[test]
+    fn annotation_overlay_height_uses_wrapped_comment_rows() {
+        let annotation = annotation("root", &["reply wraps"]);
+
+        assert_eq!(annotation_overlay_height(&annotation, 80), 5);
+        assert_eq!(annotation_overlay_height(&annotation, 12), 6);
+    }
 }

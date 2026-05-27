@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 
-use crate::command::diff::annotation_store::{AnnotationStore, InMemoryStore, NewAnnotation};
+use crate::command::diff::annotation_store::{AnnotationStore, InMemoryStore, NewAnnotation, NewReply};
 use crate::command::diff::diff_algo::{
     compute_side_by_side, count_added_removed, find_hunk_starts,
 };
@@ -270,6 +270,12 @@ impl AppState {
         };
         state.load_annotations_for_current_files();
         state
+    }
+
+    /// Refresh the annotation cache from the backing store (e.g., after
+    /// an external CLI/agent write reported by the file watcher).
+    pub fn reload_annotations(&mut self) {
+        self.load_annotations_for_current_files();
     }
 
     /// Repopulate `self.annotations` from the backing store, filtered to files
@@ -973,6 +979,24 @@ impl AppState {
         if self.store.update(id, content.clone()).is_ok() {
             if let Some(ann) = self.annotations.iter_mut().find(|a| &a.id == id) {
                 ann.root_mut().content = content;
+            }
+        }
+    }
+
+    /// Append a reply to an existing annotation. On success the cached
+    /// annotation is replaced with the refreshed thread; on failure (e.g.,
+    /// the annotation was deleted underneath us), the cache is left intact.
+    pub fn add_reply(&mut self, id: &AnnotationId, content: String) {
+        let draft = NewReply {
+            content,
+            origin: "ui".to_string(),
+            created_at: SystemTime::now(),
+        };
+        if let Ok(updated) = self.store.reply(id, draft) {
+            if let Some(ann) = self.annotations.iter_mut().find(|a| &a.id == id) {
+                *ann = updated;
+            } else {
+                self.annotations.push(updated);
             }
         }
     }

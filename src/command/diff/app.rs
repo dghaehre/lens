@@ -334,14 +334,14 @@ fn run_app_internal(
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
     let watch_rx = if options.watch {
-        setup_watcher()
+        setup_watcher(Some(&db_path))
     } else {
         None
     };
 
     let mut active_modal: Option<Modal> = None;
     let mut annotation_editor: Option<AnnotationEditor> = None;
-    let mut pending_watch_event: Option<WatchEvent> = None;
+    let mut pending_changed_files: Option<std::collections::HashSet<String>> = None;
     let mut pending_events: VecDeque<AppEvent> = VecDeque::new();
 
     // Bridge crossterm input and the file watcher into a single channel so the
@@ -377,7 +377,7 @@ fn run_app_internal(
             let file_diffs = load_file_diffs(&options, backend);
 
             // Pass changed files to reload so it can unmark them from viewed
-            let changed_files = pending_watch_event.take().map(|e| e.changed_files);
+            let changed_files = pending_changed_files.take();
             state.reload(file_diffs, changed_files.as_ref());
         }
 
@@ -555,9 +555,19 @@ fn run_app_internal(
         // Process all pending events
         while let Some(app_event) = pending_events.pop_front() {
             let current_event = match app_event {
-                AppEvent::Watch(w) => {
+                AppEvent::Watch(WatchEvent::Files { changed_files }) => {
                     state.needs_reload = true;
-                    pending_watch_event = Some(w);
+                    // Merge with any previously-pending set so multiple bursts
+                    // don't lose the earlier filenames.
+                    pending_changed_files
+                        .get_or_insert_with(std::collections::HashSet::new)
+                        .extend(changed_files);
+                    continue;
+                }
+                AppEvent::Watch(WatchEvent::AnnotationDb) => {
+                    // The DB file changed from outside (CLI/agent). Refresh the
+                    // annotation cache without reloading diffs.
+                    state.reload_annotations();
                     continue;
                 }
                 AppEvent::Input(ev) => ev,
@@ -612,7 +622,11 @@ fn run_app_internal(
                             AnnotationEditorResult::Continue => {}
                             AnnotationEditorResult::Save => {
                                 let content = editor.content();
-                                if let Some(ref id) = editor.id {
+                                if editor.is_reply() {
+                                    if let Some(ref id) = editor.id {
+                                        state.add_reply(id, content);
+                                    }
+                                } else if let Some(ref id) = editor.id {
                                     // Editing existing annotation
                                     state.update_annotation(id, content);
                                 } else {
@@ -627,8 +641,14 @@ fn run_app_internal(
                                 annotation_editor = None;
                             }
                             AnnotationEditorResult::Delete => {
-                                if let Some(ref id) = editor.id {
-                                    state.remove_annotation(id);
+                                // Delete only applies to editing an existing root
+                                // annotation. Reply mode reaches here only when
+                                // content is empty, in which case we drop the
+                                // draft without touching the parent thread.
+                                if !editor.is_reply() {
+                                    if let Some(ref id) = editor.id {
+                                        state.remove_annotation(id);
+                                    }
                                 }
                                 annotation_editor = None;
                             }
@@ -705,6 +725,26 @@ fn run_app_internal(
                                             &ann.root().content,
                                             ann.created_at(),
                                         );
+                                        // Jump to the file
+                                        let filename = ann.filename.clone();
+                                        if let Some(file_index) = state
+                                            .file_diffs
+                                            .iter()
+                                            .position(|f| f.filename == filename)
+                                        {
+                                            state.select_file(file_index);
+                                        }
+                                        annotation_editor = Some(editor);
+                                    }
+                                    active_modal = None;
+                                }
+                                ModalResult::AnnotationReply { annotation_id } => {
+                                    if let Some(ann) = state.get_annotation_by_id(&annotation_id) {
+                                        let editor = AnnotationEditor::new(
+                                            ann.filename.clone(),
+                                            ann.target.clone(),
+                                        )
+                                        .with_reply(ann.id.clone());
                                         // Jump to the file
                                         let filename = ann.filename.clone();
                                         if let Some(file_index) = state
@@ -1991,6 +2031,10 @@ fn run_app_internal(
                                             KeyBind {
                                                 key: "I",
                                                 description: "View all annotations",
+                                            },
+                                            KeyBind {
+                                                key: "r (in I)",
+                                                description: "Reply to selected annotation",
                                             },
                                         ],
                                     },
