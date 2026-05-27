@@ -241,6 +241,137 @@ fn format_annotation_preview(annotation: &super::state::Annotation, orphaned: bo
     }
 }
 
+/// Sort key for in-diff annotation navigation: (file_index, line).
+/// File-targeted annotations sort at the top of their file (line 0).
+/// Returns `None` if the annotation's file is no longer in the diff
+/// (i.e., it's orphaned at the file level) — such annotations are skipped
+/// during `(` / `)` traversal.
+fn annotation_sort_key(
+    ann: &super::state::Annotation,
+    file_diffs: &[FileDiff],
+) -> Option<(usize, usize)> {
+    let file_idx = file_diffs.iter().position(|f| f.filename == ann.filename)?;
+    let line = match &ann.target {
+        super::state::AnnotationTarget::File => 0,
+        super::state::AnnotationTarget::LineRange { start_line, .. } => *start_line,
+    };
+    Some((file_idx, line))
+}
+
+/// Return the file line number at the top of the current scroll viewport,
+/// preferring the new panel and falling back to the old panel. Used as the
+/// "cursor" position when finding the next/previous annotation.
+fn current_anchor_line(state: &mut AppState) -> usize {
+    state.ensure_cache();
+    let sbs = state.side_by_side_ref();
+    if sbs.is_empty() {
+        return 0;
+    }
+    let idx = (state.scroll as usize).min(sbs.len() - 1);
+    sbs.get(idx)
+        .and_then(|dl| {
+            dl.line_number(DiffPanelFocus::New)
+                .or_else(|| dl.line_number(DiffPanelFocus::Old))
+        })
+        .unwrap_or(0)
+}
+
+/// Switch to `ann`'s file (if needed) and scroll so its anchor is visible.
+/// Mirrors the behavior of the `AnnotationJump` modal result so that the
+/// `I`-list and the `(` / `)` shortcuts converge on the same outcome.
+fn jump_to_annotation(
+    state: &mut AppState,
+    ann: &super::state::Annotation,
+    visible_height: usize,
+    max_scroll: usize,
+) {
+    let filename = ann.filename.clone();
+    let target = ann.target.clone();
+    let Some(file_index) = state
+        .file_diffs
+        .iter()
+        .position(|f| f.filename == filename)
+    else {
+        return;
+    };
+    if state.current_file != file_index {
+        state.select_file(file_index);
+    }
+    if let super::state::AnnotationTarget::LineRange {
+        panel, start_line, ..
+    } = &target
+    {
+        state.ensure_cache();
+        let sbs = state.side_by_side_ref();
+        if let Some(sbs_idx) = find_sbs_index_for_line(sbs, *panel, *start_line) {
+            state.scroll =
+                adjust_scroll_to_line(sbs_idx, state.scroll, visible_height, max_scroll);
+        }
+    }
+}
+
+/// Find a line-range annotation on the current file whose range contains
+/// the line at the top of the viewport. Used by `R` to reply to whatever
+/// annotation the user has scrolled to. File-target annotations are skipped
+/// — replies to those go through the `I` modal.
+fn annotation_at_cursor(state: &mut AppState) -> Option<super::state::Annotation> {
+    if state.file_diffs.is_empty() {
+        return None;
+    }
+    let filename = state.file_diffs[state.current_file].filename.clone();
+    let line = current_anchor_line(state);
+    state
+        .annotations
+        .iter()
+        .find(|a| {
+            a.filename == filename
+                && match &a.target {
+                    super::state::AnnotationTarget::File => false,
+                    super::state::AnnotationTarget::LineRange {
+                        start_line,
+                        end_line,
+                        ..
+                    } => line >= *start_line && line <= *end_line,
+                }
+        })
+        .cloned()
+}
+
+/// Find the next (or previous) annotation relative to the current scroll
+/// position. Uses `(file_index, line)` ordering so traversal walks files in
+/// sidebar order, then line ascending within each file. Orphaned (file
+/// missing from diff) annotations are skipped. Clamps at the ends — does
+/// not wrap.
+fn find_adjacent_annotation(state: &mut AppState, forward: bool) -> Option<super::state::Annotation> {
+    if state.annotations.is_empty() {
+        return None;
+    }
+    let current_key = (state.current_file, current_anchor_line(state));
+    let mut keyed: Vec<((usize, usize), &super::state::Annotation)> = state
+        .annotations
+        .iter()
+        .filter_map(|a| annotation_sort_key(a, &state.file_diffs).map(|k| (k, a)))
+        .collect();
+    if keyed.is_empty() {
+        return None;
+    }
+    keyed.sort_by_key(|(k, _)| *k);
+
+    let picked = if forward {
+        keyed
+            .iter()
+            .find(|(k, _)| *k > current_key)
+            .or_else(|| keyed.last())
+    } else {
+        keyed
+            .iter()
+            .rev()
+            .find(|(k, _)| *k < current_key)
+            .or_else(|| keyed.first())
+    };
+    picked.map(|(_, a)| (*a).clone())
+}
+
 /// Build the items + annotations vectors for the `I` (all-annotations) modal.
 /// Active annotations come first, orphaned (anchor missing) ones after, so
 /// the user can act on stale entries from one list.
@@ -677,40 +808,16 @@ fn run_app_internal(
                                     active_modal = None;
                                 }
                                 ModalResult::AnnotationJump { annotation_id } => {
-                                    if let Some(ann) = state.get_annotation_by_id(&annotation_id) {
-                                        let filename = ann.filename.clone();
-                                        let target = ann.target.clone();
-                                        // Find and switch to the file
-                                        if let Some(file_index) = state
-                                            .file_diffs
-                                            .iter()
-                                            .position(|f| f.filename == filename)
-                                        {
-                                            state.select_file(file_index);
-                                            // Scroll to annotation's line range
-                                            if let super::state::AnnotationTarget::LineRange {
-                                                panel,
-                                                start_line,
-                                                ..
-                                            } = &target
-                                            {
-                                                state.ensure_cache();
-                                                let sbs = state.side_by_side_ref();
-                                                // Find the side_by_side index for start_line
-                                                if let Some(sbs_idx) = find_sbs_index_for_line(
-                                                    sbs,
-                                                    *panel,
-                                                    *start_line,
-                                                ) {
-                                                    state.scroll = adjust_scroll_to_line(
-                                                        sbs_idx,
-                                                        state.scroll,
-                                                        visible_height,
-                                                        max_scroll,
-                                                    );
-                                                }
-                                            }
-                                        }
+                                    if let Some(ann) = state
+                                        .get_annotation_by_id(&annotation_id)
+                                        .cloned()
+                                    {
+                                        jump_to_annotation(
+                                            &mut state,
+                                            &ann,
+                                            visible_height,
+                                            max_scroll,
+                                        );
                                     }
                                     active_modal = None;
                                 }
@@ -1586,6 +1693,32 @@ fn run_app_internal(
                                 }
                             }
                         }
+                        KeyCode::Char(')') => {
+                            if !state.annotations.is_empty() {
+                                state.clear_selection();
+                                if let Some(ann) = find_adjacent_annotation(&mut state, true) {
+                                    jump_to_annotation(
+                                        &mut state,
+                                        &ann,
+                                        visible_height,
+                                        max_scroll,
+                                    );
+                                }
+                            }
+                        }
+                        KeyCode::Char('(') => {
+                            if !state.annotations.is_empty() {
+                                state.clear_selection();
+                                if let Some(ann) = find_adjacent_annotation(&mut state, false) {
+                                    jump_to_annotation(
+                                        &mut state,
+                                        &ann,
+                                        visible_height,
+                                        max_scroll,
+                                    );
+                                }
+                            }
+                        }
                         KeyCode::Char('v') => {
                             if state.focused_panel == FocusedPanel::DiffView
                                 && !state.file_diffs.is_empty()
@@ -1756,6 +1889,16 @@ fn run_app_internal(
                                     items,
                                     annotations,
                                 ));
+                            }
+                        }
+                        KeyCode::Char('R') => {
+                            if let Some(ann) = annotation_at_cursor(&mut state) {
+                                let editor = AnnotationEditor::new(
+                                    ann.filename.clone(),
+                                    ann.target.clone(),
+                                )
+                                .with_reply(ann.id.clone());
+                                annotation_editor = Some(editor);
                             }
                         }
                         KeyCode::Char('r') => {
@@ -2031,6 +2174,14 @@ fn run_app_internal(
                                             KeyBind {
                                                 key: "I",
                                                 description: "View all annotations",
+                                            },
+                                            KeyBind {
+                                                key: "( / )",
+                                                description: "Jump to prev / next annotation",
+                                            },
+                                            KeyBind {
+                                                key: "R",
+                                                description: "Reply to annotation at cursor",
                                             },
                                             KeyBind {
                                                 key: "r (in I)",
