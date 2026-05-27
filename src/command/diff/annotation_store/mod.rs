@@ -97,7 +97,6 @@ pub struct Annotation {
     pub filename: String,
     pub target: AnnotationTarget,
     pub comments: Vec<Comment>,
-    #[allow(dead_code)] // surfaced once the UI can resolve threads
     pub resolved: bool,
 }
 
@@ -273,6 +272,14 @@ pub trait AnnotationStore {
         id: &AnnotationId,
         reply: NewReply,
     ) -> Result<Annotation, AnnotationError>;
+
+    /// Mark an annotation thread as resolved or re-open it. Equivalent to
+    /// GitHub's "Resolve conversation" / "Unresolve" toggle on a PR review.
+    fn set_resolved(
+        &mut self,
+        id: &AnnotationId,
+        resolved: bool,
+    ) -> Result<(), AnnotationError>;
 
     fn delete(&mut self, id: &AnnotationId) -> Result<(), AnnotationError>;
 }

@@ -93,6 +93,9 @@ pub enum ModalResult {
     AnnotationDelete {
         annotation_id: AnnotationId,
     },
+    AnnotationToggleResolved {
+        annotation_id: AnnotationId,
+    },
     AnnotationCopyAll,
     AnnotationExport(String),
 }
@@ -652,6 +655,9 @@ impl Modal {
                 Span::styled("r", Style::default().fg(t.ui.text_muted)),
                 Span::styled(" reply  ", Style::default().fg(t.ui.text_muted)),
                 Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
+                Span::styled("x", Style::default().fg(t.ui.text_muted)),
+                Span::styled(" resolve  ", Style::default().fg(t.ui.text_muted)),
+                Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
                 Span::styled("d", Style::default().fg(t.ui.text_muted)),
                 Span::styled(" del  ", Style::default().fg(t.ui.text_muted)),
                 Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
@@ -928,6 +934,13 @@ impl Modal {
                                     annotation_id: ann.id.clone(),
                                 })
                         }
+                        KeyCode::Char('x') => {
+                            annotations
+                                .get(*selected)
+                                .map(|ann| ModalResult::AnnotationToggleResolved {
+                                    annotation_id: ann.id.clone(),
+                                })
+                        }
                         KeyCode::Char('y') => Some(ModalResult::AnnotationCopyAll),
                         KeyCode::Char('o') => {
                             *export_input = Some(String::from("annotations.txt"));
@@ -1076,17 +1089,25 @@ fn render_annotation_preview(
 
     let mut lines: Vec<Line> = Vec::new();
 
-    // Anchor header: filename + line range.
+    // Anchor header: filename + line range, plus a "resolved" badge.
     let location = match &ann.target {
         AnnotationTarget::File => format!("{} [file]", ann.filename),
         AnnotationTarget::LineRange { .. } => {
             format!("{}:{}", ann.filename, ann.line_range_display())
         }
     };
-    lines.push(Line::from(Span::styled(
+    let mut header_spans: Vec<Span> = vec![Span::styled(
         location,
         Style::default().fg(t.ui.text_primary).bold(),
-    )));
+    )];
+    if ann.resolved {
+        header_spans.push(Span::styled("  ", Style::default()));
+        header_spans.push(Span::styled(
+            "✓ resolved",
+            Style::default().fg(t.ui.status_added).bold(),
+        ));
+    }
+    lines.push(Line::from(header_spans));
     lines.push(Line::from(""));
 
     // Render every comment in the thread.

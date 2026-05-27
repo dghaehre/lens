@@ -219,9 +219,11 @@ fn format_annotation_preview(annotation: &super::state::Annotation, orphaned: bo
     let line_display = annotation.line_range_display();
     let label = annotation.target_label();
     let orphan_tag = if orphaned { " (orphaned)" } else { "" };
+    let resolved_tag = if annotation.resolved { "✓ " } else { "" };
     if line_display.is_empty() {
         format!(
-            "{} [{}]{} | {} | {}",
+            "{}{} [{}]{} | {} | {}",
+            resolved_tag,
             truncated_filename,
             label,
             orphan_tag,
@@ -230,7 +232,8 @@ fn format_annotation_preview(annotation: &super::state::Annotation, orphaned: bo
         )
     } else {
         format!(
-            "{}:{} [{}]{} | {} | {}",
+            "{}{}:{} [{}]{} | {} | {}",
+            resolved_tag,
             truncated_filename,
             line_display,
             label,
@@ -878,6 +881,42 @@ fn run_app_internal(
                                     } else {
                                         active_modal = None;
                                     }
+                                }
+                                ModalResult::AnnotationToggleResolved { annotation_id } => {
+                                    let new_state = state
+                                        .get_annotation_by_id(&annotation_id)
+                                        .map(|a| !a.resolved);
+                                    if let Some(resolved) = new_state {
+                                        state.set_annotation_resolved(
+                                            &annotation_id,
+                                            resolved,
+                                        );
+                                    }
+                                    // Rebuild the modal contents but keep the
+                                    // selection on the same row — the list count
+                                    // hasn't changed, only the row's badge.
+                                    let prev_selected = match &active_modal {
+                                        Some(m) => match &m.content {
+                                            ModalContent::Annotations { selected, .. } => {
+                                                *selected
+                                            }
+                                            _ => 0,
+                                        },
+                                        None => 0,
+                                    };
+                                    let (items, annotations) = build_annotation_list(&state);
+                                    let mut modal = Modal::annotations(
+                                        "Annotations",
+                                        items,
+                                        annotations,
+                                    );
+                                    if let ModalContent::Annotations {
+                                        selected, items, ..
+                                    } = &mut modal.content
+                                    {
+                                        *selected = prev_selected.min(items.len().saturating_sub(1));
+                                    }
+                                    active_modal = Some(modal);
                                 }
                                 ModalResult::AnnotationCopyAll => {
                                     // Copy all annotations to clipboard
@@ -1901,6 +1940,11 @@ fn run_app_internal(
                                 annotation_editor = Some(editor);
                             }
                         }
+                        KeyCode::Char('X') => {
+                            if let Some(ann) = annotation_at_cursor(&mut state) {
+                                state.set_annotation_resolved(&ann.id, !ann.resolved);
+                            }
+                        }
                         KeyCode::Char('r') => {
                             state.needs_reload = true;
                         }
@@ -2184,8 +2228,12 @@ fn run_app_internal(
                                                 description: "Reply to annotation at cursor",
                                             },
                                             KeyBind {
-                                                key: "r (in I)",
-                                                description: "Reply to selected annotation",
+                                                key: "X",
+                                                description: "Toggle resolved on annotation at cursor",
+                                            },
+                                            KeyBind {
+                                                key: "r / x (in I)",
+                                                description: "Reply / toggle resolved",
                                             },
                                         ],
                                     },
