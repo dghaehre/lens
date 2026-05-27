@@ -142,6 +142,20 @@ Annotated lines display a `▍` gutter indicator. Use `I` to view, edit, delete,
 - `ctrl+h/l`: Previous/next commit (stacked mode)
 - `?`: Show all keybindings
 
+### Agent Skill
+
+`lens` ships a [SKILL.md](./SKILL.md) that teaches coding agents how to read and reply to annotations via the `lens annotation` subcommands. Install it once per machine:
+
+```bash
+# Claude Code → ~/.claude/skills/lens-annotations/SKILL.md
+lens skill install claude
+
+# Codex → idempotent block in ~/.codex/AGENTS.md (re-run to update in place)
+lens skill install codex
+```
+
+Both installs overwrite in place on every run, so re-run them whenever `SKILL.md` changes.
+
 ## Advanced Configuration 🔅
 
 ### Configuration File

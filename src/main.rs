@@ -21,6 +21,12 @@ async fn main() {
 async fn run() -> Result<(), LensError> {
     let cli = Cli::parse();
 
+    // `skill` doesn't touch the repo — handle it before we require a git
+    // backend so `lens skill install` works outside a git working tree.
+    if let Some(Command::Skill(cmd)) = cli.command.clone() {
+        return command::skill::run(cmd);
+    }
+
     let config = LensConfig::build(&cli)?;
 
     let cwd = std::env::current_dir()?;
@@ -28,6 +34,7 @@ async fn run() -> Result<(), LensError> {
 
     match cli.command {
         Some(Command::Annotation(cmd)) => command::annotation::run(cmd, &backend),
+        Some(Command::Skill(_)) => unreachable!("handled above"),
         None => {
             let options = command::diff::DiffOptions {
                 reference: cli.diff.reference,

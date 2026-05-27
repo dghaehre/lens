@@ -57,6 +57,28 @@ pub enum Command {
     /// Read or write annotations stored alongside the repo.
     #[command(subcommand)]
     Annotation(AnnotationCommand),
+    /// Install the bundled SKILL.md so coding agents pick it up.
+    #[command(subcommand)]
+    Skill(SkillCommand),
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum SkillCommand {
+    /// Install the bundled SKILL.md for a given agent provider.
+    Install(SkillInstallArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct SkillInstallArgs {
+    /// Which agent provider to install for.
+    #[arg(value_enum)]
+    pub provider: SkillProvider,
+}
+
+#[derive(clap::ValueEnum, Debug, Clone, Copy)]
+pub enum SkillProvider {
+    Claude,
+    Codex,
 }
 
 #[derive(Subcommand, Debug, Clone)]
