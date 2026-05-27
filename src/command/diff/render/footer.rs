@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use ratatui::{prelude::*, widgets::Paragraph};
 
 use crate::command::diff::search::{SearchMode, SearchState};
+use crate::command::diff::state::RefInputState;
 use crate::command::diff::theme;
 
 pub struct FooterData<'a> {
@@ -16,6 +17,7 @@ pub struct FooterData<'a> {
     pub hunk_count: usize,
     pub focused_hunk: Option<usize>,
     pub search_state: &'a SearchState,
+    pub ref_input: &'a RefInputState,
     pub area_width: u16,
 }
 
@@ -85,6 +87,47 @@ pub fn truncate_path(path: &str, max_len: usize) -> String {
 pub fn render_footer(frame: &mut Frame, footer_area: Rect, data: FooterData) {
     let t = theme::get();
     let bg = t.ui.bg;
+
+    if data.ref_input.active {
+        let prefix = "rev: ";
+        let footer_width = footer_area.width as usize;
+        let mut spans = vec![
+            Span::styled(prefix, Style::default().fg(t.ui.highlight).bg(bg)),
+            Span::styled(
+                &data.ref_input.query,
+                Style::default().fg(t.ui.text_primary).bg(bg),
+            ),
+            Span::styled("_", Style::default().fg(t.ui.text_muted).bg(bg)),
+        ];
+        let hint = " (empty = worktree, enter = apply, esc = cancel) ";
+        let error_text = data.ref_input.error.as_deref();
+        let used = prefix.len() + data.ref_input.query.len() + 1;
+        if let Some(err) = error_text {
+            let err_label = format!("  error: {} ", err);
+            let remaining = footer_width.saturating_sub(used + err_label.len());
+            spans.push(Span::styled(
+                " ".repeat(remaining),
+                Style::default().bg(bg),
+            ));
+            spans.push(Span::styled(
+                err_label,
+                Style::default().fg(t.ui.stats_removed).bg(bg),
+            ));
+        } else {
+            let remaining = footer_width.saturating_sub(used + hint.len());
+            spans.push(Span::styled(
+                " ".repeat(remaining),
+                Style::default().bg(bg),
+            ));
+            spans.push(Span::styled(
+                hint,
+                Style::default().fg(t.ui.text_muted).bg(bg),
+            ));
+        }
+        let footer = Paragraph::new(Line::from(spans)).style(Style::default().bg(bg));
+        frame.render_widget(footer, footer_area);
+        return;
+    }
 
     if data.search_state.is_active() {
         let prefix = match data.search_state.mode {

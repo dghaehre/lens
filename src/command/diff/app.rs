@@ -29,6 +29,7 @@ use super::types::{
 use super::watcher::{setup_watcher, WatchEvent};
 use super::DiffOptions;
 
+use crate::commit_reference::CommitReference;
 use crate::vcs::{GitBackend, StackedCommitInfo};
 
 /// Navigate to a different commit in stacked mode.
@@ -294,7 +295,7 @@ enum AppEvent {
 }
 
 fn run_app_internal(
-    options: DiffOptions,
+    mut options: DiffOptions,
     file_diffs: Vec<super::types::FileDiff>,
     stacked_commits: Option<Vec<StackedCommitInfo>>,
     backend: &GitBackend,
@@ -383,7 +384,7 @@ fn run_app_internal(
 
         if state.file_diffs.is_empty() {
             terminal.draw(|frame| {
-                render_empty_state(frame, options.watch);
+                render_empty_state(frame, options.watch, &state.ref_input);
                 if let Some(ref modal) = active_modal {
                     modal.render(frame);
                 }
@@ -430,6 +431,7 @@ fn run_app_internal(
                     hunk_count,
                     state.diff_fullscreen,
                     &state.search_state,
+                    &state.ref_input,
                     commit_ref,
                     state.focused_hunk,
                     &hunks,
@@ -582,6 +584,48 @@ fn run_app_internal(
             };
 
             match current_event {
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press && state.ref_input.active =>
+                {
+                    match key.code {
+                        KeyCode::Esc => {
+                            state.ref_input.cancel();
+                        }
+                        KeyCode::Enter => {
+                            let raw = state.ref_input.query.trim().to_string();
+                            if raw.is_empty() {
+                                options.reference = None;
+                                state.set_diff_reference(None);
+                                state.ref_input.cancel();
+                                state.needs_reload = true;
+                            } else {
+                                match backend.resolve_ref(&raw) {
+                                    Ok(_) => match raw.parse::<CommitReference>() {
+                                        Ok(reference) => {
+                                            options.reference = Some(reference);
+                                            state.set_diff_reference(Some(raw));
+                                            state.ref_input.cancel();
+                                            state.needs_reload = true;
+                                        }
+                                        Err(e) => {
+                                            state.ref_input.error = Some(e.to_string());
+                                        }
+                                    },
+                                    Err(e) => {
+                                        state.ref_input.error = Some(e.to_string());
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            state.ref_input.pop_char();
+                        }
+                        KeyCode::Char(c) => {
+                            state.ref_input.push_char(c);
+                        }
+                        _ => {}
+                    }
+                }
                 Event::Key(key)
                     if key.kind == KeyEventKind::Press && state.search_state.is_active() =>
                 {
@@ -1761,6 +1805,10 @@ fn run_app_internal(
                         KeyCode::Char('r') => {
                             state.needs_reload = true;
                         }
+                        KeyCode::Char('R') => {
+                            let initial = state.diff_reference.clone().unwrap_or_default();
+                            state.ref_input.start(&initial);
+                        }
                         KeyCode::Char('y') => {
                             if !state.file_diffs.is_empty() {
                                 // If selection is active, copy selected text
@@ -1902,6 +1950,10 @@ fn run_app_internal(
                                             KeyBind {
                                                 key: "r",
                                                 description: "Refresh diff / PR",
+                                            },
+                                            KeyBind {
+                                                key: "R",
+                                                description: "Change diff <rev> (empty = worktree)",
                                             },
                                             KeyBind {
                                                 key: "y",

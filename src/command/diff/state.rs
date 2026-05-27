@@ -23,6 +23,40 @@ pub enum PendingKey {
     G,
 }
 
+/// Input state for the "change diff reference" prompt. When `active`, the
+/// footer renders an input box and key events are routed into `query`. An
+/// empty query on Enter means "diff against the worktree" (no ref).
+#[derive(Default, Clone)]
+pub struct RefInputState {
+    pub active: bool,
+    pub query: String,
+    pub error: Option<String>,
+}
+
+impl RefInputState {
+    pub fn start(&mut self, initial: &str) {
+        self.active = true;
+        self.query = initial.to_string();
+        self.error = None;
+    }
+
+    pub fn cancel(&mut self) {
+        self.active = false;
+        self.query.clear();
+        self.error = None;
+    }
+
+    pub fn push_char(&mut self, c: char) {
+        self.query.push(c);
+        self.error = None;
+    }
+
+    pub fn pop_char(&mut self) {
+        self.query.pop();
+        self.error = None;
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum HunkLineSelectionMode {
     Single,
@@ -104,6 +138,7 @@ pub struct AppState {
     pub settings: DiffViewSettings,
     pub diff_fullscreen: DiffFullscreen,
     pub search_state: SearchState,
+    pub ref_input: RefInputState,
     pub pending_key: PendingKey,
     pub needs_reload: bool,
     pub focused_hunk: Option<usize>,
@@ -243,6 +278,7 @@ impl AppState {
             settings,
             diff_fullscreen: DiffFullscreen::default(),
             search_state: SearchState::default(),
+            ref_input: RefInputState::default(),
             pending_key: PendingKey::default(),
             needs_reload: false,
             focused_hunk,

@@ -8,7 +8,7 @@ use ratatui::{
 use crate::command::diff::context::{compute_context_lines, ContextLine};
 use crate::command::diff::highlight::{highlight_line_spans, FileHighlighter};
 use crate::command::diff::search::{MatchPanel, SearchState};
-use crate::command::diff::state::{Annotation, AnnotationTarget};
+use crate::command::diff::state::{Annotation, AnnotationTarget, RefInputState};
 use crate::command::diff::theme;
 use crate::command::diff::types::{
     ChangeType, DiffFullscreen, DiffLine, DiffPanelFocus, DiffViewSettings, FileDiff, FocusedPanel,
@@ -663,7 +663,18 @@ impl DiffLineStyle {
     }
 }
 
-pub fn render_empty_state(frame: &mut Frame, watching: bool) {
+pub fn render_empty_state(frame: &mut Frame, watching: bool, ref_input: &RefInputState) {
+    let area = frame.area();
+    let (msg_area, footer_area) = if ref_input.active {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .split(area);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (area, None)
+    };
+
     let watch_hint = if watching {
         " (watching for changes...)"
     } else {
@@ -671,7 +682,30 @@ pub fn render_empty_state(frame: &mut Frame, watching: bool) {
     };
     let msg = Paragraph::new(format!("No changes detected.{}", watch_hint))
         .block(Block::default().title(" Git Review ").borders(Borders::ALL));
-    frame.render_widget(msg, frame.area());
+    frame.render_widget(msg, msg_area);
+
+    if let Some(footer_area) = footer_area {
+        let empty_search = SearchState::default();
+        let empty_files: HashSet<usize> = HashSet::new();
+        render_footer(
+            frame,
+            footer_area,
+            FooterData {
+                filename: "",
+                commit_ref: "",
+                watching,
+                current_file: 0,
+                viewed_files: &empty_files,
+                line_stats_added: 0,
+                line_stats_removed: 0,
+                hunk_count: 0,
+                focused_hunk: None,
+                search_state: &empty_search,
+                ref_input,
+                area_width: area.width,
+            },
+        );
+    }
 }
 
 fn render_context_lines(
@@ -1116,6 +1150,7 @@ pub fn render_diff(
     hunk_count: usize,
     diff_fullscreen: DiffFullscreen,
     search_state: &SearchState,
+    ref_input: &RefInputState,
     commit_ref: &str,
     focused_hunk: Option<usize>,
     hunks: &[usize],
@@ -1231,6 +1266,7 @@ pub fn render_diff(
                 hunk_count: 0,
                 focused_hunk: None,
                 search_state,
+                ref_input,
                 area_width: area.width,
             },
         );
@@ -2176,6 +2212,7 @@ pub fn render_diff(
             hunk_count,
             focused_hunk,
             search_state,
+            ref_input,
             area_width: area.width,
         },
     );
