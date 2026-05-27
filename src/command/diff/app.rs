@@ -220,9 +220,11 @@ fn format_annotation_preview(annotation: &super::state::Annotation, orphaned: bo
     let line_display = annotation.line_range_display();
     let label = annotation.target_label();
     let orphan_tag = if orphaned { " (orphaned)" } else { "" };
+    let resolved_tag = if annotation.resolved { "✓ " } else { "" };
     if line_display.is_empty() {
         format!(
-            "{} [{}]{} | {} | {}",
+            "{}{} [{}]{} | {} | {}",
+            resolved_tag,
             truncated_filename,
             label,
             orphan_tag,
@@ -231,7 +233,8 @@ fn format_annotation_preview(annotation: &super::state::Annotation, orphaned: bo
         )
     } else {
         format!(
-            "{}:{} [{}]{} | {} | {}",
+            "{}{}:{} [{}]{} | {} | {}",
+            resolved_tag,
             truncated_filename,
             line_display,
             label,
@@ -240,6 +243,137 @@ fn format_annotation_preview(annotation: &super::state::Annotation, orphaned: bo
             annotation.format_time()
         )
     }
+}
+
+/// Sort key for in-diff annotation navigation: (file_index, line).
+/// File-targeted annotations sort at the top of their file (line 0).
+/// Returns `None` if the annotation's file is no longer in the diff
+/// (i.e., it's orphaned at the file level) — such annotations are skipped
+/// during `(` / `)` traversal.
+fn annotation_sort_key(
+    ann: &super::state::Annotation,
+    file_diffs: &[FileDiff],
+) -> Option<(usize, usize)> {
+    let file_idx = file_diffs.iter().position(|f| f.filename == ann.filename)?;
+    let line = match &ann.target {
+        super::state::AnnotationTarget::File => 0,
+        super::state::AnnotationTarget::LineRange { start_line, .. } => *start_line,
+    };
+    Some((file_idx, line))
+}
+
+/// Return the file line number at the top of the current scroll viewport,
+/// preferring the new panel and falling back to the old panel. Used as the
+/// "cursor" position when finding the next/previous annotation.
+fn current_anchor_line(state: &mut AppState) -> usize {
+    state.ensure_cache();
+    let sbs = state.side_by_side_ref();
+    if sbs.is_empty() {
+        return 0;
+    }
+    let idx = (state.scroll as usize).min(sbs.len() - 1);
+    sbs.get(idx)
+        .and_then(|dl| {
+            dl.line_number(DiffPanelFocus::New)
+                .or_else(|| dl.line_number(DiffPanelFocus::Old))
+        })
+        .unwrap_or(0)
+}
+
+/// Switch to `ann`'s file (if needed) and scroll so its anchor is visible.
+/// Mirrors the behavior of the `AnnotationJump` modal result so that the
+/// `I`-list and the `(` / `)` shortcuts converge on the same outcome.
+fn jump_to_annotation(
+    state: &mut AppState,
+    ann: &super::state::Annotation,
+    visible_height: usize,
+    max_scroll: usize,
+) {
+    let filename = ann.filename.clone();
+    let target = ann.target.clone();
+    let Some(file_index) = state
+        .file_diffs
+        .iter()
+        .position(|f| f.filename == filename)
+    else {
+        return;
+    };
+    if state.current_file != file_index {
+        state.select_file(file_index);
+    }
+    if let super::state::AnnotationTarget::LineRange {
+        panel, start_line, ..
+    } = &target
+    {
+        state.ensure_cache();
+        let sbs = state.side_by_side_ref();
+        if let Some(sbs_idx) = find_sbs_index_for_line(sbs, *panel, *start_line) {
+            state.scroll =
+                adjust_scroll_to_line(sbs_idx, state.scroll, visible_height, max_scroll);
+        }
+    }
+}
+
+/// Find a line-range annotation on the current file whose range contains
+/// the line at the top of the viewport. Used by `R` to reply to whatever
+/// annotation the user has scrolled to. File-target annotations are skipped
+/// — replies to those go through the `I` modal.
+fn annotation_at_cursor(state: &mut AppState) -> Option<super::state::Annotation> {
+    if state.file_diffs.is_empty() {
+        return None;
+    }
+    let filename = state.file_diffs[state.current_file].filename.clone();
+    let line = current_anchor_line(state);
+    state
+        .annotations
+        .iter()
+        .find(|a| {
+            a.filename == filename
+                && match &a.target {
+                    super::state::AnnotationTarget::File => false,
+                    super::state::AnnotationTarget::LineRange {
+                        start_line,
+                        end_line,
+                        ..
+                    } => line >= *start_line && line <= *end_line,
+                }
+        })
+        .cloned()
+}
+
+/// Find the next (or previous) annotation relative to the current scroll
+/// position. Uses `(file_index, line)` ordering so traversal walks files in
+/// sidebar order, then line ascending within each file. Orphaned (file
+/// missing from diff) annotations are skipped. Clamps at the ends — does
+/// not wrap.
+fn find_adjacent_annotation(state: &mut AppState, forward: bool) -> Option<super::state::Annotation> {
+    if state.annotations.is_empty() {
+        return None;
+    }
+    let current_key = (state.current_file, current_anchor_line(state));
+    let mut keyed: Vec<((usize, usize), &super::state::Annotation)> = state
+        .annotations
+        .iter()
+        .filter_map(|a| annotation_sort_key(a, &state.file_diffs).map(|k| (k, a)))
+        .collect();
+    if keyed.is_empty() {
+        return None;
+    }
+    keyed.sort_by_key(|(k, _)| *k);
+
+    let picked = if forward {
+        keyed
+            .iter()
+            .find(|(k, _)| *k > current_key)
+            .or_else(|| keyed.last())
+    } else {
+        keyed
+            .iter()
+            .rev()
+            .find(|(k, _)| *k < current_key)
+            .or_else(|| keyed.first())
+    };
+    picked.map(|(_, a)| (*a).clone())
 }
 
 /// Build the items + annotations vectors for the `I` (all-annotations) modal.
@@ -721,40 +855,16 @@ fn run_app_internal(
                                     active_modal = None;
                                 }
                                 ModalResult::AnnotationJump { annotation_id } => {
-                                    if let Some(ann) = state.get_annotation_by_id(&annotation_id) {
-                                        let filename = ann.filename.clone();
-                                        let target = ann.target.clone();
-                                        // Find and switch to the file
-                                        if let Some(file_index) = state
-                                            .file_diffs
-                                            .iter()
-                                            .position(|f| f.filename == filename)
-                                        {
-                                            state.select_file(file_index);
-                                            // Scroll to annotation's line range
-                                            if let super::state::AnnotationTarget::LineRange {
-                                                panel,
-                                                start_line,
-                                                ..
-                                            } = &target
-                                            {
-                                                state.ensure_cache();
-                                                let sbs = state.side_by_side_ref();
-                                                // Find the side_by_side index for start_line
-                                                if let Some(sbs_idx) = find_sbs_index_for_line(
-                                                    sbs,
-                                                    *panel,
-                                                    *start_line,
-                                                ) {
-                                                    state.scroll = adjust_scroll_to_line(
-                                                        sbs_idx,
-                                                        state.scroll,
-                                                        visible_height,
-                                                        max_scroll,
-                                                    );
-                                                }
-                                            }
-                                        }
+                                    if let Some(ann) = state
+                                        .get_annotation_by_id(&annotation_id)
+                                        .cloned()
+                                    {
+                                        jump_to_annotation(
+                                            &mut state,
+                                            &ann,
+                                            visible_height,
+                                            max_scroll,
+                                        );
                                     }
                                     active_modal = None;
                                 }
@@ -815,6 +925,42 @@ fn run_app_internal(
                                     } else {
                                         active_modal = None;
                                     }
+                                }
+                                ModalResult::AnnotationToggleResolved { annotation_id } => {
+                                    let new_state = state
+                                        .get_annotation_by_id(&annotation_id)
+                                        .map(|a| !a.resolved);
+                                    if let Some(resolved) = new_state {
+                                        state.set_annotation_resolved(
+                                            &annotation_id,
+                                            resolved,
+                                        );
+                                    }
+                                    // Rebuild the modal contents but keep the
+                                    // selection on the same row — the list count
+                                    // hasn't changed, only the row's badge.
+                                    let prev_selected = match &active_modal {
+                                        Some(m) => match &m.content {
+                                            ModalContent::Annotations { selected, .. } => {
+                                                *selected
+                                            }
+                                            _ => 0,
+                                        },
+                                        None => 0,
+                                    };
+                                    let (items, annotations) = build_annotation_list(&state);
+                                    let mut modal = Modal::annotations(
+                                        "Annotations",
+                                        items,
+                                        annotations,
+                                    );
+                                    if let ModalContent::Annotations {
+                                        selected, items, ..
+                                    } = &mut modal.content
+                                    {
+                                        *selected = prev_selected.min(items.len().saturating_sub(1));
+                                    }
+                                    active_modal = Some(modal);
                                 }
                                 ModalResult::AnnotationCopyAll => {
                                     // Copy all annotations to clipboard
@@ -1630,6 +1776,32 @@ fn run_app_internal(
                                 }
                             }
                         }
+                        KeyCode::Char(')') => {
+                            if !state.annotations.is_empty() {
+                                state.clear_selection();
+                                if let Some(ann) = find_adjacent_annotation(&mut state, true) {
+                                    jump_to_annotation(
+                                        &mut state,
+                                        &ann,
+                                        visible_height,
+                                        max_scroll,
+                                    );
+                                }
+                            }
+                        }
+                        KeyCode::Char('(') => {
+                            if !state.annotations.is_empty() {
+                                state.clear_selection();
+                                if let Some(ann) = find_adjacent_annotation(&mut state, false) {
+                                    jump_to_annotation(
+                                        &mut state,
+                                        &ann,
+                                        visible_height,
+                                        max_scroll,
+                                    );
+                                }
+                            }
+                        }
                         KeyCode::Char('v') => {
                             if state.focused_panel == FocusedPanel::DiffView
                                 && !state.file_diffs.is_empty()
@@ -1800,6 +1972,21 @@ fn run_app_internal(
                                     items,
                                     annotations,
                                 ));
+                            }
+                        }
+                        KeyCode::Char('R') => {
+                            if let Some(ann) = annotation_at_cursor(&mut state) {
+                                let editor = AnnotationEditor::new(
+                                    ann.filename.clone(),
+                                    ann.target.clone(),
+                                )
+                                .with_reply(ann.id.clone());
+                                annotation_editor = Some(editor);
+                            }
+                        }
+                        KeyCode::Char('X') => {
+                            if let Some(ann) = annotation_at_cursor(&mut state) {
+                                state.set_annotation_resolved(&ann.id, !ann.resolved);
                             }
                         }
                         KeyCode::Char('r') => {
@@ -2085,8 +2272,20 @@ fn run_app_internal(
                                                 description: "View all annotations",
                                             },
                                             KeyBind {
-                                                key: "r (in I)",
-                                                description: "Reply to selected annotation",
+                                                key: "( / )",
+                                                description: "Jump to prev / next annotation",
+                                            },
+                                            KeyBind {
+                                                key: "R",
+                                                description: "Reply to annotation at cursor",
+                                            },
+                                            KeyBind {
+                                                key: "X",
+                                                description: "Toggle resolved on annotation at cursor",
+                                            },
+                                            KeyBind {
+                                                key: "r / x (in I)",
+                                                description: "Reply / toggle resolved",
                                             },
                                         ],
                                     },

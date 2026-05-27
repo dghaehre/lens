@@ -93,6 +93,9 @@ pub enum ModalResult {
     AnnotationDelete {
         annotation_id: AnnotationId,
     },
+    AnnotationToggleResolved {
+        annotation_id: AnnotationId,
+    },
     AnnotationCopyAll,
     AnnotationExport(String),
 }
@@ -202,11 +205,10 @@ impl Modal {
                 export_input,
                 ..
             } => {
-                let width = 100.min(area.width.saturating_sub(4));
-                let items_count = items.len().min(12) as u16;
-                // Compact height
+                let width = 120.min(area.width.saturating_sub(4));
+                let items_count = items.len().min(14) as u16;
                 let extra = if export_input.is_some() { 4 } else { 2 };
-                let height = (items_count + extra + 2).min(area.height * 80 / 100).max(8);
+                let height = (items_count + extra + 2).min(area.height * 85 / 100).max(12);
                 (width, height)
             }
         };
@@ -263,16 +265,17 @@ impl Modal {
             ModalContent::Annotations {
                 title,
                 items,
+                annotations,
                 selected,
                 export_input,
                 error_message,
-                ..
             } => {
                 self.render_annotations(
                     frame,
                     modal_area,
                     title,
                     items,
+                    annotations,
                     *selected,
                     export_input.as_deref(),
                     error_message.as_deref(),
@@ -508,19 +511,20 @@ impl Modal {
         frame.render_widget(list, chunks[2]);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_annotations(
         &self,
         frame: &mut Frame,
         area: Rect,
         title: &str,
         items: &[String],
+        annotations: &[Annotation],
         selected: usize,
         export_input: Option<&str>,
         error_message: Option<&str>,
     ) {
         let t = theme::get();
 
-        // Compact title with count
         let title_text = format!(" {} ({}) ", title, items.len());
 
         let block = Block::default()
@@ -535,8 +539,8 @@ impl Modal {
 
         use ratatui::layout::{Constraint, Direction, Layout};
 
-        // Different layout based on export input state
-        let (list_area, footer_area) = if export_input.is_some() {
+        // Vertical split: content (list + preview) above, optional export, then footer.
+        let (content_area, footer_area) = if export_input.is_some() {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -554,112 +558,40 @@ impl Modal {
             (chunks[0], chunks[1])
         };
 
-        // Render annotations list
-        let visible_count = list_area.height as usize;
-        let scroll_offset = if selected >= visible_count {
-            selected - visible_count + 1
+        // Horizontal split: list on the left, preview thread on the right.
+        // Drop the preview pane on narrow terminals where it can't render anything useful.
+        let show_preview = content_area.width >= 60;
+        let (list_area, preview_area) = if show_preview {
+            let list_w = (content_area.width * 45 / 100).max(30);
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(list_w),
+                    Constraint::Length(1),
+                    Constraint::Min(10),
+                ])
+                .split(content_area);
+            // Draw vertical divider between list and preview.
+            let divider = Paragraph::new("│").style(Style::default().fg(t.ui.border_unfocused));
+            for y in chunks[1].y..(chunks[1].y + chunks[1].height) {
+                let row = Rect::new(chunks[1].x, y, 1, 1);
+                frame.render_widget(divider.clone(), row);
+            }
+            (chunks[0], Some(chunks[2]))
         } else {
-            0
+            (content_area, None)
         };
 
-        let list_items: Vec<ListItem> = items
-            .iter()
-            .enumerate()
-            .skip(scroll_offset)
-            .take(visible_count)
-            .map(|(i, item)| {
-                let is_selected = i == selected;
+        // Render the annotation list (left pane).
+        render_annotation_list(frame, list_area, items, selected, t);
 
-                // Parse the item to extract filename, preview, and time
-                // Format is: "filename:L#-# | preview... | HH:MM"
-                let parts: Vec<&str> = item.splitn(3, " | ").collect();
-                let location = parts.first().unwrap_or(&"");
-                let preview = parts.get(1).unwrap_or(&"");
-                let time = parts.get(2).unwrap_or(&"");
+        // Render the thread preview (right pane).
+        if let Some(area) = preview_area {
+            let preview = annotations.get(selected);
+            render_annotation_preview(frame, area, preview, t);
+        }
 
-                let available_width = list_area.width as usize;
-                let time_width = time.len() + 2; // " time "
-
-                // Reserve space for time and calculate remaining space for location + preview
-                let content_width = available_width.saturating_sub(time_width + 4); // 4 for padding/separators
-
-                // Allocate: 45% for location, 55% for preview (minimum 20 chars each if space allows)
-                let location_max = (content_width * 45 / 100)
-                    .max(20)
-                    .min(content_width.saturating_sub(20));
-                let preview_max = content_width.saturating_sub(location_max);
-
-                // Truncate location if needed (using char count for proper UTF-8 handling)
-                let truncated_location =
-                    if location.chars().count() > location_max && location_max > 3 {
-                        let truncate_at = location_max - 1;
-                        let truncated: String = location.chars().take(truncate_at).collect();
-                        format!("{}…", truncated)
-                    } else {
-                        location.to_string()
-                    };
-
-                // Truncate preview if needed (using char count for proper UTF-8 handling)
-                let truncated_preview = if preview.chars().count() > preview_max && preview_max > 3
-                {
-                    let truncate_at = preview_max - 1;
-                    let truncated: String = preview.chars().take(truncate_at).collect();
-                    format!("{}…", truncated)
-                } else {
-                    preview.to_string()
-                };
-
-                // Calculate padding to right-align time (using char count for proper width calculation)
-                let location_len = truncated_location.chars().count() + 2; // " location "
-                let preview_len = truncated_preview.chars().count() + 1; // " preview"
-                let used_width = location_len + preview_len + time_width;
-                let padding = available_width.saturating_sub(used_width);
-
-                let spans = if is_selected {
-                    vec![
-                        Span::styled(
-                            format!(" {} ", truncated_location),
-                            Style::default().fg(t.ui.selection_fg).bg(t.ui.selection_bg),
-                        ),
-                        Span::styled(
-                            format!(" {}", truncated_preview),
-                            Style::default()
-                                .fg(t.ui.selection_fg)
-                                .bg(t.ui.selection_bg)
-                                .italic(),
-                        ),
-                        Span::styled(
-                            format!("{:>width$}", "", width = padding),
-                            Style::default().bg(t.ui.selection_bg),
-                        ),
-                        Span::styled(
-                            format!(" {} ", time),
-                            Style::default().fg(t.ui.selection_fg).bg(t.ui.selection_bg),
-                        ),
-                    ]
-                } else {
-                    vec![
-                        Span::styled(
-                            format!(" {} ", truncated_location),
-                            Style::default().fg(t.ui.text_secondary),
-                        ),
-                        Span::styled(
-                            format!(" {}", truncated_preview),
-                            Style::default().fg(t.ui.text_muted).italic(),
-                        ),
-                        Span::styled(format!("{:>width$}", "", width = padding), Style::default()),
-                        Span::styled(format!(" {} ", time), Style::default().fg(t.ui.text_muted)),
-                    ]
-                };
-
-                ListItem::new(Line::from(spans))
-            })
-            .collect();
-
-        let list = List::new(list_items);
-        frame.render_widget(list, list_area);
-
-        // Render export input if active
+        // Render export input if active.
         if let Some(input) = export_input {
             let input_area = Layout::default()
                 .direction(Direction::Vertical)
@@ -687,16 +619,13 @@ impl Modal {
             frame.render_widget(Paragraph::new(input_line), input_inner);
         }
 
-        // Display error message if present
         if let Some(error) = error_message {
-            // Show error above footer
             let error_line = Line::from(vec![
                 Span::styled("Error: ", Style::default().fg(t.ui.status_deleted).bold()),
                 Span::styled(error, Style::default().fg(t.ui.status_deleted)),
             ]);
             let error_para =
                 Paragraph::new(error_line).alignment(ratatui::prelude::Alignment::Center);
-            // Render error in the list area's last line
             let error_area = Rect::new(
                 list_area.x,
                 list_area.y + list_area.height.saturating_sub(1),
@@ -725,6 +654,9 @@ impl Modal {
                 Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
                 Span::styled("r", Style::default().fg(t.ui.text_muted)),
                 Span::styled(" reply  ", Style::default().fg(t.ui.text_muted)),
+                Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
+                Span::styled("x", Style::default().fg(t.ui.text_muted)),
+                Span::styled(" resolve  ", Style::default().fg(t.ui.text_muted)),
                 Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
                 Span::styled("d", Style::default().fg(t.ui.text_muted)),
                 Span::styled(" del  ", Style::default().fg(t.ui.text_muted)),
@@ -1002,6 +934,13 @@ impl Modal {
                                     annotation_id: ann.id.clone(),
                                 })
                         }
+                        KeyCode::Char('x') => {
+                            annotations
+                                .get(*selected)
+                                .map(|ann| ModalResult::AnnotationToggleResolved {
+                                    annotation_id: ann.id.clone(),
+                                })
+                        }
                         KeyCode::Char('y') => Some(ModalResult::AnnotationCopyAll),
                         KeyCode::Char('o') => {
                             *export_input = Some(String::from("annotations.txt"));
@@ -1055,4 +994,223 @@ fn calculate_keybindings_visible_height(terminal_height: u16, content_height: u1
     let modal_height = (content_height + 4).min(terminal_height * 80 / 100).max(5);
     // Subtract 2 for top/bottom borders
     modal_height.saturating_sub(2)
+}
+
+/// Render the left-hand annotation picker list. Each entry shows
+/// `location` on the left and the time on the right; the body preview lives
+/// in the right-hand pane so we no longer crowd it into the row.
+fn render_annotation_list(
+    frame: &mut Frame,
+    area: Rect,
+    items: &[String],
+    selected: usize,
+    t: &theme::Theme,
+) {
+    let visible_count = area.height as usize;
+    let scroll_offset = if selected >= visible_count {
+        selected - visible_count + 1
+    } else {
+        0
+    };
+
+    let list_items: Vec<ListItem> = items
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(visible_count)
+        .map(|(i, item)| {
+            let is_selected = i == selected;
+            // Format produced by `build_annotation_list`: "location | preview | HH:MM".
+            // We only show location + time in the list — the preview moves to the
+            // right pane.
+            let parts: Vec<&str> = item.splitn(3, " | ").collect();
+            let location = parts.first().copied().unwrap_or("");
+            let time = parts.get(2).copied().unwrap_or("");
+
+            let available = area.width as usize;
+            let time_w = time.chars().count() + 2; // " HH:MM "
+            let location_max = available.saturating_sub(time_w + 2).max(8);
+            let truncated_location = if location.chars().count() > location_max && location_max > 3
+            {
+                let truncate_at = location_max - 1;
+                let truncated: String = location.chars().take(truncate_at).collect();
+                format!("{}…", truncated)
+            } else {
+                location.to_string()
+            };
+
+            let used = truncated_location.chars().count() + 2 + time_w;
+            let padding = available.saturating_sub(used);
+
+            let spans = if is_selected {
+                let sel = Style::default().fg(t.ui.selection_fg).bg(t.ui.selection_bg);
+                vec![
+                    Span::styled(format!(" {} ", truncated_location), sel),
+                    Span::styled(format!("{:>width$}", "", width = padding), sel),
+                    Span::styled(format!(" {} ", time), sel),
+                ]
+            } else {
+                vec![
+                    Span::styled(
+                        format!(" {} ", truncated_location),
+                        Style::default().fg(t.ui.text_secondary),
+                    ),
+                    Span::styled(format!("{:>width$}", "", width = padding), Style::default()),
+                    Span::styled(format!(" {} ", time), Style::default().fg(t.ui.text_muted)),
+                ]
+            };
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    frame.render_widget(List::new(list_items), area);
+}
+
+/// Render the right-hand preview pane for the currently-selected annotation:
+/// thread anchor (file + line range), then every comment in the thread with
+/// a short header and wrapped body.
+fn render_annotation_preview(
+    frame: &mut Frame,
+    area: Rect,
+    annotation: Option<&Annotation>,
+    t: &theme::Theme,
+) {
+    use crate::command::diff::state::AnnotationTarget;
+
+    let Some(ann) = annotation else {
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "no annotations",
+            Style::default().fg(t.ui.text_muted).italic(),
+        )))
+        .alignment(ratatui::prelude::Alignment::Center);
+        frame.render_widget(empty, area);
+        return;
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Anchor header: filename + line range, plus a "resolved" badge.
+    let location = match &ann.target {
+        AnnotationTarget::File => format!("{} [file]", ann.filename),
+        AnnotationTarget::LineRange { .. } => {
+            format!("{}:{}", ann.filename, ann.line_range_display())
+        }
+    };
+    let mut header_spans: Vec<Span> = vec![Span::styled(
+        location,
+        Style::default().fg(t.ui.text_primary).bold(),
+    )];
+    if ann.resolved {
+        header_spans.push(Span::styled("  ", Style::default()));
+        header_spans.push(Span::styled(
+            "✓ resolved",
+            Style::default().fg(t.ui.status_added).bold(),
+        ));
+    }
+    lines.push(Line::from(header_spans));
+    lines.push(Line::from(""));
+
+    // Render every comment in the thread.
+    let wrap_width = (area.width.saturating_sub(2) as usize).max(10);
+    for (i, comment) in ann.comments.iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "↳ reply",
+                Style::default().fg(t.ui.text_muted),
+            )));
+        }
+        let header = format!(
+            "{}  {}",
+            comment.author.login,
+            format_comment_time(comment.created_at),
+        );
+        lines.push(Line::from(Span::styled(
+            header,
+            Style::default().fg(t.ui.text_secondary),
+        )));
+        for body_line in comment.content.lines() {
+            for wrapped in wrap_preview_line(body_line, wrap_width) {
+                lines.push(Line::from(Span::styled(
+                    wrapped,
+                    Style::default().fg(t.ui.text_primary),
+                )));
+            }
+            if body_line.is_empty() {
+                lines.push(Line::from(""));
+            }
+        }
+    }
+
+    // Clamp to the area height so we don't overflow.
+    let visible: Vec<Line> = lines.into_iter().take(area.height as usize).collect();
+    let para = Paragraph::new(visible);
+    let inset = Rect::new(
+        area.x + 1,
+        area.y,
+        area.width.saturating_sub(1),
+        area.height,
+    );
+    frame.render_widget(para, inset);
+}
+
+fn format_comment_time(t: std::time::SystemTime) -> String {
+    use std::time::UNIX_EPOCH;
+    let secs = t
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let hours = (secs / 3600) % 24;
+    let minutes = (secs / 60) % 60;
+    format!("{:02}:{:02}", hours, minutes)
+}
+
+/// Word-wrap a single body line into chunks no wider than `width` chars,
+/// breaking on word boundaries where possible.
+fn wrap_preview_line(line: &str, width: usize) -> Vec<String> {
+    if line.chars().count() <= width || width < 4 {
+        return vec![line.to_string()];
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in line.split_whitespace() {
+        let needed = if current.is_empty() {
+            word.chars().count()
+        } else {
+            current.chars().count() + 1 + word.chars().count()
+        };
+        if needed > width && !current.is_empty() {
+            out.push(std::mem::take(&mut current));
+        }
+        if word.chars().count() > width {
+            // Hard-break a single overlong word.
+            let mut chunk = String::new();
+            for c in word.chars() {
+                if chunk.chars().count() == width {
+                    out.push(std::mem::take(&mut chunk));
+                }
+                chunk.push(c);
+            }
+            if !chunk.is_empty() {
+                if current.is_empty() {
+                    current = chunk;
+                } else {
+                    out.push(std::mem::take(&mut current));
+                    current = chunk;
+                }
+            }
+        } else {
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(word);
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
 }

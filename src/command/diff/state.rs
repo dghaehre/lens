@@ -1037,6 +1037,16 @@ impl AppState {
         }
     }
 
+    /// Toggle the resolved state of an annotation. Errors from the store are
+    /// swallowed; the cache is only updated if the store accepted the write.
+    pub fn set_annotation_resolved(&mut self, id: &AnnotationId, resolved: bool) {
+        if self.store.set_resolved(id, resolved).is_ok() {
+            if let Some(ann) = self.annotations.iter_mut().find(|a| &a.id == id) {
+                ann.resolved = resolved;
+            }
+        }
+    }
+
     /// Remove an annotation by id. Errors from the store are swallowed.
     pub fn remove_annotation(&mut self, id: &AnnotationId) {
         if self.store.delete(id).is_ok() {

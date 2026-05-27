@@ -114,6 +114,27 @@ impl AnnotationStore for InMemoryStore {
         Ok(ann.clone())
     }
 
+    fn set_resolved(
+        &mut self,
+        id: &AnnotationId,
+        resolved: bool,
+    ) -> Result<(), AnnotationError> {
+        if !is_local_origin(&id.origin) {
+            return Err(AnnotationError::WrongOrigin);
+        }
+        match self
+            .annotations
+            .iter_mut()
+            .find(|a| a.id.native == id.native)
+        {
+            Some(ann) => {
+                ann.resolved = resolved;
+                Ok(())
+            }
+            None => Err(AnnotationError::NotFound),
+        }
+    }
+
     fn delete(&mut self, id: &AnnotationId) -> Result<(), AnnotationError> {
         if !is_local_origin(&id.origin) {
             return Err(AnnotationError::WrongOrigin);

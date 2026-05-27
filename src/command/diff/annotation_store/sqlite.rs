@@ -310,6 +310,30 @@ impl AnnotationStore for SqliteStore {
         get_annotation(&self.conn, annotation_row_id)
     }
 
+    fn set_resolved(
+        &mut self,
+        id: &AnnotationId,
+        resolved: bool,
+    ) -> Result<(), AnnotationError> {
+        if !is_local_origin(&id.origin) {
+            return Err(AnnotationError::WrongOrigin);
+        }
+        let row_id = parse_native(&id.native)?;
+        let value: i64 = if resolved { 1 } else { 0 };
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE annotations SET resolved = ? WHERE id = ?",
+                params![value, row_id],
+            )
+            .map_err(backend_err)?;
+        if changed == 0 {
+            Err(AnnotationError::NotFound)
+        } else {
+            Ok(())
+        }
+    }
+
     fn delete(&mut self, id: &AnnotationId) -> Result<(), AnnotationError> {
         if !is_local_origin(&id.origin) {
             return Err(AnnotationError::WrongOrigin);
@@ -564,6 +588,32 @@ mod tests {
         store.update(&a.id, "second".to_string()).unwrap();
         let all = store.list().unwrap();
         assert_eq!(all[0].root().content, "second");
+    }
+
+    #[test]
+    fn set_resolved_toggles_and_persists() {
+        let (_dir, mut store) = open_temp();
+        let a = store.create(draft_file("a.rs", "x", "ui")).unwrap();
+        assert!(!store.list().unwrap()[0].resolved);
+
+        store.set_resolved(&a.id, true).unwrap();
+        assert!(store.list().unwrap()[0].resolved);
+
+        store.set_resolved(&a.id, false).unwrap();
+        assert!(!store.list().unwrap()[0].resolved);
+    }
+
+    #[test]
+    fn set_resolved_unknown_id_is_not_found() {
+        let (_dir, mut store) = open_temp();
+        let bogus = AnnotationId {
+            origin: "ui".to_string(),
+            native: "9999".to_string(),
+        };
+        match store.set_resolved(&bogus, true) {
+            Err(AnnotationError::NotFound) => {}
+            other => panic!("expected NotFound, got {:?}", other),
+        }
     }
 
     #[test]
