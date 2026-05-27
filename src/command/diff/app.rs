@@ -1,5 +1,9 @@
 use std::collections::VecDeque;
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use crossterm::{
     event::{
@@ -293,6 +297,37 @@ enum AppEvent {
     Watch(WatchEvent),
 }
 
+/// Spawn a thread that reads crossterm input events and forwards them as
+/// `AppEvent::Input`. Returns a stop-flag and the join handle. The thread
+/// must be stopped (flag set, then joined) before handing the tty off to a
+/// child process such as `$EDITOR`; otherwise both readers race for stdin
+/// and the child appears to lose keystrokes / hang.
+fn spawn_input_thread(
+    tx: std::sync::mpsc::Sender<AppEvent>,
+) -> (Arc<AtomicBool>, JoinHandle<()>) {
+    let running = Arc::new(AtomicBool::new(true));
+    let running_clone = running.clone();
+    let handle = std::thread::spawn(move || {
+        while running_clone.load(Ordering::Relaxed) {
+            // Poll with a short timeout so the stop-flag is checked promptly
+            // without busy-waiting.
+            match event::poll(Duration::from_millis(100)) {
+                Ok(true) => match event::read() {
+                    Ok(ev) => {
+                        if tx.send(AppEvent::Input(ev)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                },
+                Ok(false) => {}
+                Err(_) => break,
+            }
+        }
+    });
+    (running, handle)
+}
+
 fn run_app_internal(
     options: DiffOptions,
     file_diffs: Vec<super::types::FileDiff>,
@@ -347,19 +382,7 @@ fn run_app_internal(
     // Bridge crossterm input and the file watcher into a single channel so the
     // main loop can block on `recv()` and wake up only when something happens.
     let (app_tx, app_rx) = std::sync::mpsc::channel::<AppEvent>();
-    {
-        let tx = app_tx.clone();
-        std::thread::spawn(move || loop {
-            match event::read() {
-                Ok(ev) => {
-                    if tx.send(AppEvent::Input(ev)).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        });
-    }
+    let (mut input_running, mut input_handle) = spawn_input_thread(app_tx.clone());
     if let Some(rx) = watch_rx {
         let tx = app_tx.clone();
         std::thread::spawn(move || {
@@ -370,7 +393,6 @@ fn run_app_internal(
             }
         });
     }
-    drop(app_tx);
 
     'main: loop {
         if state.needs_reload {
@@ -1787,6 +1809,11 @@ fn run_app_internal(
                         }
                         KeyCode::Char('e') => {
                             if !state.file_diffs.is_empty() {
+                                // Stop the background input reader so it
+                                // doesn't fight the child editor for stdin.
+                                input_running.store(false, Ordering::Relaxed);
+                                let _ = input_handle.join();
+
                                 io::stdout().execute(DisableMouseCapture)?;
                                 io::stdout().execute(LeaveAlternateScreen)?;
                                 disable_raw_mode()?;
@@ -1828,6 +1855,11 @@ fn run_app_internal(
                                 io::stdout().execute(EnterAlternateScreen)?;
                                 io::stdout().execute(EnableMouseCapture)?;
                                 terminal.clear()?;
+
+                                // Restart the background input reader.
+                                let (r, h) = spawn_input_thread(app_tx.clone());
+                                input_running = r;
+                                input_handle = h;
                             }
                         }
                         KeyCode::Char('g') => {
