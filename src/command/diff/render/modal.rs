@@ -7,6 +7,7 @@ use ratatui::{
     },
 };
 
+use crate::command::diff::highlight::highlight_line_spans;
 use crate::command::diff::state::{Annotation, AnnotationId};
 use crate::command::diff::theme;
 
@@ -64,6 +65,11 @@ pub enum ModalContent {
         title: String,
         items: Vec<String>,
         annotations: Vec<Annotation>,
+        /// Diff snippets parallel to `annotations`: each entry is a list of
+        /// `(line_number, content)` pairs around the annotation's anchor,
+        /// used to render code context in the preview pane. File-level and
+        /// orphaned annotations get an empty vec.
+        snippets: Vec<Vec<(usize, String)>>,
         selected: usize,
         export_input: Option<String>,
         /// Error message to display (e.g., for failed export)
@@ -175,6 +181,7 @@ impl Modal {
         title: impl Into<String>,
         items: Vec<String>,
         annotations: Vec<Annotation>,
+        snippets: Vec<Vec<(usize, String)>>,
         source_label: impl Into<String>,
     ) -> Self {
         Self {
@@ -182,6 +189,7 @@ impl Modal {
                 title: title.into(),
                 items,
                 annotations,
+                snippets,
                 selected: 0,
                 export_input: None,
                 error_message: None,
@@ -325,6 +333,7 @@ impl Modal {
                 title,
                 items,
                 annotations,
+                snippets,
                 selected,
                 export_input,
                 error_message,
@@ -338,6 +347,7 @@ impl Modal {
                     title,
                     items,
                     annotations,
+                    snippets,
                     *selected,
                     export_input.as_deref(),
                     error_message.as_deref(),
@@ -584,6 +594,7 @@ impl Modal {
         title: &str,
         items: &[String],
         annotations: &[Annotation],
+        snippets: &[Vec<(usize, String)>],
         selected: usize,
         export_input: Option<&str>,
         error_message: Option<&str>,
@@ -685,7 +696,8 @@ impl Modal {
         // Render the thread preview (right pane).
         if let Some(area) = preview_area {
             let preview = annotations.get(selected);
-            render_annotation_preview(frame, area, preview, t);
+            let snippet = snippets.get(selected).map(|s| s.as_slice()).unwrap_or(&[]);
+            render_annotation_preview(frame, area, preview, snippet, t);
         }
 
         // Render export input if active.
@@ -1403,14 +1415,89 @@ fn truncate_with_ellipsis(s: &str, max: usize) -> String {
     }
 }
 
+/// Expand `\t` characters in span text to spaces aligned to `tab_width`
+/// stops, preserving per-span styling. Mirrors the diff view's tab handling
+/// so the snippet column math matches the rendered output exactly.
+fn expand_tabs_in_spans<'a>(spans: Vec<Span<'a>>, tab_width: usize) -> Vec<Span<'a>> {
+    if tab_width == 0 {
+        return spans
+            .into_iter()
+            .map(|span| {
+                if !span.content.contains('\t') {
+                    span
+                } else {
+                    let buf: String = span.content.chars().filter(|c| *c != '\t').collect();
+                    Span::styled(buf, span.style)
+                }
+            })
+            .collect();
+    }
+    let mut col = 0usize;
+    let mut out: Vec<Span<'a>> = Vec::with_capacity(spans.len());
+    for span in spans {
+        if !span.content.contains('\t') {
+            col += span.content.chars().count();
+            out.push(span);
+            continue;
+        }
+        let mut buf = String::new();
+        for ch in span.content.chars() {
+            if ch == '\t' {
+                let spaces = tab_width - (col % tab_width);
+                for _ in 0..spaces {
+                    buf.push(' ');
+                }
+                col += spaces;
+            } else {
+                buf.push(ch);
+                col += 1;
+            }
+        }
+        out.push(Span::styled(buf, span.style));
+    }
+    out
+}
+
+/// Truncate a span list to at most `max_cols` visual columns (chars).
+/// Returns the truncated spans plus a flag indicating whether truncation
+/// happened, so callers can append their own ellipsis. Empty / over-budget
+/// spans are dropped cleanly without producing zero-content spans.
+fn truncate_spans_to_width<'a>(
+    spans: Vec<Span<'a>>,
+    max_cols: usize,
+) -> (Vec<Span<'a>>, bool) {
+    let mut out: Vec<Span<'a>> = Vec::with_capacity(spans.len());
+    let mut used = 0usize;
+    let mut truncated = false;
+    for span in spans {
+        let span_len = span.content.chars().count();
+        if used + span_len <= max_cols {
+            used += span_len;
+            out.push(span);
+            continue;
+        }
+        // This span overflows — keep what fits, drop the rest.
+        let remaining = max_cols.saturating_sub(used);
+        if remaining > 0 {
+            let head: String = span.content.chars().take(remaining).collect();
+            out.push(Span::styled(head, span.style));
+        }
+        truncated = true;
+        break;
+    }
+    (out, truncated)
+}
+
 /// Render the right-hand preview pane for the currently-selected annotation:
 /// an accent-barred header (anchor + resolved/reply badges), followed by
-/// each comment in the thread with author/time and a wrapped body. Replies
-/// are visually indented and prefixed with a thread guide.
+/// a code snippet showing the diff lines being annotated, then each comment
+/// in the thread with author/time and a wrapped body. Replies are visually
+/// indented and prefixed with a thread guide.
 fn render_annotation_preview(
     frame: &mut Frame,
     area: Rect,
     annotation: Option<&Annotation>,
+    snippet: &[(usize, String)],
     t: &theme::Theme,
 ) {
     use crate::command::diff::state::AnnotationTarget;
@@ -1466,11 +1553,128 @@ fn render_annotation_preview(
     lines.push(Line::from(header_spans));
     // Thin separator under the header.
     let sep_width = (area.width.saturating_sub(2) as usize).max(4);
-    lines.push(Line::from(Span::styled(
-        "─".repeat(sep_width),
-        Style::default().fg(t.ui.border_unfocused),
-    )));
+    let separator = || -> Line<'static> {
+        Line::from(Span::styled(
+            "─".repeat(sep_width),
+            Style::default().fg(t.ui.border_unfocused),
+        ))
+    };
+    lines.push(separator());
     lines.push(Line::from(""));
+
+    // Code snippet (only for line-range anchors with content available).
+    // Lines inside the annotation's anchor range get a `▸` marker and full
+    // colour; context lines get a blank prefix and muted colour, so the
+    // reader can immediately tell which lines are being commented on.
+    if !snippet.is_empty() {
+        let (anchor_start, anchor_end) = match &ann.target {
+            AnnotationTarget::LineRange {
+                start_line,
+                end_line,
+                ..
+            } => (*start_line, *end_line),
+            AnnotationTarget::File => (0, 0),
+        };
+        let max_line_no = snippet.iter().map(|(n, _)| *n).max().unwrap_or(0);
+        let gutter_w = max_line_no.to_string().chars().count().max(2);
+        // Cap snippet height so a long anchor range doesn't push the
+        // thread off-screen. If we cap, replace the middle with "…".
+        const SNIPPET_MAX_ROWS: usize = 8;
+        let render_snippet = if snippet.len() <= SNIPPET_MAX_ROWS {
+            snippet.iter().cloned().map(Some).collect::<Vec<_>>()
+        } else {
+            let head = SNIPPET_MAX_ROWS / 2;
+            let tail = SNIPPET_MAX_ROWS - head - 1;
+            let mut out: Vec<Option<(usize, String)>> = snippet
+                .iter()
+                .take(head)
+                .cloned()
+                .map(Some)
+                .collect();
+            out.push(None); // ellipsis row
+            out.extend(
+                snippet
+                    .iter()
+                    .skip(snippet.len() - tail)
+                    .cloned()
+                    .map(Some),
+            );
+            out
+        };
+        // Width budget for the code column. The preview pane is rendered
+        // into an inset (`area.x + 1`, width `area.width - 1`), so we have
+        // `area.width - 1` columns to play with; subtract the row prefix to
+        // get how many visual columns the code itself can occupy.
+        let prefix_w = 1 + 1 + gutter_w + 3; // marker + sp + gutter + ' │ '
+        let inset_width = (area.width as usize).saturating_sub(1);
+        let content_w = inset_width.saturating_sub(prefix_w).max(8);
+        const TAB_WIDTH: usize = 4;
+
+        for entry in render_snippet {
+            let Some((line_no, content)) = entry else {
+                // Ellipsis row for the elided middle of a long snippet.
+                lines.push(Line::from(Span::styled(
+                    format!("{:>width$}", "…", width = prefix_w),
+                    Style::default().fg(t.ui.text_muted),
+                )));
+                continue;
+            };
+            let in_anchor = line_no >= anchor_start && line_no <= anchor_end;
+            let (marker, marker_style) = if in_anchor {
+                ("▸", Style::default().fg(t.ui.highlight).bold())
+            } else {
+                (" ", Style::default())
+            };
+            let gutter_style = if in_anchor {
+                Style::default().fg(t.ui.text_secondary)
+            } else {
+                Style::default().fg(t.ui.line_number)
+            };
+
+            // Strip trailing `\r` from CRLF line endings — leaving it in
+            // would render as a control char and corrupt the row.
+            let cleaned = content.trim_end_matches('\r');
+            // Highlight the *full* line so multi-token syntax (strings,
+            // identifiers) tokenises correctly, then expand tabs to spaces
+            // (matching the diff view's behaviour) so column math lines up,
+            // then truncate to the visible width. We reserve one col for
+            // the ellipsis when truncation is needed so the total visible
+            // width stays exactly at `content_w`.
+            let highlighted = highlight_line_spans(cleaned, &ann.filename, None);
+            let highlighted = expand_tabs_in_spans(highlighted, TAB_WIDTH);
+            let total_cols: usize = highlighted
+                .iter()
+                .map(|s| s.content.chars().count())
+                .sum();
+            let did_truncate = total_cols > content_w;
+            let budget = if did_truncate {
+                content_w.saturating_sub(1)
+            } else {
+                content_w
+            };
+            let (code_spans, _) = truncate_spans_to_width(highlighted, budget);
+
+            let mut spans = vec![
+                Span::styled(marker.to_string(), marker_style),
+                Span::styled(" ", Style::default()),
+                Span::styled(
+                    format!("{:>width$}", line_no, width = gutter_w),
+                    gutter_style,
+                ),
+                Span::styled(" │ ", Style::default().fg(t.ui.border_unfocused)),
+            ];
+            spans.extend(code_spans);
+            if did_truncate {
+                spans.push(Span::styled(
+                    "…",
+                    Style::default().fg(t.ui.text_muted),
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
+        lines.push(separator());
+        lines.push(Line::from(""));
+    }
 
     // Render every comment in the thread. Replies get an indent + thread
     // guide so it's obvious they're hanging off the root.
