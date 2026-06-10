@@ -68,6 +68,9 @@ pub enum ModalContent {
         export_input: Option<String>,
         /// Error message to display (e.g., for failed export)
         error_message: Option<String>,
+        /// One-shot success / info message (rendered in the status colour
+        /// rather than the deleted/red colour used for errors).
+        info_message: Option<String>,
         /// Human-readable label for the active annotation source
         /// (e.g. "local", "github #1234 (read-only)"). Rendered as a
         /// dedicated picker row at the top of the list; pressing enter on
@@ -111,6 +114,11 @@ pub enum ModalResult {
     /// User asked the annotations modal to switch to the next annotation
     /// source (e.g. local ↔ github).
     AnnotationSourceSwitch,
+    /// User asked to push the selected annotation to the opposite source
+    /// (local ↔ github). Direction is implied by the active source.
+    AnnotationCopyToOther {
+        annotation_id: AnnotationId,
+    },
 }
 
 impl Modal {
@@ -177,6 +185,7 @@ impl Modal {
                 selected: 0,
                 export_input: None,
                 error_message: None,
+                info_message: None,
                 source_label: source_label.into(),
                 source_focused: false,
             },
@@ -196,6 +205,14 @@ impl Modal {
     pub fn annotations_set_error(&mut self, msg: impl Into<String>) {
         if let ModalContent::Annotations { error_message, .. } = &mut self.content {
             *error_message = Some(msg.into());
+        }
+    }
+
+    /// Seed the info-message slot for successful operations. Rendered in the
+    /// non-error colour so users don't misread a success as a failure.
+    pub fn annotations_set_info(&mut self, msg: impl Into<String>) {
+        if let ModalContent::Annotations { info_message, .. } = &mut self.content {
+            *info_message = Some(msg.into());
         }
     }
 
@@ -310,6 +327,7 @@ impl Modal {
                 selected,
                 export_input,
                 error_message,
+                info_message,
                 source_label,
                 source_focused,
             } => {
@@ -322,6 +340,7 @@ impl Modal {
                     *selected,
                     export_input.as_deref(),
                     error_message.as_deref(),
+                    info_message.as_deref(),
                     source_label,
                     *source_focused,
                 );
@@ -567,6 +586,7 @@ impl Modal {
         selected: usize,
         export_input: Option<&str>,
         error_message: Option<&str>,
+        info_message: Option<&str>,
         source_label: &str,
         source_focused: bool,
     ) {
@@ -690,6 +710,20 @@ impl Modal {
                 1,
             );
             frame.render_widget(error_para, error_area);
+        } else if let Some(info) = info_message {
+            let info_line = Line::from(Span::styled(
+                info,
+                Style::default().fg(t.ui.status_added).bold(),
+            ));
+            let info_para =
+                Paragraph::new(info_line).alignment(ratatui::prelude::Alignment::Center);
+            let info_area = Rect::new(
+                list_area.x,
+                list_area.y + list_area.height.saturating_sub(1),
+                list_area.width,
+                1,
+            );
+            frame.render_widget(info_para, info_area);
         }
 
         // Compact footer
@@ -720,6 +754,16 @@ impl Modal {
                 Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
                 Span::styled("y", Style::default().fg(t.ui.text_muted)),
                 Span::styled(" copy  ", Style::default().fg(t.ui.text_muted)),
+                Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
+                Span::styled("p", Style::default().fg(t.ui.text_muted)),
+                Span::styled(
+                    if source_label.contains("github") {
+                        " copy to local  "
+                    } else {
+                        " copy to github  "
+                    },
+                    Style::default().fg(t.ui.text_muted),
+                ),
                 Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
                 Span::styled("o", Style::default().fg(t.ui.text_muted)),
                 Span::styled(" export", Style::default().fg(t.ui.text_muted)),
@@ -1015,6 +1059,13 @@ impl Modal {
                         }
                         KeyCode::Char('y') if !*source_focused => {
                             Some(ModalResult::AnnotationCopyAll)
+                        }
+                        KeyCode::Char('p') if !*source_focused => {
+                            annotations
+                                .get(*selected)
+                                .map(|ann| ModalResult::AnnotationCopyToOther {
+                                    annotation_id: ann.id.clone(),
+                                })
                         }
                         KeyCode::Char('o') if !*source_focused => {
                             *export_input = Some(String::from("annotations.txt"));

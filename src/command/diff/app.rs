@@ -1055,6 +1055,44 @@ fn run_app_internal(
                                     }
                                     active_modal = None;
                                 }
+                                ModalResult::AnnotationCopyToOther { annotation_id } => {
+                                    let push_result = state
+                                        .copy_annotation_to_other_source(&annotation_id, backend);
+                                    let prev_selected = match &active_modal {
+                                        Some(m) => match &m.content {
+                                            ModalContent::Annotations { selected, .. } => {
+                                                *selected
+                                            }
+                                            _ => 0,
+                                        },
+                                        None => 0,
+                                    };
+                                    let (items, annotations) = build_annotation_list(&state);
+                                    let mut modal = Modal::annotations(
+                                        "Annotations",
+                                        items,
+                                        annotations,
+                                        source_label(&state),
+                                    );
+                                    if let ModalContent::Annotations {
+                                        selected, items, ..
+                                    } = &mut modal.content
+                                    {
+                                        *selected =
+                                            prev_selected.min(items.len().saturating_sub(1));
+                                    }
+                                    match push_result {
+                                        Ok(()) => {
+                                            if let Some(msg) =
+                                                state.annotation_source_status.clone()
+                                            {
+                                                modal.annotations_set_info(msg);
+                                            }
+                                        }
+                                        Err(msg) => modal.annotations_set_error(msg),
+                                    }
+                                    active_modal = Some(modal);
+                                }
                                 ModalResult::AnnotationExport(filename) => {
                                     // Write annotations to file
                                     let formatted = state.format_annotations_for_export();
