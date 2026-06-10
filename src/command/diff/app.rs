@@ -2014,7 +2014,7 @@ fn run_app_internal(
                         KeyCode::Char('r') => {
                             state.needs_reload = true;
                         }
-                        KeyCode::Char('R') => {
+                        KeyCode::Char('b') => {
                             let initial = state.diff_reference.clone().unwrap_or_default();
                             state.ref_input.start(&initial);
                         }
@@ -2171,8 +2171,8 @@ fn run_app_internal(
                                                 description: "Refresh diff / PR",
                                             },
                                             KeyBind {
-                                                key: "R",
-                                                description: "Change diff <rev> (empty = worktree)",
+                                                key: "b",
+                                                description: "Change diff base <rev> (empty = worktree)",
                                             },
                                             KeyBind {
                                                 key: "y",
