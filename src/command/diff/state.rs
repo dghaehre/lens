@@ -467,6 +467,96 @@ impl AppState {
         }
     }
 
+    /// Copy the selected annotation's root comment to the *other* annotation
+    /// source. Local → Github builds a transient `GithubStore` (requires a PR
+    /// and a non-drifted checkout). Github → Local writes to the parked
+    /// SQLite store. The active source is left unchanged so the user can
+    /// keep reviewing where they were.
+    pub fn copy_annotation_to_other_source(
+        &mut self,
+        id: &AnnotationId,
+        backend: &GitBackend,
+    ) -> Result<(), String> {
+        let local_head = backend.resolve_ref("HEAD").ok();
+        self.copy_annotation_to_other_source_inner(id, local_head, Box::new(RealGhClient))
+    }
+
+    pub fn copy_annotation_to_other_source_inner(
+        &mut self,
+        id: &AnnotationId,
+        local_head: Option<String>,
+        gh: Box<dyn GhClient>,
+    ) -> Result<(), String> {
+        let ann = self
+            .get_annotation_by_id(id)
+            .cloned()
+            .ok_or_else(|| "annotation not found".to_string())?;
+
+        match self.annotation_source {
+            AnnotationSource::Local => {
+                if self.pr_info.is_none() {
+                    match resolve_pr_for_current_branch(&*gh) {
+                        Ok(pr) => self.pr_info = Some(pr),
+                        Err(e) => {
+                            let msg = e.to_string();
+                            self.annotation_source_status = Some(msg.clone());
+                            return Err(msg);
+                        }
+                    }
+                }
+                let pr = self.pr_info.clone().expect("pr_info populated above");
+                let writable = match local_head.as_deref() {
+                    Some(h) => h == pr.head_oid.as_str(),
+                    None => false,
+                };
+                if !writable {
+                    let msg = "checkout drift: local HEAD != PR head — cannot push to github"
+                        .to_string();
+                    self.annotation_source_status = Some(msg.clone());
+                    return Err(msg);
+                }
+                let mut gh_store = GithubStore::new(pr, gh, true).map_err(|e| {
+                    let msg = e.to_string();
+                    self.annotation_source_status = Some(msg.clone());
+                    msg
+                })?;
+                let draft = NewAnnotation {
+                    filename: ann.filename.clone(),
+                    target: ann.target.clone(),
+                    content: ann.root().content.clone(),
+                    origin: "github".to_string(),
+                    created_at: SystemTime::now(),
+                };
+                gh_store.create(draft).map_err(|e| {
+                    let msg = e.to_string();
+                    self.annotation_source_status = Some(msg.clone());
+                    msg
+                })?;
+                self.annotation_source_status = Some("copied to github".to_string());
+                Ok(())
+            }
+            AnnotationSource::Github => {
+                let local_store = self.inactive_local_store.as_mut().ok_or_else(|| {
+                    "internal: no local store available".to_string()
+                })?;
+                let draft = NewAnnotation {
+                    filename: ann.filename.clone(),
+                    target: ann.target.clone(),
+                    content: ann.root().content.clone(),
+                    origin: "ui".to_string(),
+                    created_at: SystemTime::now(),
+                };
+                local_store.create(draft).map_err(|e| {
+                    let msg = e.to_string();
+                    self.annotation_source_status = Some(msg.clone());
+                    msg
+                })?;
+                self.annotation_source_status = Some("copied to local".to_string());
+                Ok(())
+            }
+        }
+    }
+
     /// Repopulate `self.annotations` from the backing store, filtered to files
     /// present in the current diff. Errors from the store are swallowed —
     /// the cache simply stays empty if the store can't be read.
