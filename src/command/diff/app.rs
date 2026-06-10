@@ -17,6 +17,7 @@ use ratatui::prelude::*;
 
 use super::annotation::{AnnotationEditor, AnnotationEditorResult};
 use super::annotation_store::{AnnotationStore, InMemoryStore, SqliteStore};
+use super::pr_comment_editor::{PrCommentEditor, PrCommentEditorResult, PrCommentIntent};
 use super::coordinates::{extract_selected_text, PanelLayout};
 use super::highlight;
 use super::loader::{get_current_branch, load_file_diffs, load_single_commit_diffs};
@@ -417,13 +418,20 @@ fn source_label(state: &AppState) -> String {
 
 /// Build the compact status header rendered above the PR description body.
 /// Returns up to two lines:
-///   1. state badge · draft tag · mergeability · review decision
+///   1. author · state badge · draft tag · mergeability · review decision · inline-thread count
 ///   2. checks summary (only when the PR has any checks)
+///
+/// `inline_threads` is the number of inline review threads (≡ number of
+/// annotations available when the user switches the annotation source to
+/// GitHub). `None` means we didn't manage to fetch the count — render
+/// nothing rather than zero, so the absence reads as "unknown" not
+/// "definitely none".
 ///
 /// Returns an empty vec when there's nothing useful to show (e.g., `gh`
 /// returned the new fields as empty strings on an older binary).
 fn build_pr_status_header(
     pr: &crate::vcs::github::PrInfo,
+    inline_threads: Option<u32>,
 ) -> Vec<ratatui::text::Line<'static>> {
     use crate::vcs::github::PrCheckSummary;
     let t = theme::get();
@@ -432,6 +440,23 @@ fn build_pr_status_header(
     let sep = Span::styled("  ·  ", muted);
 
     let mut first: Vec<Span<'static>> = Vec::new();
+
+    // Author tag at the head — "@login" (with "[bot]" suffix for bots,
+    // and the display name in parens if it differs from the login).
+    if !pr.author.login.is_empty() {
+        let bot_suffix = if pr.author.is_bot { "[bot]" } else { "" };
+        first.push(Span::styled(
+            format!("@{}{}", pr.author.login, bot_suffix),
+            Style::default().fg(t.ui.text_secondary).bold(),
+        ));
+        if !pr.author.name.is_empty() && pr.author.name != pr.author.login {
+            first.push(Span::styled(
+                format!(" ({})", pr.author.name),
+                Style::default().fg(t.ui.text_muted),
+            ));
+        }
+        first.push(sep.clone());
+    }
 
     // State badge — "Open" / "Merged" / "Closed". Draft overrides for
     // visual priority (a draft is still technically OPEN).
@@ -516,6 +541,27 @@ fn build_pr_status_header(
         _ => {}
     }
 
+    // Inline-comment count: how many annotations the user can expect to
+    // find when they switch the annotation source to GitHub. We only
+    // render the segment when the fetch succeeded — a missing value reads
+    // as "unknown", which is more honest than a misleading "0".
+    if let Some(n) = inline_threads {
+        first.push(sep.clone());
+        let style = if n > 0 {
+            Style::default().fg(t.ui.highlight).bold()
+        } else {
+            muted
+        };
+        first.push(Span::styled(
+            format!(
+                "💬 {} inline {}",
+                n,
+                if n == 1 { "thread" } else { "threads" }
+            ),
+            style,
+        ));
+    }
+
     let mut lines: Vec<Line<'static>> = Vec::new();
     if !first.is_empty() {
         lines.push(Line::from(first));
@@ -585,6 +631,58 @@ fn build_pr_status_header(
     }
 
     lines
+}
+
+/// Build the markdown shown inside the PR description modal body. The PR
+/// body comes first, then a "Comments" section listing every non-anchored
+/// conversation entry (issue-level PR comments + review summary bodies).
+/// Inline review-thread comments are intentionally omitted — those are
+/// already surfaced as annotations elsewhere in the UI.
+fn build_pr_body_markdown(pr: &crate::vcs::github::PrInfo) -> String {
+    let mut out = String::new();
+    if !pr.body.trim().is_empty() {
+        out.push_str(&pr.body);
+    }
+
+    if !pr.comments.is_empty() {
+        if !out.is_empty() {
+            // Blank line + horizontal rule to visually separate the
+            // description from the conversation. The markdown highlighter
+            // styles `---` as a token so it reads as an intentional break.
+            out.push_str("\n\n---\n\n");
+        }
+        out.push_str(&format!("## Comments ({})\n", pr.comments.len()));
+        for (i, c) in pr.comments.iter().enumerate() {
+            if i > 0 {
+                out.push_str("\n---\n");
+            }
+            out.push('\n');
+            let bot_suffix = if c.author.is_bot { "[bot]" } else { "" };
+            let login = if c.author.login.is_empty() {
+                "unknown"
+            } else {
+                &c.author.login
+            };
+            let state_tag = c
+                .review_state
+                .as_deref()
+                .map(|s| match s {
+                    "APPROVED" => " _(approved)_",
+                    "CHANGES_REQUESTED" => " _(changes requested)_",
+                    "COMMENTED" => " _(review)_",
+                    "DISMISSED" => " _(dismissed)_",
+                    _ => "",
+                })
+                .unwrap_or("");
+            let date = if c.date.is_empty() { "" } else { &c.date };
+            out.push_str(&format!(
+                "**@{}{}** · {}{}\n\n{}\n",
+                login, bot_suffix, date, state_tag, c.body
+            ));
+        }
+    }
+
+    out
 }
 
 /// Build the items + annotations + diff snippets for the `I` (all-
@@ -814,6 +912,7 @@ fn run_app_internal(
 
     let mut active_modal: Option<Modal> = None;
     let mut annotation_editor: Option<AnnotationEditor> = None;
+    let mut pr_comment_editor: Option<PrCommentEditor> = None;
     let mut pending_changed_files: Option<std::collections::HashSet<String>> = None;
     let mut pending_events: VecDeque<AppEvent> = VecDeque::new();
 
@@ -1000,6 +1099,12 @@ fn run_app_internal(
                 if let Some(ref editor) = annotation_editor {
                     editor.render(frame);
                 }
+                // PR comment editor sits above the modal because we close
+                // the modal before opening the editor anyway; rendered
+                // here so it overlays leftover content if both are set.
+                if let Some(ref editor) = pr_comment_editor {
+                    editor.render(frame);
+                }
                 if let Some(ref modal) = active_modal {
                     modal.render(frame);
                 }
@@ -1133,6 +1238,98 @@ fn run_app_internal(
                             state.mark_search_dirty();
                         }
                         _ => {}
+                    }
+                }
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && pr_comment_editor.is_some()
+                        && active_modal.is_none() =>
+                {
+                    if let Some(editor) = pr_comment_editor.as_mut() {
+                        match editor.handle_input(key) {
+                            PrCommentEditorResult::Continue => {}
+                            PrCommentEditorResult::Save => {
+                                let body = editor.content();
+                                let intent = editor.intent;
+                                // Drop the editor before issuing the
+                                // network call so the next frame doesn't
+                                // re-render a stale modal underneath.
+                                pr_comment_editor = None;
+
+                                // The PR resolved earlier is cached on
+                                // state.pr_info — both gh helpers need it
+                                // for repo coordinates. If it's somehow
+                                // missing, we surface that as an error.
+                                let result = if let Some(pr) =
+                                    state.pr_info.clone()
+                                {
+                                    let gh = crate::vcs::github::RealGhClient;
+                                    match intent {
+                                        PrCommentIntent::Comment => {
+                                            crate::vcs::github::add_pr_comment(
+                                                &gh, &pr, &body,
+                                            )
+                                        }
+                                        PrCommentIntent::Approve => {
+                                            crate::vcs::github::approve_pr(
+                                                &gh, &pr, &body,
+                                            )
+                                        }
+                                    }
+                                } else {
+                                    Err(crate::vcs::github::GhError::GhFailure(
+                                        "no PR resolved".into(),
+                                    ))
+                                };
+
+                                match result {
+                                    Ok(()) => {
+                                        // Refresh + reopen the modal so
+                                        // the user sees their new
+                                        // comment/review in the list.
+                                        if let Ok(pr) =
+                                            state.refresh_pr_info()
+                                        {
+                                            let title = format!(
+                                                "{} · {}",
+                                                pr.slug(),
+                                                pr.title
+                                            );
+                                            let body_md =
+                                                build_pr_body_markdown(pr);
+                                            let inline_threads =
+                                                crate::vcs::github::count_review_threads(
+                                                    &crate::vcs::github::RealGhClient,
+                                                    pr,
+                                                )
+                                                .ok();
+                                            let status_lines =
+                                                build_pr_status_header(
+                                                    pr,
+                                                    inline_threads,
+                                                );
+                                            let term_width =
+                                                terminal.size()?.width;
+                                            active_modal = Some(
+                                                Modal::pr_description(
+                                                    title,
+                                                    status_lines,
+                                                    &body_md,
+                                                    term_width,
+                                                ),
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        state.annotation_source_status =
+                                            Some(format!("{}", e));
+                                    }
+                                }
+                            }
+                            PrCommentEditorResult::Cancel => {
+                                pr_comment_editor = None;
+                            }
+                        }
                     }
                 }
                 Event::Key(key)
@@ -1399,6 +1596,34 @@ fn run_app_internal(
                                             }
                                         }
                                     }
+                                }
+                                ModalResult::PrComment => {
+                                    // Close the PR modal and open the
+                                    // comment editor. The slug is read
+                                    // from `state.pr_info` (populated by
+                                    // the `P` handler above).
+                                    let slug = state
+                                        .pr_info
+                                        .as_ref()
+                                        .map(|p| p.slug())
+                                        .unwrap_or_else(|| "?".to_string());
+                                    pr_comment_editor = Some(PrCommentEditor::new(
+                                        PrCommentIntent::Comment,
+                                        slug,
+                                    ));
+                                    active_modal = None;
+                                }
+                                ModalResult::PrApprove => {
+                                    let slug = state
+                                        .pr_info
+                                        .as_ref()
+                                        .map(|p| p.slug())
+                                        .unwrap_or_else(|| "?".to_string());
+                                    pr_comment_editor = Some(PrCommentEditor::new(
+                                        PrCommentIntent::Approve,
+                                        slug,
+                                    ));
+                                    active_modal = None;
                                 }
                                 ModalResult::Dismissed | ModalResult::Selected(_, _) => {
                                     active_modal = None;
@@ -2435,12 +2660,24 @@ fn run_app_internal(
                             // `annotation_source_status` for the footer.
                             if let Ok(pr) = state.refresh_pr_info() {
                                 let title = format!("{} · {}", pr.slug(), pr.title);
-                                let body = pr.body.clone();
-                                let status_lines = build_pr_status_header(pr);
+                                let body = build_pr_body_markdown(pr);
+                                // Second `gh` call: count inline review
+                                // threads so we can tell the user how many
+                                // annotations to expect. Best-effort — a
+                                // failure just elides the segment.
+                                let inline_threads = crate::vcs::github::count_review_threads(
+                                    &crate::vcs::github::RealGhClient,
+                                    pr,
+                                )
+                                .ok();
+                                let status_lines =
+                                    build_pr_status_header(pr, inline_threads);
+                                let term_width = terminal.size()?.width;
                                 active_modal = Some(Modal::pr_description(
                                     title,
                                     status_lines,
                                     &body,
+                                    term_width,
                                 ));
                             }
                         }

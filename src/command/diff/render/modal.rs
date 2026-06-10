@@ -11,9 +11,16 @@ use crate::command::diff::highlight::highlight_line_spans;
 use crate::command::diff::state::{Annotation, AnnotationId};
 use crate::command::diff::theme;
 
-/// Column width the PR description modal wraps body text at. Chosen so
-/// the wrapped text fits inside an 80-column modal with borders + padding.
-const PR_DESC_WRAP_WIDTH: usize = 76;
+/// Upper bound on the wrap column for the PR description body. We never
+/// exceed this even on ultra-wide terminals — long markdown lines hurt
+/// readability past ~95 columns.
+const PR_DESC_MAX_WRAP_WIDTH: usize = 95;
+/// Lower bound on the wrap column. On very narrow terminals the modal
+/// will already be clamped to `terminal_width - 4`; anything below this
+/// is unusable and we wrap at this minimum anyway.
+const PR_DESC_MIN_WRAP_WIDTH: usize = 40;
+/// Fraction of the terminal width the modal occupies horizontally.
+const PR_DESC_MODAL_PCT: u16 = 80;
 
 #[derive(Clone)]
 pub struct KeyBind {
@@ -142,6 +149,12 @@ pub enum ModalResult {
     AnnotationCopyToOther {
         annotation_id: AnnotationId,
     },
+    /// User pressed `c` in the PR description modal — opens an editor for
+    /// an issue-level PR comment.
+    PrComment,
+    /// User pressed `a` in the PR description modal — opens an editor for
+    /// an approving review (body becomes the review summary).
+    PrApprove,
 }
 
 impl Modal {
@@ -168,14 +181,20 @@ impl Modal {
 
     /// Build a PR-description modal from the title bar text, an optional
     /// pre-styled status header, and the raw body. The body is wrapped
-    /// once at construction to `PR_DESC_WRAP_WIDTH` so scroll math is
-    /// stable across resizes. Empty bodies still produce one placeholder
-    /// row so the modal isn't empty.
+    /// once at construction so scroll math stays stable across resizes;
+    /// `terminal_width` is consulted only to pick a sensible wrap column
+    /// (the modal itself is recomputed against the live `frame.area()`
+    /// on every render).
+    ///
+    /// Empty bodies still produce one placeholder row so the modal isn't
+    /// empty.
     pub fn pr_description(
         title: impl Into<String>,
         status_lines: Vec<Line<'static>>,
         body: &str,
+        terminal_width: u16,
     ) -> Self {
+        let wrap_width = pr_desc_wrap_width(terminal_width);
         let mut body_lines: Vec<String> = Vec::new();
         for raw_line in body.split('\n') {
             // Preserve blank lines as separators.
@@ -183,7 +202,7 @@ impl Modal {
                 body_lines.push(String::new());
                 continue;
             }
-            for wrapped in wrap_preview_line(raw_line, PR_DESC_WRAP_WIDTH) {
+            for wrapped in wrap_preview_line(raw_line, wrap_width) {
                 body_lines.push(wrapped);
             }
         }
@@ -307,16 +326,28 @@ impl Modal {
                 status_lines,
                 ..
             } => {
-                let width = 80.min(area.width.saturating_sub(4));
+                // Take most of the terminal — PR descriptions benefit from
+                // breathing room, and we want the modal to feel substantial
+                // rather than postage-stamp-sized.
+                let width = (area.width * PR_DESC_MODAL_PCT / 100)
+                    .min(area.width.saturating_sub(4))
+                    .max(60);
                 let header_rows = if status_lines.is_empty() {
                     0
                 } else {
                     status_lines.len() as u16 + 1 // +1 for divider row
                 };
-                // +4 covers top/bottom borders + top/bottom inner padding.
-                let height = (content_height + header_rows + 4)
-                    .min(area.height * 80 / 100)
-                    .max(7);
+                // +5 covers top/bottom borders + top/bottom inner padding
+                // + 1 bottom hint row.
+                let desired = content_height + header_rows + 5;
+                // Floor at ~55% of terminal so the modal feels solid
+                // without dominating the screen; cap at ~85% so a giant
+                // body doesn't push off the visible area.
+                let max_h = area.height * 85 / 100;
+                let min_h = (area.height * 55 / 100)
+                    .min(area.height.saturating_sub(2))
+                    .max(10);
+                let height = desired.min(max_h).max(min_h);
                 (width, height)
             }
             ModalContent::FilePicker {
@@ -620,11 +651,41 @@ impl Modal {
             status_lines.len() as u16 + 1 // status rows + divider
         };
 
+        // Reserve a row at the bottom of the padded area for the action
+        // hints (c/a/j/k/esc). Body shrinks to make room.
+        let hint_height: u16 = 1;
         let body_area = Rect::new(
             padded.x,
             padded.y + header_height,
             padded.width,
-            padded.height.saturating_sub(header_height),
+            padded
+                .height
+                .saturating_sub(header_height)
+                .saturating_sub(hint_height),
+        );
+
+        // Bottom hint row.
+        let hint_y = padded.y + padded.height.saturating_sub(hint_height);
+        let hint_area = Rect::new(padded.x, hint_y, padded.width, hint_height);
+        let key_style = Style::default().fg(t.ui.highlight).bold();
+        let desc_style = Style::default().fg(t.ui.text_muted);
+        let sep_style = Style::default().fg(t.ui.border_unfocused);
+        let hint = Line::from(vec![
+            Span::styled("c", key_style),
+            Span::styled(" comment  ", desc_style),
+            Span::styled("│  ", sep_style),
+            Span::styled("a", key_style),
+            Span::styled(" approve  ", desc_style),
+            Span::styled("│  ", sep_style),
+            Span::styled("j/k", key_style),
+            Span::styled(" scroll  ", desc_style),
+            Span::styled("│  ", sep_style),
+            Span::styled("esc", key_style),
+            Span::styled(" close", desc_style),
+        ]);
+        frame.render_widget(
+            Paragraph::new(hint).alignment(Alignment::Center),
+            hint_area,
         );
 
         if !status_lines.is_empty() {
@@ -1118,6 +1179,10 @@ impl Modal {
 
                 match key.code {
                     KeyCode::Enter => Some(ModalResult::Dismissed),
+                    // Conversation actions — bubble up; the app layer
+                    // closes this modal and opens the comment editor.
+                    KeyCode::Char('c') => Some(ModalResult::PrComment),
+                    KeyCode::Char('a') => Some(ModalResult::PrApprove),
                     KeyCode::Down | KeyCode::Char('j') => {
                         *scroll = (*scroll + 1).min(max_scroll);
                         None
@@ -1370,6 +1435,26 @@ fn fuzzy_match(text: &str, pattern: &str) -> bool {
 }
 
 /// Calculate visible height for keybindings modal based on terminal size.
+/// Pick the body wrap column for a given terminal width. Mirrors the
+/// modal-sizing math in `Modal::render` so the wrapped body fills the
+/// inner padded area without overflow:
+///   inner_width = modal_width - 2 (borders)
+///   body_width  = inner_width - 2 (left/right padding)
+///                  - 1 (right scrollbar gutter)
+/// Clamped between min and max so very narrow or ultra-wide terminals
+/// still produce readable output.
+fn pr_desc_wrap_width(terminal_width: u16) -> usize {
+    let modal_width = (terminal_width as usize)
+        .saturating_mul(PR_DESC_MODAL_PCT as usize)
+        / 100;
+    let modal_width = modal_width.min(terminal_width.saturating_sub(4) as usize);
+    // 2 for borders + 2 for inner padding + 1 for scrollbar gutter = 5.
+    let body_width = modal_width.saturating_sub(5);
+    body_width
+        .min(PR_DESC_MAX_WRAP_WIDTH)
+        .max(PR_DESC_MIN_WRAP_WIDTH)
+}
+
 fn calculate_keybindings_visible_height(terminal_height: u16, content_height: u16) -> u16 {
     // Modal height calculation from render: (total_lines + 4).min(height * 80 / 100).max(5)
     let modal_height = (content_height + 4).min(terminal_height * 80 / 100).max(5);

@@ -679,6 +679,8 @@ mod tests {
             mergeable: String::new(),
             review_decision: String::new(),
             checks: Vec::new(),
+            author: Default::default(),
+            comments: Vec::new(),
         }
     }
 
