@@ -934,7 +934,11 @@ fn annotation_inner_rows(annotation: &Annotation, text_width: usize) -> Vec<Over
 }
 
 /// Total rendered height of a single annotation overlay (inner rows + borders).
+/// Resolved annotations collapse to a single row to minimise diff clutter.
 fn annotation_overlay_height(annotation: &Annotation, content_width: u16) -> usize {
+    if annotation.resolved {
+        return 1;
+    }
     annotation_inner_rows(annotation, annotation_text_width(content_width)).len() + 2
 }
 
@@ -1009,8 +1013,6 @@ fn render_annotation_overlays(
     for (line_pos, annotation) in overlays {
         let screen_y = content_start_y + *line_pos as u16;
         let content_width_inner = annotation_text_width(content_width);
-        let inner_rows = annotation_inner_rows(annotation, content_width_inner);
-        let num_lines = inner_rows.len() + 2; // +2 for top and bottom borders
 
         // Check if annotation is visible
         if screen_y >= max_area.y + max_area.height {
@@ -1021,6 +1023,55 @@ fn render_annotation_overlays(
         if available_height == 0 {
             continue;
         }
+
+        // Resolved annotations render as a single compact row so they don't
+        // crowd the diff. The full thread remains available in the modal.
+        if annotation.resolved {
+            let has_gutter = !suppress_gutter
+                && matches!(annotation.target, AnnotationTarget::LineRange { .. });
+            let overlay_area = Rect::new(content_x, screen_y, content_width, 1);
+            frame.render_widget(ratatui::widgets::Clear, overlay_area);
+
+            let muted = Style::default().fg(t.ui.text_muted);
+            let check = Style::default().fg(t.ui.status_added);
+            let accent = Style::default().fg(t.ui.highlight);
+
+            let preview = annotation.root().content.replace('\n', " ");
+            let preview = preview.split_whitespace().collect::<Vec<_>>().join(" ");
+            let author = &annotation.root().author.login;
+            let time = annotation.format_time();
+            let body = if preview.is_empty() {
+                format!("✓ resolved · @{} · {}", author, time)
+            } else {
+                format!("✓ resolved · @{} · \"{}\" · {}", author, preview, time)
+            };
+            let body = fit_to_char_width(&body, content_width_inner);
+
+            let left: Span<'static> = if has_gutter {
+                Span::styled("▍ ", accent)
+            } else {
+                Span::styled("  ", Style::default())
+            };
+            // Style the leading ✓ separately so it reads as a status badge.
+            let (head, rest) = if let Some(idx) = body.find(' ') {
+                (&body[..idx], &body[idx..])
+            } else {
+                (body.as_str(), "")
+            };
+            let line = Line::from(vec![
+                left,
+                Span::styled(head.to_string(), check),
+                Span::styled(rest.to_string(), muted),
+            ]);
+            frame.render_widget(
+                Paragraph::new(line).style(Style::default().bg(bg)),
+                overlay_area,
+            );
+            continue;
+        }
+
+        let inner_rows = annotation_inner_rows(annotation, content_width_inner);
+        let num_lines = inner_rows.len() + 2; // +2 for top and bottom borders
 
         let overlay_height = num_lines.min(available_height) as u16;
         let overlay_area = Rect::new(content_x, screen_y, content_width, overlay_height);
@@ -2274,5 +2325,14 @@ mod tests {
 
         assert_eq!(annotation_overlay_height(&annotation, 80), 5);
         assert_eq!(annotation_overlay_height(&annotation, 12), 6);
+    }
+
+    #[test]
+    fn resolved_annotation_collapses_to_single_row() {
+        let mut ann = annotation("a long comment that would normally wrap", &["another reply"]);
+        ann.resolved = true;
+
+        assert_eq!(annotation_overlay_height(&ann, 80), 1);
+        assert_eq!(annotation_overlay_height(&ann, 12), 1);
     }
 }
