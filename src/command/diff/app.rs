@@ -754,6 +754,19 @@ fn run_app_internal(
                                 state.set_diff_reference(None);
                                 state.ref_input.cancel();
                                 state.needs_reload = true;
+                            } else if raw == "--cached" || raw == "--staged" {
+                                // `git diff --cached` sentinel — bypass ref resolution.
+                                match raw.parse::<CommitReference>() {
+                                    Ok(reference) => {
+                                        options.reference = Some(reference);
+                                        state.set_diff_reference(Some(raw));
+                                        state.ref_input.cancel();
+                                        state.needs_reload = true;
+                                    }
+                                    Err(e) => {
+                                        state.ref_input.error = Some(e.to_string());
+                                    }
+                                }
                             } else {
                                 match backend.resolve_ref(&raw) {
                                     Ok(_) => match raw.parse::<CommitReference>() {
@@ -2172,7 +2185,7 @@ fn run_app_internal(
                                             },
                                             KeyBind {
                                                 key: "b",
-                                                description: "Change diff base <rev> (empty = worktree)",
+                                                description: "Change diff base (empty=unstaged, --cached=staged, <ref>)",
                                             },
                                             KeyBind {
                                                 key: "y",

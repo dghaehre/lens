@@ -1,8 +1,10 @@
 use std::str::FromStr;
 use thiserror::Error;
 
-/// A single git ref to diff the working tree against (e.g. `HEAD`, `main`,
-/// `HEAD~3`, a SHA). lens always diffs the worktree against this ref.
+/// The base of the diff. Either a git ref to diff the worktree against
+/// (e.g. `HEAD`, `main`, `HEAD~3`, a SHA), or the literal `--cached` /
+/// `--staged` to mean "staged-only" (`git diff --cached`). With no
+/// reference at all, lens shows unstaged changes only (`git diff`).
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct CommitReference(pub String);
 

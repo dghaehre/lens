@@ -629,6 +629,70 @@ impl GitBackend {
         Ok(files.into_iter().collect())
     }
 
+    /// Files that differ between the index and the working tree (`git diff`).
+    /// Includes untracked files so users can review newly added files
+    /// alongside unstaged edits.
+    pub fn get_unstaged_changed_files(&self) -> Result<Vec<String>, VcsError> {
+        use std::collections::HashSet;
+
+        let mut diff_opts = DiffOptions::new();
+        diff_opts.include_untracked(true);
+        diff_opts.recurse_untracked_dirs(true);
+        let diff = self
+            .repo
+            .diff_index_to_workdir(None, Some(&mut diff_opts))
+            .map_err(|e| VcsError::Other(format!("failed to diff index to workdir: {}", e)))?;
+
+        let mut files: HashSet<String> = HashSet::new();
+        for delta in diff.deltas() {
+            if let Some(p) = delta.new_file().path().and_then(|p| p.to_str()) {
+                if !should_exclude_path(p) {
+                    files.insert(p.to_string());
+                }
+            }
+        }
+        Ok(files.into_iter().collect())
+    }
+
+    /// Files that differ between HEAD and the index (`git diff --cached`).
+    pub fn get_staged_changed_files(&self) -> Result<Vec<String>, VcsError> {
+        use std::collections::HashSet;
+
+        let head_tree = self.repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+        let diff = self
+            .repo
+            .diff_tree_to_index(head_tree.as_ref(), None, None)
+            .map_err(|e| VcsError::Other(format!("failed to diff tree to index: {}", e)))?;
+
+        let mut files: HashSet<String> = HashSet::new();
+        for delta in diff.deltas() {
+            if let Some(p) = delta.new_file().path().and_then(|p| p.to_str()) {
+                if !should_exclude_path(p) {
+                    files.insert(p.to_string());
+                }
+            }
+        }
+        Ok(files.into_iter().collect())
+    }
+
+    /// Read a file's contents from the git index (the staging area).
+    /// Returns empty string if the path is not in the index (e.g. untracked).
+    pub fn get_file_content_at_index(&self, path: &Path) -> Result<String, VcsError> {
+        let index = self
+            .repo
+            .index()
+            .map_err(|e| VcsError::Other(format!("failed to open index: {}", e)))?;
+        let entry = match index.get_path(path, 0) {
+            Some(e) => e,
+            None => return Ok(String::new()),
+        };
+        let blob = self
+            .repo
+            .find_blob(entry.id)
+            .map_err(|_| VcsError::FileNotFound(path.display().to_string()))?;
+        Ok(String::from_utf8_lossy(blob.content()).into_owned())
+    }
+
     #[allow(dead_code)]
     pub fn get_merge_base(&self, ref1: &str, ref2: &str) -> Result<String, VcsError> {
         let ref1 = ref1.trim();

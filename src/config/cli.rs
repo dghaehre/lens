@@ -25,8 +25,10 @@ pub struct Cli {
 /// `lens main` still works without a subcommand.
 #[derive(Args, Debug, Clone)]
 pub struct DiffArgs {
-    /// Ref to diff the working tree against (defaults to HEAD).
-    /// Examples: `main`, `HEAD~3`, a SHA.
+    /// Base of the diff. With no value, shows unstaged changes
+    /// (`git diff`). Use `--cached` for staged-only (`git diff --cached`).
+    /// Any other value (`main`, `HEAD`, `HEAD~3`, a SHA) is a ref to diff
+    /// the worktree against.
     #[arg(value_parser = clap::value_parser!(CommitReference))]
     pub reference: Option<CommitReference>,
 

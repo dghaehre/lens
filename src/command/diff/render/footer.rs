@@ -99,7 +99,8 @@ pub fn render_footer(frame: &mut Frame, footer_area: Rect, data: FooterData) {
             ),
             Span::styled("_", Style::default().fg(t.ui.text_muted).bg(bg)),
         ];
-        let hint = " (empty = worktree, enter = apply, esc = cancel) ";
+        let hint =
+            " (empty = unstaged, --cached = staged, <ref> = ref..worktree, esc = cancel) ";
         let error_text = data.ref_input.error.as_deref();
         let used = prefix.len() + data.ref_input.query.len() + 1;
         if let Some(err) = error_text {

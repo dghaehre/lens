@@ -13,46 +13,51 @@ pub fn get_current_branch(backend: &GitBackend) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-/// Resolved reference for diff comparison.
+/// Which of the three `git diff` semantics the user has selected.
 ///
-/// lens always diffs the working tree against `base_ref`. If `base_ref` is
-/// `HEAD`, this is just the uncommitted-changes diff. Otherwise it's the
-/// union of files changed in `base_ref..HEAD` and uncommitted changes.
-pub struct DiffRefs {
-    pub base_ref: String,
+/// Mirrors `git diff`'s own modes:
+/// - `Unstaged` — `git diff` (index → worktree)
+/// - `Staged`   — `git diff --cached` (HEAD → index)
+/// - `Ref(r)`   — `git diff <ref>` (ref → worktree)
+pub enum DiffMode {
+    Unstaged,
+    Staged,
+    Ref(String),
 }
 
-impl DiffRefs {
+impl DiffMode {
     pub fn from_options(options: &DiffOptions) -> Self {
-        let base_ref = options
-            .reference
-            .as_ref()
-            .map(|r| r.as_str().to_string())
-            .unwrap_or_else(|| "HEAD".to_string());
-        DiffRefs { base_ref }
+        match options.reference.as_ref().map(|r| r.as_str()) {
+            None => DiffMode::Unstaged,
+            Some(s) if s == "--cached" || s == "--staged" => DiffMode::Staged,
+            Some(s) => DiffMode::Ref(s.to_string()),
+        }
     }
 }
 
-/// Get the list of files changed between `base_ref` and the working tree.
+/// Get the list of files changed for the selected diff mode.
 pub fn get_changed_files(options: &DiffOptions, backend: &GitBackend) -> Vec<String> {
-    let refs = DiffRefs::from_options(options);
+    let mode = DiffMode::from_options(options);
 
-    let files: Vec<String> = if refs.base_ref == "HEAD" {
-        backend.get_working_tree_changed_files().unwrap_or_default()
-    } else {
-        // Union of `base_ref..HEAD` and the working tree.
-        let range_files = backend
-            .get_range_changed_files(&refs.base_ref, "HEAD")
-            .unwrap_or_default();
-        let wt_files = backend.get_working_tree_changed_files().unwrap_or_default();
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut combined: Vec<String> = Vec::new();
-        for f in range_files.into_iter().chain(wt_files.into_iter()) {
-            if seen.insert(f.clone()) {
-                combined.push(f);
-            }
+    let files: Vec<String> = match &mode {
+        DiffMode::Unstaged => backend.get_unstaged_changed_files().unwrap_or_default(),
+        DiffMode::Staged => backend.get_staged_changed_files().unwrap_or_default(),
+        DiffMode::Ref(r) if r == "HEAD" => {
+            backend.get_working_tree_changed_files().unwrap_or_default()
         }
-        combined
+        DiffMode::Ref(r) => {
+            // Union of `r..HEAD` and the working tree.
+            let range_files = backend.get_range_changed_files(r, "HEAD").unwrap_or_default();
+            let wt_files = backend.get_working_tree_changed_files().unwrap_or_default();
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut combined: Vec<String> = Vec::new();
+            for f in range_files.into_iter().chain(wt_files.into_iter()) {
+                if seen.insert(f.clone()) {
+                    combined.push(f);
+                }
+            }
+            combined
+        }
     };
 
     if let Some(ref filter) = options.file {
@@ -62,25 +67,35 @@ pub fn get_changed_files(options: &DiffOptions, backend: &GitBackend) -> Vec<Str
     }
 }
 
-/// Get content of a file at the "old" side of the diff (the base ref).
-pub fn get_old_content(filename: &str, refs: &DiffRefs, backend: &GitBackend) -> String {
-    backend
-        .get_file_content_at_ref(&refs.base_ref, Path::new(filename))
-        .unwrap_or_default()
+/// Get content of a file at the "old" side of the diff for the selected mode.
+pub fn get_old_content(filename: &str, mode: &DiffMode, backend: &GitBackend) -> String {
+    let path = Path::new(filename);
+    match mode {
+        DiffMode::Unstaged => backend.get_file_content_at_index(path).unwrap_or_default(),
+        DiffMode::Staged => backend
+            .get_file_content_at_ref("HEAD", path)
+            .unwrap_or_default(),
+        DiffMode::Ref(r) => backend.get_file_content_at_ref(r, path).unwrap_or_default(),
+    }
 }
 
-/// Get content of a file at the "new" side of the diff (the working tree).
-pub fn get_new_content(filename: &str, _refs: &DiffRefs) -> String {
-    fs::read_to_string(filename).unwrap_or_default()
+/// Get content of a file at the "new" side of the diff for the selected mode.
+pub fn get_new_content(filename: &str, mode: &DiffMode, backend: &GitBackend) -> String {
+    match mode {
+        DiffMode::Staged => backend
+            .get_file_content_at_index(Path::new(filename))
+            .unwrap_or_default(),
+        DiffMode::Unstaged | DiffMode::Ref(_) => fs::read_to_string(filename).unwrap_or_default(),
+    }
 }
 
 pub fn load_file_diffs(options: &DiffOptions, backend: &GitBackend) -> Vec<FileDiff> {
-    let refs = DiffRefs::from_options(options);
+    let mode = DiffMode::from_options(options);
     get_changed_files(options, backend)
         .into_iter()
         .map(|filename| {
-            let old_content = get_old_content(&filename, &refs, backend);
-            let new_content = get_new_content(&filename, &refs);
+            let old_content = get_old_content(&filename, &mode, backend);
+            let new_content = get_new_content(&filename, &mode, backend);
             let status = if old_content.is_empty() && !new_content.is_empty() {
                 FileStatus::Added
             } else if !old_content.is_empty() && new_content.is_empty() {
@@ -462,6 +477,111 @@ mod tests {
         assert_eq!(diffs_b.len(), 1);
         assert_eq!(diffs_b[0].filename, "b.txt");
         assert_eq!(diffs_b[0].new_content, "commit B\n");
+
+        let _ = std::env::set_current_dir(&original);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Set up a repo where one file has staged changes and another has
+    /// unstaged-on-top-of-staged changes. Used by the mode-isolation tests.
+    fn setup_mixed_repo(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = make_temp_dir(label);
+        let original = std::env::current_dir().expect("get cwd");
+
+        git(&dir, &["init"]);
+        git(&dir, &["config", "user.email", "test@example.com"]);
+        git(&dir, &["config", "user.name", "Test User"]);
+
+        // Initial commit
+        fs::write(dir.join("only_staged.txt"), "base\n").expect("write only_staged");
+        fs::write(dir.join("both.txt"), "base\n").expect("write both");
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-m", "initial"]);
+
+        // Stage a change to only_staged.txt — no further worktree edit
+        fs::write(dir.join("only_staged.txt"), "staged value\n").expect("modify only_staged");
+        git(&dir, &["add", "only_staged.txt"]);
+
+        // Stage a change to both.txt, then add a further unstaged edit on top
+        fs::write(dir.join("both.txt"), "staged value\n").expect("stage both");
+        git(&dir, &["add", "both.txt"]);
+        fs::write(dir.join("both.txt"), "worktree value\n").expect("worktree both");
+
+        std::env::set_current_dir(&dir).expect("set cwd");
+        (dir, original)
+    }
+
+    #[test]
+    fn test_load_file_diffs_unstaged_only_hides_staged_only_files() {
+        let _lock = crate::vcs::test_utils::cwd_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (dir, original) = setup_mixed_repo("git-diff-mode-unstaged");
+
+        let backend = GitBackend::from_cwd().expect("should open repo");
+        let options = super::super::DiffOptions {
+            reference: None, // unstaged mode
+            file: None,
+            watch: false,
+            theme: None,
+            stacked: false,
+            focus: None,
+        };
+
+        let diffs = load_file_diffs(&options, &backend);
+        let filenames: Vec<&str> = diffs.iter().map(|d| d.filename.as_str()).collect();
+
+        assert!(
+            !filenames.contains(&"only_staged.txt"),
+            "unstaged mode must not include staged-only file, got: {:?}",
+            filenames
+        );
+        let both = diffs.iter().find(|d| d.filename == "both.txt").expect(
+            "unstaged mode should include file with worktree-vs-index diff",
+        );
+        // old = index (staged value), new = worktree
+        assert_eq!(both.old_content, "staged value\n");
+        assert_eq!(both.new_content, "worktree value\n");
+
+        let _ = std::env::set_current_dir(&original);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_load_file_diffs_staged_only_hides_unstaged_changes() {
+        let _lock = crate::vcs::test_utils::cwd_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (dir, original) = setup_mixed_repo("git-diff-mode-staged");
+
+        let backend = GitBackend::from_cwd().expect("should open repo");
+        let options = super::super::DiffOptions {
+            reference: Some(crate::commit_reference::CommitReference(
+                "--cached".to_string(),
+            )),
+            file: None,
+            watch: false,
+            theme: None,
+            stacked: false,
+            focus: None,
+        };
+
+        let diffs = load_file_diffs(&options, &backend);
+        let filenames: Vec<&str> = diffs.iter().map(|d| d.filename.as_str()).collect();
+
+        let only_staged = diffs
+            .iter()
+            .find(|d| d.filename == "only_staged.txt")
+            .unwrap_or_else(|| panic!("staged mode should include only_staged.txt, got: {:?}", filenames));
+        // old = HEAD, new = index
+        assert_eq!(only_staged.old_content, "base\n");
+        assert_eq!(only_staged.new_content, "staged value\n");
+
+        // For `both.txt`, the staged diff shows base → staged (not the
+        // worktree edit on top).
+        let both = diffs.iter().find(|d| d.filename == "both.txt").unwrap();
+        assert_eq!(both.old_content, "base\n");
+        assert_eq!(both.new_content, "staged value\n");
 
         let _ = std::env::set_current_dir(&original);
         let _ = fs::remove_dir_all(&dir);
