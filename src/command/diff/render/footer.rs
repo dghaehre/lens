@@ -242,8 +242,10 @@ pub fn render_footer(frame: &mut Frame, footer_area: Rect, data: FooterData) {
         let right_spans: Vec<Span> = if data.annotation_select_active {
             vec![
                 Span::styled(
-                    " ANN SELECT ",
-                    Style::default().fg(t.ui.bg).bg(t.ui.highlight),
+                    " ANNOTATIONS ",
+                    Style::default()
+                        .fg(t.ui.footer_branch_fg)
+                        .bg(t.ui.footer_branch_bg),
                 ),
                 Span::styled(
                     " j/k move · R reply · X resolve · esc exit ",
