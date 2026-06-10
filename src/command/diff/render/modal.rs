@@ -7,6 +7,7 @@ use ratatui::{
     },
 };
 
+use crate::command::diff::highlight::highlight_line_spans;
 use crate::command::diff::state::{Annotation, AnnotationId};
 use crate::command::diff::theme;
 
@@ -64,6 +65,11 @@ pub enum ModalContent {
         title: String,
         items: Vec<String>,
         annotations: Vec<Annotation>,
+        /// Diff snippets parallel to `annotations`: each entry is a list of
+        /// `(line_number, content)` pairs around the annotation's anchor,
+        /// used to render code context in the preview pane. File-level and
+        /// orphaned annotations get an empty vec.
+        snippets: Vec<Vec<(usize, String)>>,
         selected: usize,
         export_input: Option<String>,
         /// Error message to display (e.g., for failed export)
@@ -175,6 +181,7 @@ impl Modal {
         title: impl Into<String>,
         items: Vec<String>,
         annotations: Vec<Annotation>,
+        snippets: Vec<Vec<(usize, String)>>,
         source_label: impl Into<String>,
     ) -> Self {
         Self {
@@ -182,6 +189,7 @@ impl Modal {
                 title: title.into(),
                 items,
                 annotations,
+                snippets,
                 selected: 0,
                 export_input: None,
                 error_message: None,
@@ -259,10 +267,11 @@ impl Modal {
                 let width = (area.width * 92 / 100)
                     .min(area.width.saturating_sub(4))
                     .max(60);
-                let items_count = items.len() as u16;
-                // +1 row for the source-picker header at the top of the list.
+                // Each annotation row now spans 2 lines (title + location),
+                // so account for that when sizing the modal to fit content.
+                let items_lines = (items.len() as u16).saturating_mul(2);
                 let extra = if export_input.is_some() { 5 } else { 3 };
-                let desired = items_count + extra + 2;
+                let desired = items_lines + extra + 2;
                 let height = desired
                     .min(area.height * 92 / 100)
                     .max((area.height * 70 / 100).min(area.height.saturating_sub(2)))
@@ -324,6 +333,7 @@ impl Modal {
                 title,
                 items,
                 annotations,
+                snippets,
                 selected,
                 export_input,
                 error_message,
@@ -337,6 +347,7 @@ impl Modal {
                     title,
                     items,
                     annotations,
+                    snippets,
                     *selected,
                     export_input.as_deref(),
                     error_message.as_deref(),
@@ -583,6 +594,7 @@ impl Modal {
         title: &str,
         items: &[String],
         annotations: &[Annotation],
+        snippets: &[Vec<(usize, String)>],
         selected: usize,
         export_input: Option<&str>,
         error_message: Option<&str>,
@@ -592,11 +604,22 @@ impl Modal {
     ) {
         let t = theme::get();
 
-        let title_text = format!(" {} ({}) ", title, items.len());
+        let title_line = Line::from(vec![
+            Span::styled(" ", Style::default()),
+            Span::styled(title, Style::default().fg(t.ui.text_primary).bold()),
+            Span::styled("  ", Style::default()),
+            Span::styled(
+                format!("{}", items.len()),
+                Style::default().fg(t.ui.highlight).bold(),
+            ),
+            Span::styled(
+                if items.len() == 1 { " thread " } else { " threads " },
+                Style::default().fg(t.ui.text_muted),
+            ),
+        ]);
 
         let block = Block::default()
-            .title(title_text)
-            .title_style(Style::default().fg(t.ui.text_secondary))
+            .title(title_line)
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Rounded)
             .border_style(Style::default().fg(t.ui.border_focused));
@@ -660,12 +683,21 @@ impl Modal {
         render_source_picker_row(frame, source_row, source_label, source_focused, t);
 
         // Render the annotation list (left pane).
-        render_annotation_list(frame, list_body, items, selected, source_focused, t);
+        render_annotation_list(
+            frame,
+            list_body,
+            items,
+            annotations,
+            selected,
+            source_focused,
+            t,
+        );
 
         // Render the thread preview (right pane).
         if let Some(area) = preview_area {
             let preview = annotations.get(selected);
-            render_annotation_preview(frame, area, preview, t);
+            let snippet = snippets.get(selected).map(|s| s.as_slice()).unwrap_or(&[]);
+            render_annotation_preview(frame, area, preview, snippet, t);
         }
 
         // Render export input if active.
@@ -726,50 +758,40 @@ impl Modal {
             frame.render_widget(info_para, info_area);
         }
 
-        // Compact footer
-        let footer_text = if export_input.is_some() {
-            Line::from(vec![
-                Span::styled("enter", Style::default().fg(t.ui.text_muted)),
-                Span::styled(" confirm  ", Style::default().fg(t.ui.text_muted)),
-                Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
-                Span::styled("esc", Style::default().fg(t.ui.text_muted)),
-                Span::styled(" cancel", Style::default().fg(t.ui.text_muted)),
-            ])
-        } else {
-            Line::from(vec![
-                Span::styled("enter", Style::default().fg(t.ui.text_muted)),
-                Span::styled(" jump  ", Style::default().fg(t.ui.text_muted)),
-                Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
-                Span::styled("e", Style::default().fg(t.ui.text_muted)),
-                Span::styled(" edit  ", Style::default().fg(t.ui.text_muted)),
-                Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
-                Span::styled("r", Style::default().fg(t.ui.text_muted)),
-                Span::styled(" reply  ", Style::default().fg(t.ui.text_muted)),
-                Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
-                Span::styled("x", Style::default().fg(t.ui.text_muted)),
-                Span::styled(" resolve  ", Style::default().fg(t.ui.text_muted)),
-                Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
-                Span::styled("d", Style::default().fg(t.ui.text_muted)),
-                Span::styled(" del  ", Style::default().fg(t.ui.text_muted)),
-                Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
-                Span::styled("y", Style::default().fg(t.ui.text_muted)),
-                Span::styled(" copy  ", Style::default().fg(t.ui.text_muted)),
-                Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
-                Span::styled("p", Style::default().fg(t.ui.text_muted)),
-                Span::styled(
-                    if source_label.contains("github") {
-                        " copy to local  "
-                    } else {
-                        " copy to github  "
-                    },
-                    Style::default().fg(t.ui.text_muted),
-                ),
-                Span::styled("│  ", Style::default().fg(t.ui.border_unfocused)),
-                Span::styled("o", Style::default().fg(t.ui.text_muted)),
-                Span::styled(" export", Style::default().fg(t.ui.text_muted)),
-            ])
+        // Footer — keys in the highlight colour, descriptions muted, with
+        // dim vertical separators between groups so the eye can scan the
+        // available actions quickly.
+        let key_style = Style::default().fg(t.ui.highlight).bold();
+        let desc_style = Style::default().fg(t.ui.text_muted);
+        let sep_style = Style::default().fg(t.ui.border_unfocused);
+        let mut spans: Vec<Span> = Vec::new();
+        let push_pair = |spans: &mut Vec<Span>, key: &str, desc: &str, last: bool| {
+            spans.push(Span::styled(key.to_string(), key_style));
+            spans.push(Span::styled(format!(" {}", desc), desc_style));
+            if !last {
+                spans.push(Span::styled("  ·  ", sep_style));
+            }
         };
-        let footer = Paragraph::new(footer_text).alignment(ratatui::prelude::Alignment::Center);
+        if export_input.is_some() {
+            push_pair(&mut spans, "↵", "confirm", false);
+            push_pair(&mut spans, "esc", "cancel", true);
+        } else {
+            let copy_to = if source_label.contains("github") {
+                "copy to local"
+            } else {
+                "copy to github"
+            };
+            push_pair(&mut spans, "↵", "jump", false);
+            push_pair(&mut spans, "e", "edit", false);
+            push_pair(&mut spans, "r", "reply", false);
+            push_pair(&mut spans, "x", "resolve", false);
+            push_pair(&mut spans, "d", "del", false);
+            push_pair(&mut spans, "y", "copy", false);
+            push_pair(&mut spans, "p", copy_to, false);
+            push_pair(&mut spans, "o", "export", true);
+        }
+        let footer =
+            Paragraph::new(Line::from(spans)).alignment(ratatui::prelude::Alignment::Center);
         frame.render_widget(footer, footer_area);
     }
 
@@ -1131,171 +1153,586 @@ fn render_source_picker_row(
     focused: bool,
     t: &theme::Theme,
 ) {
-    let label_style = if focused {
-        Style::default().fg(t.ui.selection_fg).bg(t.ui.selection_bg).bold()
+    // Render as a small "tab" — accent bar on the left, label tag, value
+    // segment, then a subtle hint. The focused state inverts the value
+    // segment so it visually pops as the active row.
+    let bar_style = if focused {
+        Style::default().fg(t.ui.selection_bg).bold()
     } else {
-        Style::default().fg(t.ui.text_secondary).bold()
+        Style::default().fg(t.ui.border_unfocused)
     };
-    let hint_style = if focused {
-        Style::default().fg(t.ui.selection_fg).bg(t.ui.selection_bg)
+    let label_tag_style = Style::default().fg(t.ui.text_muted).bold();
+    let value_style = if focused {
+        Style::default()
+            .fg(t.ui.selection_fg)
+            .bg(t.ui.selection_bg)
+            .bold()
     } else {
-        Style::default().fg(t.ui.text_muted)
+        Style::default().fg(t.ui.text_primary).bold()
     };
+    let hint_style = Style::default().fg(t.ui.text_muted).italic();
+
     let spans = vec![
-        Span::styled(" Source: ", label_style),
-        Span::styled(source_label.to_string(), label_style),
-        Span::styled("  ", hint_style),
-        Span::styled("[enter to switch]", hint_style),
+        Span::styled("▎", bar_style),
+        Span::styled(" SOURCE ", label_tag_style),
+        Span::styled(format!(" {} ", source_label), value_style),
+        Span::styled("   ", Style::default()),
+        Span::styled(
+            if focused { "↵ switch" } else { "↑↓ navigate · ↵ switch" },
+            hint_style,
+        ),
     ];
     let para = Paragraph::new(Line::from(spans));
     frame.render_widget(para, area);
 }
 
-/// Render the left-hand annotation picker list. Each entry shows
-/// `location` on the left and the time on the right; the body preview lives
-/// in the right-hand pane so we no longer crowd it into the row.
+/// Render the left-hand annotation picker list. Each row spans **two** lines:
+///
+/// ```text
+///  ▎ ● <title (first line of root comment)>          💬 N · HH:MM
+///  ▎     <filename> · <line range> · <panel>
+/// ```
+///
+/// The selection bar extends across both lines, the status glyph reflects
+/// open/resolved/orphaned, and the right-hand badges show comment count and
+/// time. Line 2 carries the file location in a muted style so it reads as a
+/// subtitle. Scroll math is in items (not lines), so `selected` indexes into
+/// the items vector directly.
 fn render_annotation_list(
     frame: &mut Frame,
     area: Rect,
     items: &[String],
+    annotations: &[Annotation],
     selected: usize,
     source_focused: bool,
     t: &theme::Theme,
 ) {
-    let visible_count = area.height as usize;
+    const ROW_HEIGHT: usize = 2;
+
+    let visible_count = ((area.height as usize) / ROW_HEIGHT).max(1);
     let scroll_offset = if selected >= visible_count {
         selected - visible_count + 1
     } else {
         0
     };
 
-    let list_items: Vec<ListItem> = items
+    let list_items: Vec<ListItem> = annotations
         .iter()
         .enumerate()
         .skip(scroll_offset)
         .take(visible_count)
-        .map(|(i, item)| {
+        .map(|(i, ann)| {
             // Suppress the highlight while the source-picker row is focused
             // so it's obvious which row `enter` acts on.
             let is_selected = i == selected && !source_focused;
-            // Format produced by `build_annotation_list`: "location | preview | HH:MM".
-            // We only show location + time in the list — the preview moves to the
-            // right pane.
-            let parts: Vec<&str> = item.splitn(3, " | ").collect();
-            let location = parts.first().copied().unwrap_or("");
-            let time = parts.get(2).copied().unwrap_or("");
 
+            // Orphaned status isn't carried on Annotation itself — it's
+            // derived in `build_annotation_list` and surfaced in the items
+            // string via "(orphaned)". Parse it back out here.
+            let orphaned = items
+                .get(i)
+                .map(|s| s.contains("(orphaned)"))
+                .unwrap_or(false);
+            let resolved = ann.resolved;
+            let comment_count = ann.comments.len();
+
+            // Status glyph + colour. Resolved beats orphaned for visual
+            // hierarchy — a resolved orphan is "done", not a warning.
+            let (status_glyph, status_color) = if resolved {
+                ("✓", t.ui.status_added)
+            } else if orphaned {
+                ("◌", t.ui.text_muted)
+            } else {
+                ("●", t.ui.status_modified)
+            };
+
+            // Title = first non-empty line of the root comment, trimmed,
+            // then cut after the first sentence/clause terminator so the
+            // list row reads as a short summary rather than a full thought.
+            // Falls back to a placeholder if the body is somehow empty.
+            let title_line = ann
+                .root()
+                .content
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .map(|l| l.trim())
+                .unwrap_or("(empty)");
+            let title_raw = title_line
+                .find(|c: char| matches!(c, '.' | '!' | '?' | ':' | ';'))
+                .map(|i| &title_line[..=i])
+                .unwrap_or(title_line);
+
+            // Subtitle = filename · line range · panel. File-level
+            // annotations skip the line range so the subtitle stays clean.
+            let line_range = ann.line_range_display();
+            let label = ann.target_label();
+            let subtitle = if line_range.is_empty() {
+                format!("{} · {}", ann.filename, label)
+            } else {
+                format!("{} · {} · {}", ann.filename, line_range, label)
+            };
+
+            // Right-hand badges on line 1: comment count + time. Pluralise
+            // "comment(s)" so a single-comment thread doesn't read awkwardly.
+            // No emoji — they render at uncertain widths across terminals,
+            // which throws off the padding math. Plain text keeps layout
+            // deterministic.
+            let time = ann.format_time();
+            let count_word = if comment_count == 1 { "comment" } else { "comments" };
+            let count_text = format!("{} {}", comment_count, count_word);
+            let right_text = format!("{} · {}", count_text, time);
+            let right_w_estimate = right_text.chars().count();
+
+            // Layout for line 1: ` ▎ ● <title> … <right_text> `.
+            // Fixed prefix = bar(1) + space(1) + glyph(1) + space(1) = 4.
+            // RIGHT_MARGIN is the minimum gap between the (possibly
+            // truncated) title and the right-aligned badges — it has to be
+            // reserved out of `title_max` so the ellipsis never butts up
+            // against the count, and it must NOT be added back into `used`
+            // (padding is computed from the actually rendered spans).
             let available = area.width as usize;
-            let time_w = time.chars().count() + 2; // " HH:MM "
-            let location_max = available.saturating_sub(time_w + 2).max(8);
-            let truncated_location = if location.chars().count() > location_max && location_max > 3
-            {
-                let truncate_at = location_max - 1;
-                let truncated: String = location.chars().take(truncate_at).collect();
-                format!("{}…", truncated)
-            } else {
-                location.to_string()
-            };
+            const PREFIX_W: usize = 4;
+            const RIGHT_MARGIN: usize = 4;
+            let title_max = available
+                .saturating_sub(PREFIX_W + right_w_estimate + RIGHT_MARGIN)
+                .max(8);
+            let truncated_title = truncate_with_ellipsis(title_raw, title_max);
+            let used = PREFIX_W + truncated_title.chars().count() + right_w_estimate;
+            let padding = available
+                .saturating_sub(used)
+                .max(RIGHT_MARGIN);
 
-            let used = truncated_location.chars().count() + 2 + time_w;
-            let padding = available.saturating_sub(used);
+            // Line 2 layout: ` ▎   <subtitle> ` — same bar column, indented
+            // to align under the title text on line 1 (bar+space+glyph+space
+            // = 4 cols, so subtitle starts at column 4 too).
+            const SUBTITLE_INDENT: usize = 3;
+            let subtitle_max = available.saturating_sub(SUBTITLE_INDENT + 2).max(8);
+            let truncated_subtitle = truncate_with_ellipsis(&subtitle, subtitle_max);
 
-            let spans = if is_selected {
-                let sel = Style::default().fg(t.ui.selection_fg).bg(t.ui.selection_bg);
-                vec![
-                    Span::styled(format!(" {} ", truncated_location), sel),
-                    Span::styled(format!("{:>width$}", "", width = padding), sel),
-                    Span::styled(format!(" {} ", time), sel),
-                ]
+            // Per-state styling. Selected rows get a *subtle* background
+            // tint (footer_branch_bg) — the previous selection_bg was the
+            // theme's bright accent colour, which made the highlighted row
+            // dominate the modal. The dim tint reads as "selected" without
+            // shouting. A bright left-edge bar still marks the selection
+            // unambiguously.
+            let row_bg = if is_selected {
+                Some(t.ui.footer_branch_bg)
             } else {
-                vec![
-                    Span::styled(
-                        format!(" {} ", truncated_location),
-                        Style::default().fg(t.ui.text_secondary),
-                    ),
-                    Span::styled(format!("{:>width$}", "", width = padding), Style::default()),
-                    Span::styled(format!(" {} ", time), Style::default().fg(t.ui.text_muted)),
-                ]
+                None
             };
-            ListItem::new(Line::from(spans))
+            let with_bg = |s: Style| match row_bg {
+                Some(bg) => s.bg(bg),
+                None => s,
+            };
+            // Selection bar: bright accent in col 0 on both lines when this
+            // row is selected, blank when not. Bar also picks up the dim
+            // row bg so col 0 is part of the highlighted block.
+            let (bar_glyph, bar_style) = if is_selected {
+                (
+                    "▎",
+                    Style::default()
+                        .fg(t.ui.selection_bg)
+                        .bg(t.ui.footer_branch_bg),
+                )
+            } else {
+                (" ", Style::default())
+            };
+            let status_style = Style::default().fg(status_color).bold();
+
+            // With a subtle row bg, body text keeps its normal colour and
+            // relies on the bg + bar to signal selection. Orphaned rows
+            // stay muted regardless.
+            let title_fg = if orphaned {
+                t.ui.text_muted
+            } else {
+                t.ui.text_primary
+            };
+            let subtitle_fg = if is_selected {
+                t.ui.text_secondary
+            } else {
+                t.ui.text_muted
+            };
+            let count_fg = t.ui.highlight;
+            let time_fg = t.ui.text_muted;
+
+            // Build line 1 spans. The right-text is split into separately
+            // coloured spans so the count badge stands out from the time.
+            let line1_spans = vec![
+                Span::styled(bar_glyph, bar_style),
+                Span::styled(" ", with_bg(Style::default())),
+                Span::styled(format!("{} ", status_glyph), with_bg(status_style)),
+                Span::styled(
+                    truncated_title,
+                    with_bg(Style::default().fg(title_fg).bold()),
+                ),
+                Span::styled(
+                    format!("{:>width$}", "", width = padding),
+                    with_bg(Style::default()),
+                ),
+                Span::styled(
+                    count_text.clone(),
+                    with_bg(Style::default().fg(count_fg).bold()),
+                ),
+                Span::styled(" · ", with_bg(Style::default().fg(t.ui.border_unfocused))),
+                Span::styled(time.clone(), with_bg(Style::default().fg(time_fg))),
+            ];
+
+            // Build line 2 spans. The bar carries across both lines so a
+            // selected row reads as a single 2-line block. A trailing
+            // padding span fills the remainder of the row width so the
+            // selected-row background extends edge-to-edge instead of
+            // ending where the subtitle text ends.
+            let subtitle_used = 1 + SUBTITLE_INDENT + truncated_subtitle.chars().count();
+            let subtitle_padding = available.saturating_sub(subtitle_used);
+            let line2_spans = vec![
+                Span::styled(bar_glyph, bar_style),
+                Span::styled("   ", with_bg(Style::default())),
+                Span::styled(
+                    truncated_subtitle,
+                    with_bg(Style::default().fg(subtitle_fg).italic()),
+                ),
+                Span::styled(
+                    format!("{:>width$}", "", width = subtitle_padding),
+                    with_bg(Style::default()),
+                ),
+            ];
+
+            ListItem::new(vec![Line::from(line1_spans), Line::from(line2_spans)])
         })
         .collect();
 
     frame.render_widget(List::new(list_items), area);
 }
 
+/// Truncate `s` to at most `max` chars, appending an ellipsis when it has
+/// to cut. Returns the original string when it fits.
+fn truncate_with_ellipsis(s: &str, max: usize) -> String {
+    if s.chars().count() <= max || max < 2 {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(max - 1).collect();
+        format!("{}…", head)
+    }
+}
+
+/// Expand `\t` characters in span text to spaces aligned to `tab_width`
+/// stops, preserving per-span styling. Mirrors the diff view's tab handling
+/// so the snippet column math matches the rendered output exactly.
+fn expand_tabs_in_spans<'a>(spans: Vec<Span<'a>>, tab_width: usize) -> Vec<Span<'a>> {
+    if tab_width == 0 {
+        return spans
+            .into_iter()
+            .map(|span| {
+                if !span.content.contains('\t') {
+                    span
+                } else {
+                    let buf: String = span.content.chars().filter(|c| *c != '\t').collect();
+                    Span::styled(buf, span.style)
+                }
+            })
+            .collect();
+    }
+    let mut col = 0usize;
+    let mut out: Vec<Span<'a>> = Vec::with_capacity(spans.len());
+    for span in spans {
+        if !span.content.contains('\t') {
+            col += span.content.chars().count();
+            out.push(span);
+            continue;
+        }
+        let mut buf = String::new();
+        for ch in span.content.chars() {
+            if ch == '\t' {
+                let spaces = tab_width - (col % tab_width);
+                for _ in 0..spaces {
+                    buf.push(' ');
+                }
+                col += spaces;
+            } else {
+                buf.push(ch);
+                col += 1;
+            }
+        }
+        out.push(Span::styled(buf, span.style));
+    }
+    out
+}
+
+/// Truncate a span list to at most `max_cols` visual columns (chars).
+/// Returns the truncated spans plus a flag indicating whether truncation
+/// happened, so callers can append their own ellipsis. Empty / over-budget
+/// spans are dropped cleanly without producing zero-content spans.
+fn truncate_spans_to_width<'a>(
+    spans: Vec<Span<'a>>,
+    max_cols: usize,
+) -> (Vec<Span<'a>>, bool) {
+    let mut out: Vec<Span<'a>> = Vec::with_capacity(spans.len());
+    let mut used = 0usize;
+    let mut truncated = false;
+    for span in spans {
+        let span_len = span.content.chars().count();
+        if used + span_len <= max_cols {
+            used += span_len;
+            out.push(span);
+            continue;
+        }
+        // This span overflows — keep what fits, drop the rest.
+        let remaining = max_cols.saturating_sub(used);
+        if remaining > 0 {
+            let head: String = span.content.chars().take(remaining).collect();
+            out.push(Span::styled(head, span.style));
+        }
+        truncated = true;
+        break;
+    }
+    (out, truncated)
+}
+
 /// Render the right-hand preview pane for the currently-selected annotation:
-/// thread anchor (file + line range), then every comment in the thread with
-/// a short header and wrapped body.
+/// an accent-barred header (anchor + resolved/reply badges), followed by
+/// a code snippet showing the diff lines being annotated, then each comment
+/// in the thread with author/time and a wrapped body. Replies are visually
+/// indented and prefixed with a thread guide.
 fn render_annotation_preview(
     frame: &mut Frame,
     area: Rect,
     annotation: Option<&Annotation>,
+    snippet: &[(usize, String)],
     t: &theme::Theme,
 ) {
     use crate::command::diff::state::AnnotationTarget;
 
     let Some(ann) = annotation else {
+        // Center "no annotations" vertically as well — feels less stark
+        // than pinning it to the top of an empty pane.
+        let mid_y = area.y + area.height / 2;
+        let row = Rect::new(area.x, mid_y, area.width, 1);
         let empty = Paragraph::new(Line::from(Span::styled(
-            "no annotations",
+            "— no annotations —",
             Style::default().fg(t.ui.text_muted).italic(),
         )))
         .alignment(ratatui::prelude::Alignment::Center);
-        frame.render_widget(empty, area);
+        frame.render_widget(empty, row);
         return;
     };
 
     let mut lines: Vec<Line> = Vec::new();
 
-    // Anchor header: filename + line range, plus a "resolved" badge.
+    // Header row: accent bar + location + badges.
     let location = match &ann.target {
-        AnnotationTarget::File => format!("{} [file]", ann.filename),
+        AnnotationTarget::File => format!("{} · file", ann.filename),
         AnnotationTarget::LineRange { .. } => {
-            format!("{}:{}", ann.filename, ann.line_range_display())
+            format!("{} · {}", ann.filename, ann.line_range_display())
         }
     };
-    let mut header_spans: Vec<Span> = vec![Span::styled(
-        location,
-        Style::default().fg(t.ui.text_primary).bold(),
-    )];
+    let mut header_spans: Vec<Span> = vec![
+        Span::styled("▎ ", Style::default().fg(t.ui.border_focused).bold()),
+        Span::styled(location, Style::default().fg(t.ui.text_primary).bold()),
+    ];
     if ann.resolved {
         header_spans.push(Span::styled("  ", Style::default()));
         header_spans.push(Span::styled(
-            "✓ resolved",
-            Style::default().fg(t.ui.status_added).bold(),
+            " ✓ resolved ",
+            Style::default()
+                .fg(t.ui.selection_fg)
+                .bg(t.ui.status_added)
+                .bold(),
+        ));
+    }
+    let reply_count = ann.comments.len().saturating_sub(1);
+    if reply_count > 0 {
+        header_spans.push(Span::styled("  ", Style::default()));
+        header_spans.push(Span::styled(
+            format!(" ↳ {} {} ", reply_count, if reply_count == 1 { "reply" } else { "replies" }),
+            Style::default()
+                .fg(t.ui.selection_fg)
+                .bg(t.ui.highlight)
+                .bold(),
         ));
     }
     lines.push(Line::from(header_spans));
+    // Thin separator under the header.
+    let sep_width = (area.width.saturating_sub(2) as usize).max(4);
+    let separator = || -> Line<'static> {
+        Line::from(Span::styled(
+            "─".repeat(sep_width),
+            Style::default().fg(t.ui.border_unfocused),
+        ))
+    };
+    lines.push(separator());
     lines.push(Line::from(""));
 
-    // Render every comment in the thread.
-    let wrap_width = (area.width.saturating_sub(2) as usize).max(10);
+    // Code snippet (only for line-range anchors with content available).
+    // Lines inside the annotation's anchor range get a `▸` marker and full
+    // colour; context lines get a blank prefix and muted colour, so the
+    // reader can immediately tell which lines are being commented on.
+    if !snippet.is_empty() {
+        let (anchor_start, anchor_end) = match &ann.target {
+            AnnotationTarget::LineRange {
+                start_line,
+                end_line,
+                ..
+            } => (*start_line, *end_line),
+            AnnotationTarget::File => (0, 0),
+        };
+        let max_line_no = snippet.iter().map(|(n, _)| *n).max().unwrap_or(0);
+        let gutter_w = max_line_no.to_string().chars().count().max(2);
+        // Cap snippet height so a long anchor range doesn't push the
+        // thread off-screen. If we cap, replace the middle with "…".
+        const SNIPPET_MAX_ROWS: usize = 8;
+        let render_snippet = if snippet.len() <= SNIPPET_MAX_ROWS {
+            snippet.iter().cloned().map(Some).collect::<Vec<_>>()
+        } else {
+            let head = SNIPPET_MAX_ROWS / 2;
+            let tail = SNIPPET_MAX_ROWS - head - 1;
+            let mut out: Vec<Option<(usize, String)>> = snippet
+                .iter()
+                .take(head)
+                .cloned()
+                .map(Some)
+                .collect();
+            out.push(None); // ellipsis row
+            out.extend(
+                snippet
+                    .iter()
+                    .skip(snippet.len() - tail)
+                    .cloned()
+                    .map(Some),
+            );
+            out
+        };
+        // Width budget for the code column. The preview pane is rendered
+        // into an inset (`area.x + 1`, width `area.width - 1`), so we have
+        // `area.width - 1` columns to play with; subtract the row prefix to
+        // get how many visual columns the code itself can occupy.
+        let prefix_w = 1 + 1 + gutter_w + 3; // marker + sp + gutter + ' │ '
+        let inset_width = (area.width as usize).saturating_sub(1);
+        let content_w = inset_width.saturating_sub(prefix_w).max(8);
+        const TAB_WIDTH: usize = 4;
+
+        for entry in render_snippet {
+            let Some((line_no, content)) = entry else {
+                // Ellipsis row for the elided middle of a long snippet.
+                lines.push(Line::from(Span::styled(
+                    format!("{:>width$}", "…", width = prefix_w),
+                    Style::default().fg(t.ui.text_muted),
+                )));
+                continue;
+            };
+            let in_anchor = line_no >= anchor_start && line_no <= anchor_end;
+            let (marker, marker_style) = if in_anchor {
+                ("▸", Style::default().fg(t.ui.highlight).bold())
+            } else {
+                (" ", Style::default())
+            };
+            let gutter_style = if in_anchor {
+                Style::default().fg(t.ui.text_secondary)
+            } else {
+                Style::default().fg(t.ui.line_number)
+            };
+
+            // Strip trailing `\r` from CRLF line endings — leaving it in
+            // would render as a control char and corrupt the row.
+            let cleaned = content.trim_end_matches('\r');
+            // Highlight the *full* line so multi-token syntax (strings,
+            // identifiers) tokenises correctly, then expand tabs to spaces
+            // (matching the diff view's behaviour) so column math lines up,
+            // then truncate to the visible width. We reserve one col for
+            // the ellipsis when truncation is needed so the total visible
+            // width stays exactly at `content_w`.
+            let highlighted = highlight_line_spans(cleaned, &ann.filename, None);
+            let highlighted = expand_tabs_in_spans(highlighted, TAB_WIDTH);
+            let total_cols: usize = highlighted
+                .iter()
+                .map(|s| s.content.chars().count())
+                .sum();
+            let did_truncate = total_cols > content_w;
+            let budget = if did_truncate {
+                content_w.saturating_sub(1)
+            } else {
+                content_w
+            };
+            let (code_spans, _) = truncate_spans_to_width(highlighted, budget);
+
+            let mut spans = vec![
+                Span::styled(marker.to_string(), marker_style),
+                Span::styled(" ", Style::default()),
+                Span::styled(
+                    format!("{:>width$}", line_no, width = gutter_w),
+                    gutter_style,
+                ),
+                Span::styled(" │ ", Style::default().fg(t.ui.border_unfocused)),
+            ];
+            spans.extend(code_spans);
+            if did_truncate {
+                spans.push(Span::styled(
+                    "…",
+                    Style::default().fg(t.ui.text_muted),
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
+        lines.push(separator());
+        lines.push(Line::from(""));
+    }
+
+    // Render every comment in the thread. Replies get an indent + thread
+    // guide so it's obvious they're hanging off the root.
     for (i, comment) in ann.comments.iter().enumerate() {
-        if i > 0 {
-            lines.push(Line::from(""));
+        let is_reply = i > 0;
+        let (header_prefix, body_prefix, wrap_width) = if is_reply {
+            (
+                vec![
+                    Span::styled("  ", Style::default()),
+                    Span::styled("│ ", Style::default().fg(t.ui.border_unfocused)),
+                    Span::styled("↳ ", Style::default().fg(t.ui.text_muted)),
+                ],
+                vec![
+                    Span::styled("  ", Style::default()),
+                    Span::styled("│ ", Style::default().fg(t.ui.border_unfocused)),
+                    Span::styled("  ", Style::default()),
+                ],
+                (area.width.saturating_sub(8) as usize).max(10),
+            )
+        } else {
+            (
+                vec![Span::styled("● ", Style::default().fg(t.ui.highlight).bold())],
+                vec![Span::styled("  ", Style::default())],
+                (area.width.saturating_sub(4) as usize).max(10),
+            )
+        };
+
+        if is_reply {
             lines.push(Line::from(Span::styled(
-                "↳ reply",
-                Style::default().fg(t.ui.text_muted),
+                "│",
+                Style::default().fg(t.ui.border_unfocused),
             )));
         }
-        let header = format!(
-            "{}  {}",
-            comment.author.login,
+
+        let mut header_line = header_prefix.clone();
+        header_line.push(Span::styled(
+            comment.author.login.clone(),
+            Style::default().fg(t.ui.text_primary).bold(),
+        ));
+        header_line.push(Span::styled("  ", Style::default()));
+        header_line.push(Span::styled(
             format_comment_time(comment.created_at),
-        );
-        lines.push(Line::from(Span::styled(
-            header,
-            Style::default().fg(t.ui.text_secondary),
-        )));
+            Style::default().fg(t.ui.text_muted),
+        ));
+        lines.push(Line::from(header_line));
+
         for body_line in comment.content.lines() {
+            if body_line.is_empty() {
+                lines.push(Line::from(body_prefix.clone()));
+                continue;
+            }
             for wrapped in wrap_preview_line(body_line, wrap_width) {
-                lines.push(Line::from(Span::styled(
+                let mut spans = body_prefix.clone();
+                spans.push(Span::styled(
                     wrapped,
                     Style::default().fg(t.ui.text_primary),
-                )));
-            }
-            if body_line.is_empty() {
-                lines.push(Line::from(""));
+                ));
+                lines.push(Line::from(spans));
             }
         }
     }

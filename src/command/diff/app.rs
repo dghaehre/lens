@@ -415,10 +415,20 @@ fn source_label(state: &AppState) -> String {
     }
 }
 
-/// Build the items + annotations vectors for the `I` (all-annotations) modal.
-/// Active annotations come first, orphaned (anchor missing) ones after, so
-/// the user can act on stale entries from one list.
-fn build_annotation_list(state: &AppState) -> (Vec<String>, Vec<super::state::Annotation>) {
+/// Build the items + annotations + diff snippets for the `I` (all-
+/// annotations) modal. Active annotations come first (sorted by sidebar
+/// file order, then by anchor line so the list reads top-to-bottom like
+/// the diff), orphaned (anchor missing) ones after. Orphaned entries are
+/// sorted by filename + line for stability. The third vector carries a
+/// short snippet of the file content around each annotation's anchor so
+/// the preview pane can show the code being commented on.
+fn build_annotation_list(
+    state: &AppState,
+) -> (
+    Vec<String>,
+    Vec<super::state::Annotation>,
+    Vec<Vec<(usize, String)>>,
+) {
     let mut active: Vec<&super::state::Annotation> = Vec::new();
     let mut orphaned: Vec<&super::state::Annotation> = Vec::new();
     for ann in &state.annotations {
@@ -428,6 +438,37 @@ fn build_annotation_list(state: &AppState) -> (Vec<String>, Vec<super::state::An
             active.push(ann);
         }
     }
+
+    // Sort active by (sidebar position, line). Using sidebar_items as the
+    // source of truth ensures the modal lists files in the same order the
+    // user sees them in the file explorer (sidebar is alphabetically sorted
+    // within directories; file_diffs may be in a different order).
+    let sidebar_pos = |filename: &str| -> usize {
+        state
+            .sidebar_items
+            .iter()
+            .position(|item| {
+                matches!(item, SidebarItem::File { path, .. } if path == filename)
+            })
+            .unwrap_or(usize::MAX)
+    };
+    let anchor_line = |ann: &super::state::Annotation| -> usize {
+        match &ann.target {
+            super::state::AnnotationTarget::File => 0,
+            super::state::AnnotationTarget::LineRange { start_line, .. } => *start_line,
+        }
+    };
+    active.sort_by(|a, b| {
+        sidebar_pos(&a.filename)
+            .cmp(&sidebar_pos(&b.filename))
+            .then_with(|| anchor_line(a).cmp(&anchor_line(b)))
+    });
+    orphaned.sort_by(|a, b| {
+        a.filename
+            .cmp(&b.filename)
+            .then_with(|| anchor_line(a).cmp(&anchor_line(b)))
+    });
+
     let mut items: Vec<String> = active
         .iter()
         .map(|a| format_annotation_preview(a, false))
@@ -440,7 +481,62 @@ fn build_annotation_list(state: &AppState) -> (Vec<String>, Vec<super::state::An
     let mut annotations: Vec<super::state::Annotation> =
         active.into_iter().cloned().collect();
     annotations.extend(orphaned.into_iter().cloned());
-    (items, annotations)
+
+    // Snippets are parallel to `annotations`. Orphaned annotations whose
+    // file is gone get an empty snippet; render code falls back to a
+    // placeholder. Context lines around the anchor help orient the reader.
+    let snippets: Vec<Vec<(usize, String)>> = annotations
+        .iter()
+        .map(|ann| {
+            state
+                .file_diffs
+                .iter()
+                .find(|f| f.filename == ann.filename)
+                .map(|fd| extract_diff_snippet(fd, ann))
+                .unwrap_or_default()
+        })
+        .collect();
+
+    (items, annotations, snippets)
+}
+
+/// Pull the lines around `ann`'s anchor out of the appropriate side of the
+/// diff (old vs new content), with a small context window so the reader
+/// has orientation. Returns `(line_number, content)` pairs; file-level
+/// annotations and ranges past the end of the file return an empty snippet.
+fn extract_diff_snippet(
+    file_diff: &super::types::FileDiff,
+    ann: &super::state::Annotation,
+) -> Vec<(usize, String)> {
+    use super::state::AnnotationTarget;
+    let (panel, start_line, end_line) = match &ann.target {
+        AnnotationTarget::File => return Vec::new(),
+        AnnotationTarget::LineRange {
+            panel,
+            start_line,
+            end_line,
+            ..
+        } => (*panel, *start_line, *end_line),
+    };
+    let content = match panel {
+        DiffPanelFocus::Old => &file_diff.old_content,
+        _ => &file_diff.new_content,
+    };
+    let all_lines: Vec<&str> = content.lines().collect();
+    if all_lines.is_empty() || start_line == 0 || end_line == 0 {
+        return Vec::new();
+    }
+
+    const CONTEXT: usize = 2;
+    let start_idx = start_line.saturating_sub(1).saturating_sub(CONTEXT);
+    let end_idx = end_line
+        .saturating_sub(1)
+        .saturating_add(CONTEXT)
+        .min(all_lines.len().saturating_sub(1));
+
+    (start_idx..=end_idx)
+        .filter_map(|i| all_lines.get(i).map(|l| (i + 1, l.to_string())))
+        .collect()
 }
 
 pub fn run_app(options: DiffOptions, backend: &GitBackend) -> io::Result<()> {
@@ -991,11 +1087,12 @@ fn run_app_internal(
                                 }
                                 ModalResult::AnnotationDelete { annotation_id } => {
                                     state.remove_annotation(&annotation_id);
-                                    let (items, annotations) = build_annotation_list(&state);
+                                    let (items, annotations, snippets) = build_annotation_list(&state);
                                     active_modal = Some(Modal::annotations(
                                         "Annotations",
                                         items,
                                         annotations,
+                                        snippets,
                                         source_label(&state),
                                     ));
                                 }
@@ -1021,11 +1118,12 @@ fn run_app_internal(
                                         },
                                         None => 0,
                                     };
-                                    let (items, annotations) = build_annotation_list(&state);
+                                    let (items, annotations, snippets) = build_annotation_list(&state);
                                     let mut modal = Modal::annotations(
                                         "Annotations",
                                         items,
                                         annotations,
+                                        snippets,
                                         source_label(&state),
                                     );
                                     if let ModalContent::Annotations {
@@ -1044,12 +1142,13 @@ fn run_app_internal(
                                     let target = state.annotation_source.next();
                                     let switch_result =
                                         state.switch_annotation_source(target, backend);
-                                    let (items, annotations) =
+                                    let (items, annotations, snippets) =
                                         build_annotation_list(&state);
                                     let mut modal = Modal::annotations(
                                         "Annotations",
                                         items,
                                         annotations,
+                                        snippets,
                                         source_label(&state),
                                     );
                                     modal.annotations_focus_source();
@@ -1078,11 +1177,12 @@ fn run_app_internal(
                                         },
                                         None => 0,
                                     };
-                                    let (items, annotations) = build_annotation_list(&state);
+                                    let (items, annotations, snippets) = build_annotation_list(&state);
                                     let mut modal = Modal::annotations(
                                         "Annotations",
                                         items,
                                         annotations,
+                                        snippets,
                                         source_label(&state),
                                     );
                                     if let ModalContent::Annotations {
@@ -2145,11 +2245,12 @@ fn run_app_internal(
                             // Open annotations menu. Always open even when
                             // the list is empty so the user can reach the
                             // source picker to switch to GitHub.
-                            let (items, annotations) = build_annotation_list(&state);
+                            let (items, annotations, snippets) = build_annotation_list(&state);
                             active_modal = Some(Modal::annotations(
                                 "Annotations",
                                 items,
                                 annotations,
+                                snippets,
                                 source_label(&state),
                             ));
                         }
