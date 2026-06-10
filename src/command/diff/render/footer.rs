@@ -19,6 +19,14 @@ pub struct FooterData<'a> {
     pub search_state: &'a SearchState,
     pub ref_input: &'a RefInputState,
     pub area_width: u16,
+    /// Label for the active annotation source (e.g. "local",
+    /// "github o/r#123 (read-only)"). `None` suppresses the indicator
+    /// entirely (used by the empty-state footer).
+    pub annotation_source_label: Option<&'a str>,
+    /// Optional one-shot status string surfaced after a failed source
+    /// switch (e.g. "no PR for branch"). Rendered in the stats-removed
+    /// color so it reads as a soft warning, not normal status.
+    pub annotation_source_error: Option<&'a str>,
 }
 
 /// Truncates a file path by abbreviating directory names to their first character.
@@ -205,6 +213,26 @@ pub fn render_footer(frame: &mut Frame, footer_area: Rect, data: FooterData) {
                 watch_indicator,
                 Style::default().fg(t.ui.watching).bg(bg),
             ));
+            if let Some(label) = data.annotation_source_label {
+                spans.push(Span::styled(
+                    "  annotations: ",
+                    Style::default().fg(t.ui.text_muted).bg(bg),
+                ));
+                spans.push(Span::styled(
+                    label.to_string(),
+                    Style::default().fg(t.ui.text_secondary).bg(bg),
+                ));
+                if let Some(err) = data.annotation_source_error {
+                    spans.push(Span::styled(
+                        " · ",
+                        Style::default().fg(t.ui.text_muted).bg(bg),
+                    ));
+                    spans.push(Span::styled(
+                        err.to_string(),
+                        Style::default().fg(t.ui.stats_removed).bg(bg),
+                    ));
+                }
+            }
             spans
         };
 

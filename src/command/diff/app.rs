@@ -24,7 +24,9 @@ use super::render::{
     render_diff, render_empty_state, truncate_path, FilePickerItem, KeyBind, KeyBindSection, Modal,
     ModalContent, ModalFileStatus, ModalResult,
 };
-use super::state::{adjust_scroll_for_hunk, adjust_scroll_to_line, AppState, PendingKey};
+use super::state::{
+    adjust_scroll_for_hunk, adjust_scroll_to_line, AnnotationSource, AppState, PendingKey,
+};
 use super::theme;
 use super::types::{
     ChangeType, CursorPosition, DiffFullscreen, DiffPanelFocus, FileDiff, FileStatus, FocusedPanel,
@@ -380,6 +382,29 @@ fn find_adjacent_annotation(state: &mut AppState, forward: bool) -> Option<super
     picked.map(|(_, a)| (*a).clone())
 }
 
+/// Human-readable label for the active annotation source, used by the
+/// modal's source-picker row and the footer. Includes a `(read-only)`
+/// suffix when the active store can't be mutated (Phase 1: always the
+/// case for GitHub).
+fn source_label(state: &AppState) -> String {
+    match state.annotation_source {
+        AnnotationSource::Local => "local".to_string(),
+        AnnotationSource::Github => {
+            let pr = state
+                .pr_info
+                .as_ref()
+                .map(|p| p.slug())
+                .unwrap_or_else(|| "?".to_string());
+            let suffix = if state.active_store_is_read_only() {
+                " (read-only)"
+            } else {
+                ""
+            };
+            format!("github {}{}", pr, suffix)
+        }
+    }
+}
+
 /// Build the items + annotations vectors for the `I` (all-annotations) modal.
 /// Active annotations come first, orphaned (anchor missing) ones after, so
 /// the user can act on stale entries from one list.
@@ -563,6 +588,10 @@ fn run_app_internal(
                 .unwrap_or(&empty_viewed_hunks);
             let branch_fallback = get_current_branch(backend);
             let commit_ref = state.diff_reference.as_deref().unwrap_or(&branch_fallback);
+            // Built outside `terminal.draw` so the borrow lives across the
+            // closure capture below.
+            let annotation_source_label_owned = source_label(&state);
+            let annotation_source_error_owned = state.annotation_source_status.clone();
             let row_offset = std::cell::Cell::new(0usize);
             let gaps_cell = std::cell::RefCell::new(Vec::new());
             terminal.draw(|frame| {
@@ -603,6 +632,8 @@ fn run_app_internal(
                     viewed_hunks_for_file,
                     state.total_added,
                     state.total_removed,
+                    Some(annotation_source_label_owned.as_str()),
+                    annotation_source_error_owned.as_deref(),
                 );
                 row_offset.set(offset);
 
@@ -949,17 +980,13 @@ fn run_app_internal(
                                 }
                                 ModalResult::AnnotationDelete { annotation_id } => {
                                     state.remove_annotation(&annotation_id);
-                                    // Refresh the modal if there are still annotations
-                                    if !state.annotations.is_empty() {
-                                        let (items, annotations) = build_annotation_list(&state);
-                                        active_modal = Some(Modal::annotations(
-                                            "Annotations",
-                                            items,
-                                            annotations,
-                                        ));
-                                    } else {
-                                        active_modal = None;
-                                    }
+                                    let (items, annotations) = build_annotation_list(&state);
+                                    active_modal = Some(Modal::annotations(
+                                        "Annotations",
+                                        items,
+                                        annotations,
+                                        source_label(&state),
+                                    ));
                                 }
                                 ModalResult::AnnotationToggleResolved { annotation_id } => {
                                     let new_state = state
@@ -988,12 +1015,35 @@ fn run_app_internal(
                                         "Annotations",
                                         items,
                                         annotations,
+                                        source_label(&state),
                                     );
                                     if let ModalContent::Annotations {
                                         selected, items, ..
                                     } = &mut modal.content
                                     {
                                         *selected = prev_selected.min(items.len().saturating_sub(1));
+                                    }
+                                    active_modal = Some(modal);
+                                }
+                                ModalResult::AnnotationSourceSwitch => {
+                                    // Cycle to the other source, rebuild the
+                                    // modal contents, and keep focus on the
+                                    // picker row so the user can flip again
+                                    // (or see the new label) without arrowing.
+                                    let target = state.annotation_source.next();
+                                    let switch_result =
+                                        state.switch_annotation_source(target, backend);
+                                    let (items, annotations) =
+                                        build_annotation_list(&state);
+                                    let mut modal = Modal::annotations(
+                                        "Annotations",
+                                        items,
+                                        annotations,
+                                        source_label(&state),
+                                    );
+                                    modal.annotations_focus_source();
+                                    if let Err(msg) = switch_result {
+                                        modal.annotations_set_error(msg);
                                     }
                                     active_modal = Some(modal);
                                 }
@@ -1999,15 +2049,16 @@ fn run_app_internal(
                             }
                         }
                         KeyCode::Char('I') => {
-                            // Open annotations menu
-                            if !state.annotations.is_empty() {
-                                let (items, annotations) = build_annotation_list(&state);
-                                active_modal = Some(Modal::annotations(
-                                    "Annotations",
-                                    items,
-                                    annotations,
-                                ));
-                            }
+                            // Open annotations menu. Always open even when
+                            // the list is empty so the user can reach the
+                            // source picker to switch to GitHub.
+                            let (items, annotations) = build_annotation_list(&state);
+                            active_modal = Some(Modal::annotations(
+                                "Annotations",
+                                items,
+                                annotations,
+                                source_label(&state),
+                            ));
                         }
                         KeyCode::Char('R') => {
                             if let Some(ann) = annotation_at_cursor(&mut state) {

@@ -68,6 +68,16 @@ pub enum ModalContent {
         export_input: Option<String>,
         /// Error message to display (e.g., for failed export)
         error_message: Option<String>,
+        /// Human-readable label for the active annotation source
+        /// (e.g. "local", "github #1234 (read-only)"). Rendered as a
+        /// dedicated picker row at the top of the list; pressing enter on
+        /// it cycles the source.
+        source_label: String,
+        /// Whether the source-picker row currently has focus instead of an
+        /// annotation row. When true, `enter` emits
+        /// `ModalResult::AnnotationSourceSwitch`; arrow keys move focus
+        /// back into the list.
+        source_focused: bool,
     },
 }
 
@@ -98,6 +108,9 @@ pub enum ModalResult {
     },
     AnnotationCopyAll,
     AnnotationExport(String),
+    /// User asked the annotations modal to switch to the next annotation
+    /// source (e.g. local ↔ github).
+    AnnotationSourceSwitch,
 }
 
 impl Modal {
@@ -154,6 +167,7 @@ impl Modal {
         title: impl Into<String>,
         items: Vec<String>,
         annotations: Vec<Annotation>,
+        source_label: impl Into<String>,
     ) -> Self {
         Self {
             content: ModalContent::Annotations {
@@ -163,7 +177,25 @@ impl Modal {
                 selected: 0,
                 export_input: None,
                 error_message: None,
+                source_label: source_label.into(),
+                source_focused: false,
             },
+        }
+    }
+
+    /// Move focus to the source-picker row. Used after a rebuild that
+    /// followed a source switch so the user stays on the picker.
+    pub fn annotations_focus_source(&mut self) {
+        if let ModalContent::Annotations { source_focused, .. } = &mut self.content {
+            *source_focused = true;
+        }
+    }
+
+    /// Seed the error-message slot, surfaced as a one-line "Error: ..."
+    /// row inside the annotations modal.
+    pub fn annotations_set_error(&mut self, msg: impl Into<String>) {
+        if let ModalContent::Annotations { error_message, .. } = &mut self.content {
+            *error_message = Some(msg.into());
         }
     }
 
@@ -207,7 +239,8 @@ impl Modal {
             } => {
                 let width = 120.min(area.width.saturating_sub(4));
                 let items_count = items.len().min(14) as u16;
-                let extra = if export_input.is_some() { 4 } else { 2 };
+                // +1 row for the source-picker header at the top of the list.
+                let extra = if export_input.is_some() { 5 } else { 3 };
                 let height = (items_count + extra + 2).min(area.height * 85 / 100).max(12);
                 (width, height)
             }
@@ -269,6 +302,8 @@ impl Modal {
                 selected,
                 export_input,
                 error_message,
+                source_label,
+                source_focused,
             } => {
                 self.render_annotations(
                     frame,
@@ -279,6 +314,8 @@ impl Modal {
                     *selected,
                     export_input.as_deref(),
                     error_message.as_deref(),
+                    source_label,
+                    *source_focused,
                 );
             }
         }
@@ -522,6 +559,8 @@ impl Modal {
         selected: usize,
         export_input: Option<&str>,
         error_message: Option<&str>,
+        source_label: &str,
+        source_focused: bool,
     ) {
         let t = theme::get();
 
@@ -582,8 +621,18 @@ impl Modal {
             (content_area, None)
         };
 
+        // Split the list pane into the source-picker row + the actual list.
+        let source_row = Rect::new(list_area.x, list_area.y, list_area.width, 1);
+        let list_body = Rect::new(
+            list_area.x,
+            list_area.y + 1,
+            list_area.width,
+            list_area.height.saturating_sub(1),
+        );
+        render_source_picker_row(frame, source_row, source_label, source_focused, t);
+
         // Render the annotation list (left pane).
-        render_annotation_list(frame, list_area, items, selected, t);
+        render_annotation_list(frame, list_body, items, selected, source_focused, t);
 
         // Render the thread preview (right pane).
         if let Some(area) = preview_area {
@@ -849,6 +898,7 @@ impl Modal {
                 selected,
                 export_input,
                 error_message,
+                source_focused,
                 ..
             } => {
                 // Export input mode
@@ -897,14 +947,25 @@ impl Modal {
                             Some(ModalResult::Dismissed)
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
-                            if *selected < items.len().saturating_sub(1) {
+                            if *source_focused {
+                                // Move focus from picker row into the list.
+                                *source_focused = false;
+                            } else if *selected < items.len().saturating_sub(1) {
                                 *selected += 1;
                             }
                             None
                         }
                         KeyCode::Up | KeyCode::Char('k') => {
-                            *selected = selected.saturating_sub(1);
+                            if !*source_focused && *selected == 0 {
+                                // Top of list — move focus up to the picker row.
+                                *source_focused = true;
+                            } else if !*source_focused {
+                                *selected -= 1;
+                            }
                             None
+                        }
+                        KeyCode::Enter if *source_focused => {
+                            Some(ModalResult::AnnotationSourceSwitch)
                         }
                         KeyCode::Enter => {
                             annotations
@@ -913,36 +974,41 @@ impl Modal {
                                     annotation_id: ann.id.clone(),
                                 })
                         }
-                        KeyCode::Char('e') => {
+                        // Action keys are list-only: ignore while the
+                        // source row is focused so we don't act on the
+                        // currently-selected annotation by accident.
+                        KeyCode::Char('e') if !*source_focused => {
                             annotations
                                 .get(*selected)
                                 .map(|ann| ModalResult::AnnotationEdit {
                                     annotation_id: ann.id.clone(),
                                 })
                         }
-                        KeyCode::Char('r') => {
+                        KeyCode::Char('r') if !*source_focused => {
                             annotations
                                 .get(*selected)
                                 .map(|ann| ModalResult::AnnotationReply {
                                     annotation_id: ann.id.clone(),
                                 })
                         }
-                        KeyCode::Char('d') => {
+                        KeyCode::Char('d') if !*source_focused => {
                             annotations
                                 .get(*selected)
                                 .map(|ann| ModalResult::AnnotationDelete {
                                     annotation_id: ann.id.clone(),
                                 })
                         }
-                        KeyCode::Char('x') => {
+                        KeyCode::Char('x') if !*source_focused => {
                             annotations
                                 .get(*selected)
                                 .map(|ann| ModalResult::AnnotationToggleResolved {
                                     annotation_id: ann.id.clone(),
                                 })
                         }
-                        KeyCode::Char('y') => Some(ModalResult::AnnotationCopyAll),
-                        KeyCode::Char('o') => {
+                        KeyCode::Char('y') if !*source_focused => {
+                            Some(ModalResult::AnnotationCopyAll)
+                        }
+                        KeyCode::Char('o') if !*source_focused => {
                             *export_input = Some(String::from("annotations.txt"));
                             None
                         }
@@ -996,6 +1062,36 @@ fn calculate_keybindings_visible_height(terminal_height: u16, content_height: u1
     modal_height.saturating_sub(2)
 }
 
+/// Render the source-picker row (`Source: <label>`) at the top of the
+/// annotations modal. The row highlights when focused so the user can tell
+/// they're about to switch sources rather than act on an annotation.
+fn render_source_picker_row(
+    frame: &mut Frame,
+    area: Rect,
+    source_label: &str,
+    focused: bool,
+    t: &theme::Theme,
+) {
+    let label_style = if focused {
+        Style::default().fg(t.ui.selection_fg).bg(t.ui.selection_bg).bold()
+    } else {
+        Style::default().fg(t.ui.text_secondary).bold()
+    };
+    let hint_style = if focused {
+        Style::default().fg(t.ui.selection_fg).bg(t.ui.selection_bg)
+    } else {
+        Style::default().fg(t.ui.text_muted)
+    };
+    let spans = vec![
+        Span::styled(" Source: ", label_style),
+        Span::styled(source_label.to_string(), label_style),
+        Span::styled("  ", hint_style),
+        Span::styled("[enter to switch]", hint_style),
+    ];
+    let para = Paragraph::new(Line::from(spans));
+    frame.render_widget(para, area);
+}
+
 /// Render the left-hand annotation picker list. Each entry shows
 /// `location` on the left and the time on the right; the body preview lives
 /// in the right-hand pane so we no longer crowd it into the row.
@@ -1004,6 +1100,7 @@ fn render_annotation_list(
     area: Rect,
     items: &[String],
     selected: usize,
+    source_focused: bool,
     t: &theme::Theme,
 ) {
     let visible_count = area.height as usize;
@@ -1019,7 +1116,9 @@ fn render_annotation_list(
         .skip(scroll_offset)
         .take(visible_count)
         .map(|(i, item)| {
-            let is_selected = i == selected;
+            // Suppress the highlight while the source-picker row is focused
+            // so it's obvious which row `enter` acts on.
+            let is_selected = i == selected && !source_focused;
             // Format produced by `build_annotation_list`: "location | preview | HH:MM".
             // We only show location + time in the list — the preview moves to the
             // right pane.

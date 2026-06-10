@@ -1,11 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 
-use crate::command::diff::annotation_store::{AnnotationStore, InMemoryStore, NewAnnotation, NewReply};
+use crate::command::diff::annotation_store::{
+    AnnotationStore, GithubStore, InMemoryStore, NewAnnotation, NewReply,
+};
 use crate::command::diff::diff_algo::{
     compute_side_by_side, count_added_removed, find_hunk_starts,
 };
 use crate::command::diff::highlight::FileHighlighter;
+use crate::vcs::github::{resolve_pr_for_current_branch, GhClient, PrInfo, RealGhClient};
+use crate::vcs::GitBackend;
 
 use crate::command::diff::search::SearchState;
 use crate::command::diff::types::{
@@ -21,6 +25,27 @@ pub enum PendingKey {
     #[default]
     None,
     G,
+}
+
+/// Where the active annotation store is backed.
+///
+/// `Local` is the per-repo SQLite DB (created/updated locally). `Github`
+/// pulls review threads from a PR via `gh`. Phase 1 keeps `Github` strictly
+/// read-only — see `GithubStore::capabilities`.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnnotationSource {
+    #[default]
+    Local,
+    Github,
+}
+
+impl AnnotationSource {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Local => Self::Github,
+            Self::Github => Self::Local,
+        }
+    }
 }
 
 /// Input state for the "change diff reference" prompt. When `active`, the
@@ -150,6 +175,19 @@ pub struct AppState {
     /// Persistence backend for annotations. Designed to be swappable so we
     /// can plug in file-backed / remote stores later.
     store: Box<dyn AnnotationStore>,
+    /// Which backend `store` currently points at.
+    pub annotation_source: AnnotationSource,
+    /// The *other* store, parked while it's not in use. Only ever holds the
+    /// local SqliteStore: the GitHub store is rebuilt on every switch-in so
+    /// the user sees a fresh fetch, but the local store owns a SQLite
+    /// connection we can't cheaply re-open.
+    inactive_local_store: Option<Box<dyn AnnotationStore>>,
+    /// Resolved PR for the current branch. `None` until the first switch to
+    /// `Github` (or until discovery fails); subsequent switches reuse this.
+    pub pr_info: Option<PrInfo>,
+    /// One-shot status string for the footer (e.g., "no PR for branch",
+    /// "gh not installed"). Cleared on the next successful source switch.
+    pub annotation_source_status: Option<String>,
     // Stacked mode fields
     pub stacked_mode: bool,
     pub stacked_commits: Vec<StackedCommitInfo>,
@@ -284,6 +322,10 @@ impl AppState {
             focused_hunk,
             annotations: Vec::new(),
             store,
+            annotation_source: AnnotationSource::Local,
+            inactive_local_store: None,
+            pr_info: None,
+            annotation_source_status: None,
             stacked_mode: false,
             stacked_commits: Vec::new(),
             current_commit_index: 0,
@@ -312,6 +354,117 @@ impl AppState {
     /// an external CLI/agent write reported by the file watcher).
     pub fn reload_annotations(&mut self) {
         self.load_annotations_for_current_files();
+    }
+
+    /// Whether the active store is read-only (e.g., the Phase-1 GitHub
+    /// store, or a future drift-detected GitHub store). Used by the footer
+    /// to badge "(read-only)" without exposing the store internals.
+    pub fn active_store_is_read_only(&self) -> bool {
+        self.store.capabilities().read_only
+    }
+
+    /// Switch the active annotation store. On success the cache is reloaded
+    /// from the new backend. On failure the state is left untouched and the
+    /// error is returned (also stashed in `annotation_source_status` so the
+    /// footer can surface it).
+    ///
+    /// Switching INTO GitHub always builds a fresh `GithubStore` (one
+    /// network round-trip) so the user sees current PR threads. Switching
+    /// back to Local restores the parked SQLite store; the GitHub store is
+    /// dropped.
+    ///
+    /// `backend` is used to resolve the local `HEAD` so we can detect
+    /// "checkout drift" (local HEAD != PR head SHA). When the SHAs differ,
+    /// the GitHub store is built read-only because line numbers wouldn't
+    /// line up reliably for writes.
+    pub fn switch_annotation_source(
+        &mut self,
+        target: AnnotationSource,
+        backend: &GitBackend,
+    ) -> Result<(), String> {
+        let local_head = backend.resolve_ref("HEAD").ok();
+        self.switch_annotation_source_inner(target, local_head, Box::new(RealGhClient))
+    }
+
+    /// Inner form of [`switch_annotation_source`] with the local HEAD and
+    /// `gh` runner injected directly. Tests call this to stub out both;
+    /// production code goes through the wrapper above.
+    pub fn switch_annotation_source_inner(
+        &mut self,
+        target: AnnotationSource,
+        local_head: Option<String>,
+        gh: Box<dyn GhClient>,
+    ) -> Result<(), String> {
+        if target == self.annotation_source {
+            return Ok(());
+        }
+
+        match target {
+            AnnotationSource::Github => {
+                // Resolve once and cache; subsequent switches reuse PrInfo
+                // but always rebuild the store for a fresh fetch.
+                if self.pr_info.is_none() {
+                    match resolve_pr_for_current_branch(&*gh) {
+                        Ok(pr) => self.pr_info = Some(pr),
+                        Err(e) => {
+                            let msg = e.to_string();
+                            self.annotation_source_status = Some(msg.clone());
+                            return Err(msg);
+                        }
+                    }
+                }
+                let pr = self
+                    .pr_info
+                    .clone()
+                    .expect("pr_info populated above");
+                // Writable only if the local checkout matches the PR head;
+                // otherwise we'd be posting comments anchored to lines
+                // that don't exist on the remote (GitHub rejects with 422).
+                let writable = match local_head.as_deref() {
+                    Some(h) => h == pr.head_oid.as_str(),
+                    None => false,
+                };
+                match GithubStore::new(pr, gh, writable) {
+                    Ok(gh_store) => {
+                        // Park the local store so we can restore it on
+                        // switch-back without re-opening sqlite.
+                        let prev = std::mem::replace(
+                            &mut self.store,
+                            Box::new(InMemoryStore::new()),
+                        );
+                        self.inactive_local_store = Some(prev);
+                        self.store = Box::new(gh_store);
+                        self.annotation_source = AnnotationSource::Github;
+                        self.annotation_source_status = if writable {
+                            None
+                        } else {
+                            Some(
+                                "checkout drift: local HEAD != PR head — read-only"
+                                    .to_string(),
+                            )
+                        };
+                        self.load_annotations_for_current_files();
+                        Ok(())
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        self.annotation_source_status = Some(msg.clone());
+                        Err(msg)
+                    }
+                }
+            }
+            AnnotationSource::Local => {
+                let restored = self.inactive_local_store.take().ok_or_else(|| {
+                    "internal: no local store to restore".to_string()
+                })?;
+                // Drop the github store; it's stateless and rebuilds cheaply.
+                self.store = restored;
+                self.annotation_source = AnnotationSource::Local;
+                self.annotation_source_status = None;
+                self.load_annotations_for_current_files();
+                Ok(())
+            }
+        }
     }
 
     /// Repopulate `self.annotations` from the backing store, filtered to files
