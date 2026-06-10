@@ -2,9 +2,11 @@ use std::time::SystemTime;
 
 use super::types::DiffPanelFocus;
 
+pub mod github;
 pub mod memory;
 pub mod sqlite;
 
+pub use github::GithubStore;
 pub use memory::InMemoryStore;
 pub use sqlite::SqliteStore;
 
@@ -18,8 +20,17 @@ pub type BackendId = String;
 /// comment ("ui" from the diff viewer, "cli"/"agent" from the CLI).
 pub const LOCAL_ORIGINS: &[&str] = &["ui", "cli", "agent"];
 
+/// Mirror of [`LOCAL_ORIGINS`] for the GitHub-backed store. Currently a
+/// single tag; left as a slice so we can add e.g. "github-enterprise" later
+/// without changing call sites.
+pub const GITHUB_ORIGINS: &[&str] = &["github"];
+
 pub fn is_local_origin(origin: &str) -> bool {
     LOCAL_ORIGINS.iter().any(|o| *o == origin)
+}
+
+pub fn is_github_origin(origin: &str) -> bool {
+    GITHUB_ORIGINS.iter().any(|o| *o == origin)
 }
 
 /// Globally-unique annotation identifier composed of the source origin and

@@ -703,6 +703,8 @@ pub fn render_empty_state(frame: &mut Frame, watching: bool, ref_input: &RefInpu
                 search_state: &empty_search,
                 ref_input,
                 area_width: area.width,
+                annotation_source_label: None,
+                annotation_source_error: None,
             },
         );
     }
@@ -1129,6 +1131,7 @@ fn render_annotation_overlays(
 ///   (context lines + file annotation placeholders), used for mouse coordinate mapping.
 /// - `annotation_overlay_gaps`: list of `(content_line_after, gap_height)` pairs describing
 ///   inline annotation overlay gaps within the content area.
+#[allow(clippy::too_many_arguments)]
 pub fn render_diff(
     frame: &mut Frame,
     diff: &FileDiff,
@@ -1166,6 +1169,8 @@ pub fn render_diff(
     viewed_hunks: &HashSet<usize>,
     total_added: usize,
     total_removed: usize,
+    annotation_source_label: Option<&str>,
+    annotation_source_error: Option<&str>,
 ) -> (usize, Vec<(usize, usize)>) {
     let area = frame.area();
     let t = theme::get();
@@ -1268,6 +1273,8 @@ pub fn render_diff(
                 search_state,
                 ref_input,
                 area_width: area.width,
+                annotation_source_label,
+                annotation_source_error,
             },
         );
         return (0, Vec::new());
@@ -2214,6 +2221,8 @@ pub fn render_diff(
             search_state,
             ref_input,
             area_width: area.width,
+            annotation_source_label,
+            annotation_source_error,
         },
     );
 
