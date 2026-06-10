@@ -420,6 +420,14 @@ impl AppState {
         Ok(self.pr_info.as_ref().expect("pr_info populated above"))
     }
 
+    /// Force-refresh `pr_info` from `gh`. Use this when callers need mutable
+    /// fields (status, mergeability, CI checks) to be current — e.g. each
+    /// time the user opens the PR description modal.
+    pub fn refresh_pr_info(&mut self) -> Result<&PrInfo, String> {
+        self.pr_info = None;
+        self.ensure_pr_info()
+    }
+
     /// Inner form of [`switch_annotation_source`] with the local HEAD and
     /// `gh` runner injected directly. Tests call this to stub out both;
     /// production code goes through the wrapper above.

@@ -151,6 +151,81 @@ pub struct PrInfo {
     pub title: String,
     /// PR description body. May be empty.
     pub body: String,
+    /// `OPEN` / `CLOSED` / `MERGED`. Surfaced raw so the renderer can map
+    /// to its own badge colours.
+    pub state: String,
+    pub is_draft: bool,
+    /// `MERGEABLE` / `CONFLICTING` / `UNKNOWN`.
+    pub mergeable: String,
+    /// `APPROVED` / `CHANGES_REQUESTED` / `REVIEW_REQUIRED`, or empty when
+    /// no review has been posted.
+    pub review_decision: String,
+    /// Per-check rollup. Empty when the PR has no associated checks (or
+    /// when `gh` returned nothing).
+    pub checks: Vec<PrCheck>,
+}
+
+/// One row from `statusCheckRollup`. The shape varies by provider:
+/// GitHub Actions emits `CheckRun` (uses `status` + `conclusion`); legacy
+/// status APIs emit `StatusContext` (uses `state`). We capture all three
+/// so [`PrCheckSummary::from_checks`] can normalise downstream.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct PrCheck {
+    pub name: String,
+    /// `COMPLETED` / `IN_PROGRESS` / `QUEUED` / `PENDING` / `WAITING` (CheckRun).
+    pub status: Option<String>,
+    /// `SUCCESS` / `FAILURE` / `SKIPPED` / `CANCELLED` / `NEUTRAL` /
+    /// `TIMED_OUT` / `ACTION_REQUIRED` / `STALE` / `STARTUP_FAILURE` (CheckRun).
+    pub conclusion: Option<String>,
+    /// `SUCCESS` / `FAILURE` / `PENDING` / `ERROR` (StatusContext).
+    pub state: Option<String>,
+}
+
+/// Bucketed counts derived from a list of checks. The renderer uses this
+/// to draw a one-line "✓ N · × M · … K" summary.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PrCheckSummary {
+    pub passed: usize,
+    pub failed: usize,
+    pub pending: usize,
+    pub skipped: usize,
+    pub total: usize,
+}
+
+impl PrCheckSummary {
+    pub fn from_checks(checks: &[PrCheck]) -> Self {
+        let mut s = Self::default();
+        for c in checks {
+            s.total += 1;
+            // Prefer `conclusion` (CheckRun) over `state` (StatusContext).
+            let outcome = c
+                .conclusion
+                .as_deref()
+                .or(c.state.as_deref())
+                .unwrap_or("");
+            let status = c.status.as_deref().unwrap_or("");
+            match outcome.to_ascii_uppercase().as_str() {
+                "SUCCESS" => s.passed += 1,
+                "FAILURE" | "TIMED_OUT" | "STARTUP_FAILURE" | "ACTION_REQUIRED" | "ERROR" => {
+                    s.failed += 1
+                }
+                "SKIPPED" | "NEUTRAL" | "CANCELLED" | "STALE" => s.skipped += 1,
+                "PENDING" | "" => {
+                    // No outcome yet — bucket by status if we have it.
+                    if status.eq_ignore_ascii_case("COMPLETED") {
+                        // Completed but no conclusion field → treat as
+                        // skipped so it doesn't masquerade as pending.
+                        s.skipped += 1;
+                    } else {
+                        s.pending += 1;
+                    }
+                }
+                _ => s.skipped += 1,
+            }
+        }
+        s
+    }
 }
 
 impl PrInfo {
@@ -175,6 +250,31 @@ struct PrViewJson {
     base_ref_oid: String,
     #[serde(rename = "headRefOid")]
     head_ref_oid: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default, rename = "isDraft")]
+    is_draft: bool,
+    #[serde(default)]
+    mergeable: String,
+    #[serde(default, rename = "reviewDecision")]
+    review_decision: String,
+    #[serde(default, rename = "statusCheckRollup")]
+    status_check_rollup: Vec<PrCheckJson>,
+}
+
+#[derive(Deserialize, Default)]
+struct PrCheckJson {
+    #[serde(default)]
+    name: String,
+    /// CheckRun checks expose `context` instead of `name`.
+    #[serde(default)]
+    context: String,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    conclusion: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
 }
 
 /// Look up the PR associated with the current branch using `gh pr view`.
@@ -193,12 +293,25 @@ pub fn resolve_pr_for_current_branch(gh: &dyn GhClient) -> Result<PrInfo, GhErro
         "pr",
         "view",
         "--json",
-        "id,number,url,title,body,baseRefName,headRefName,baseRefOid,headRefOid",
+        "id,number,url,title,body,baseRefName,headRefName,baseRefOid,headRefOid,\
+         state,isDraft,mergeable,reviewDecision,statusCheckRollup",
     ])?;
     let parsed: PrViewJson = serde_json::from_str(&stdout)
         .map_err(|e| GhError::ParseError(format!("gh pr view: {}", e)))?;
 
     let (owner, name) = parse_repo_from_pr_url(&parsed.url)?;
+
+    let checks: Vec<PrCheck> = parsed
+        .status_check_rollup
+        .into_iter()
+        .map(|c| PrCheck {
+            // `name` is empty for StatusContext rows; fall back to `context`.
+            name: if c.name.is_empty() { c.context } else { c.name },
+            status: c.status,
+            conclusion: c.conclusion,
+            state: c.state,
+        })
+        .collect();
 
     Ok(PrInfo {
         number: parsed.number,
@@ -212,6 +325,11 @@ pub fn resolve_pr_for_current_branch(gh: &dyn GhClient) -> Result<PrInfo, GhErro
         head_oid: parsed.head_ref_oid,
         title: parsed.title,
         body: parsed.body,
+        state: parsed.state,
+        is_draft: parsed.is_draft,
+        mergeable: parsed.mergeable,
+        review_decision: parsed.review_decision,
+        checks,
     })
 }
 
@@ -281,7 +399,16 @@ mod tests {
             "baseRefName": "main",
             "headRefName": "feature",
             "baseRefOid": "aaaaaaa",
-            "headRefOid": "bbbbbbb"
+            "headRefOid": "bbbbbbb",
+            "state": "OPEN",
+            "isDraft": false,
+            "mergeable": "MERGEABLE",
+            "reviewDecision": "APPROVED",
+            "statusCheckRollup": [
+                {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                {"name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"},
+                {"name": "deploy", "status": "IN_PROGRESS"}
+            ]
         }"#;
         let gh = FakeGh::with(vec![Ok(body.to_string())]);
         let pr = resolve_pr_for_current_branch(&gh).expect("should parse");
@@ -291,6 +418,15 @@ mod tests {
         assert_eq!(pr.head_oid, "bbbbbbb");
         assert_eq!(pr.title, "Add the thing");
         assert_eq!(pr.body, "Long description\nwith multiple lines.");
+        assert_eq!(pr.state, "OPEN");
+        assert!(!pr.is_draft);
+        assert_eq!(pr.mergeable, "MERGEABLE");
+        assert_eq!(pr.review_decision, "APPROVED");
+        assert_eq!(pr.checks.len(), 3);
+        let summary = PrCheckSummary::from_checks(&pr.checks);
+        assert_eq!(summary.passed, 1);
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.pending, 1);
         assert_eq!(pr.slug(), "dghaehre/lens#42");
     }
 

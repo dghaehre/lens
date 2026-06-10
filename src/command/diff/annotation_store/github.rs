@@ -674,6 +674,11 @@ mod tests {
             head_oid: "b".into(),
             title: String::new(),
             body: String::new(),
+            state: String::new(),
+            is_draft: false,
+            mergeable: String::new(),
+            review_decision: String::new(),
+            checks: Vec::new(),
         }
     }
 

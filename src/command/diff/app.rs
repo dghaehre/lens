@@ -415,6 +415,178 @@ fn source_label(state: &AppState) -> String {
     }
 }
 
+/// Build the compact status header rendered above the PR description body.
+/// Returns up to two lines:
+///   1. state badge · draft tag · mergeability · review decision
+///   2. checks summary (only when the PR has any checks)
+///
+/// Returns an empty vec when there's nothing useful to show (e.g., `gh`
+/// returned the new fields as empty strings on an older binary).
+fn build_pr_status_header(
+    pr: &crate::vcs::github::PrInfo,
+) -> Vec<ratatui::text::Line<'static>> {
+    use crate::vcs::github::PrCheckSummary;
+    let t = theme::get();
+
+    let muted = Style::default().fg(t.ui.text_muted);
+    let sep = Span::styled("  ·  ", muted);
+
+    let mut first: Vec<Span<'static>> = Vec::new();
+
+    // State badge — "Open" / "Merged" / "Closed". Draft overrides for
+    // visual priority (a draft is still technically OPEN).
+    let (state_label, state_fg) = if pr.is_draft {
+        ("Draft", t.ui.text_muted)
+    } else {
+        match pr.state.as_str() {
+            "OPEN" => ("Open", t.ui.status_added),
+            "MERGED" => ("Merged", t.ui.highlight),
+            "CLOSED" => ("Closed", t.ui.status_deleted),
+            "" => ("?", t.ui.text_muted),
+            other => {
+                // Title-case unknown states so we don't yell at the user.
+                let mut s = String::new();
+                let mut chars = other.chars();
+                if let Some(c) = chars.next() {
+                    s.push(c.to_ascii_uppercase());
+                }
+                for c in chars {
+                    s.push(c.to_ascii_lowercase());
+                }
+                first.push(Span::styled(
+                    format!(" {} ", s),
+                    Style::default()
+                        .fg(t.ui.selection_fg)
+                        .bg(t.ui.text_muted)
+                        .bold(),
+                ));
+                ("", t.ui.text_muted)
+            }
+        }
+    };
+    if !state_label.is_empty() {
+        first.push(Span::styled(
+            format!(" {} ", state_label),
+            Style::default()
+                .fg(t.ui.selection_fg)
+                .bg(state_fg)
+                .bold(),
+        ));
+    }
+
+    // Mergeability — only shown when meaningful.
+    match pr.mergeable.as_str() {
+        "MERGEABLE" => {
+            first.push(sep.clone());
+            first.push(Span::styled(
+                "mergeable",
+                Style::default().fg(t.ui.status_added),
+            ));
+        }
+        "CONFLICTING" => {
+            first.push(sep.clone());
+            first.push(Span::styled(
+                "conflicting",
+                Style::default().fg(t.ui.status_deleted),
+            ));
+        }
+        _ => {}
+    }
+
+    // Review decision — only shown when GitHub actually returned one.
+    match pr.review_decision.as_str() {
+        "APPROVED" => {
+            first.push(sep.clone());
+            first.push(Span::styled(
+                "approved",
+                Style::default().fg(t.ui.status_added),
+            ));
+        }
+        "CHANGES_REQUESTED" => {
+            first.push(sep.clone());
+            first.push(Span::styled(
+                "changes requested",
+                Style::default().fg(t.ui.status_deleted),
+            ));
+        }
+        "REVIEW_REQUIRED" => {
+            first.push(sep.clone());
+            first.push(Span::styled("review required", muted));
+        }
+        _ => {}
+    }
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if !first.is_empty() {
+        lines.push(Line::from(first));
+    }
+
+    // Checks summary — second line when present.
+    if !pr.checks.is_empty() {
+        let s = PrCheckSummary::from_checks(&pr.checks);
+        let mut spans: Vec<Span<'static>> = vec![Span::styled("checks: ", muted)];
+        let mut first_seg = true;
+        let push_seg = |spans: &mut Vec<Span<'static>>,
+                            count: usize,
+                            symbol: &str,
+                            label: &str,
+                            color: Color,
+                            first_seg: &mut bool| {
+            if count == 0 {
+                return;
+            }
+            if !*first_seg {
+                spans.push(Span::styled("  ", Style::default()));
+            }
+            spans.push(Span::styled(
+                format!("{} {} {}", symbol, count, label),
+                Style::default().fg(color),
+            ));
+            *first_seg = false;
+        };
+        push_seg(
+            &mut spans,
+            s.passed,
+            "✓",
+            "passed",
+            t.ui.status_added,
+            &mut first_seg,
+        );
+        push_seg(
+            &mut spans,
+            s.failed,
+            "✗",
+            "failed",
+            t.ui.status_deleted,
+            &mut first_seg,
+        );
+        push_seg(
+            &mut spans,
+            s.pending,
+            "●",
+            "pending",
+            t.ui.watching,
+            &mut first_seg,
+        );
+        push_seg(
+            &mut spans,
+            s.skipped,
+            "○",
+            "skipped",
+            t.ui.text_muted,
+            &mut first_seg,
+        );
+        if first_seg {
+            // No counts landed in any bucket (shouldn't happen, but be
+            // defensive) — emit a fallback so the row isn't blank.
+            spans.push(Span::styled(format!("{} total", s.total), muted));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    lines
+}
+
 /// Build the items + annotations + diff snippets for the `I` (all-
 /// annotations) modal. Active annotations come first (sorted by sidebar
 /// file order, then by anchor line so the list reads top-to-bottom like
@@ -2256,15 +2428,20 @@ fn run_app_internal(
                         }
                         KeyCode::Char('P') => {
                             // Show the PR description for the current branch.
-                            // Resolves `pr_info` lazily on first press so the
-                            // user doesn't need to flip to the GitHub annotation
-                            // source first. Errors (no PR, gh not installed,
-                            // not authenticated) are stashed in
+                            // Always re-fetches so status + CI checks reflect
+                            // current state (a re-fetch is cheap — one `gh`
+                            // call). Errors (no PR, gh not installed, not
+                            // authenticated) are stashed in
                             // `annotation_source_status` for the footer.
-                            if let Ok(pr) = state.ensure_pr_info() {
+                            if let Ok(pr) = state.refresh_pr_info() {
                                 let title = format!("{} · {}", pr.slug(), pr.title);
                                 let body = pr.body.clone();
-                                active_modal = Some(Modal::pr_description(title, &body));
+                                let status_lines = build_pr_status_header(pr);
+                                active_modal = Some(Modal::pr_description(
+                                    title,
+                                    status_lines,
+                                    &body,
+                                ));
                             }
                         }
                         KeyCode::Char('R') if state.annotation_select.is_some() => {

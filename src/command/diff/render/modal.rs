@@ -68,6 +68,9 @@ pub enum ModalContent {
     PrDescription {
         /// PR slug + title rendered as the modal title bar.
         title: String,
+        /// Pre-styled status header lines (state, mergeability, checks).
+        /// Empty when no status was supplied.
+        status_lines: Vec<Line<'static>>,
         /// Body pre-wrapped to a fixed column width at construction. Kept as
         /// a flat list of physical lines so render + input share one source
         /// of truth for content height.
@@ -163,11 +166,16 @@ impl Modal {
         }
     }
 
-    /// Build a PR-description modal from the title bar text and raw body.
-    /// The body is wrapped once at construction to `PR_DESC_WRAP_WIDTH` so
-    /// scroll math is stable across resizes. Empty bodies still produce one
-    /// placeholder row so the modal isn't empty.
-    pub fn pr_description(title: impl Into<String>, body: &str) -> Self {
+    /// Build a PR-description modal from the title bar text, an optional
+    /// pre-styled status header, and the raw body. The body is wrapped
+    /// once at construction to `PR_DESC_WRAP_WIDTH` so scroll math is
+    /// stable across resizes. Empty bodies still produce one placeholder
+    /// row so the modal isn't empty.
+    pub fn pr_description(
+        title: impl Into<String>,
+        status_lines: Vec<Line<'static>>,
+        body: &str,
+    ) -> Self {
         let mut body_lines: Vec<String> = Vec::new();
         for raw_line in body.split('\n') {
             // Preserve blank lines as separators.
@@ -186,6 +194,7 @@ impl Modal {
         Self {
             content: ModalContent::PrDescription {
                 title: title.into(),
+                status_lines,
                 body_lines,
                 scroll: 0,
                 content_height,
@@ -293,10 +302,21 @@ impl Modal {
                 let height = (total_lines as u16 + 4).min(area.height * 80 / 100).max(5);
                 (width, height)
             }
-            ModalContent::PrDescription { content_height, .. } => {
+            ModalContent::PrDescription {
+                content_height,
+                status_lines,
+                ..
+            } => {
                 let width = 80.min(area.width.saturating_sub(4));
-                // +3 for the title row inside the modal + top/bottom borders.
-                let height = (content_height + 3).min(area.height * 80 / 100).max(7);
+                let header_rows = if status_lines.is_empty() {
+                    0
+                } else {
+                    status_lines.len() as u16 + 1 // +1 for divider row
+                };
+                // +4 covers top/bottom borders + top/bottom inner padding.
+                let height = (content_height + header_rows + 4)
+                    .min(area.height * 80 / 100)
+                    .max(7);
                 (width, height)
             }
             ModalContent::FilePicker {
@@ -364,6 +384,7 @@ impl Modal {
             }
             ModalContent::PrDescription {
                 title,
+                status_lines,
                 body_lines,
                 scroll,
                 content_height,
@@ -372,6 +393,7 @@ impl Modal {
                     frame,
                     modal_area,
                     title,
+                    status_lines,
                     body_lines,
                     *scroll,
                     *content_height,
@@ -563,6 +585,7 @@ impl Modal {
         frame: &mut Frame,
         area: Rect,
         title: &str,
+        status_lines: &[Line<'static>],
         body_lines: &[String],
         scroll: u16,
         content_height: u16,
@@ -578,29 +601,73 @@ impl Modal {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
+        // Inset by one column on each side and one row top/bottom so the
+        // text isn't flush against the rounded border. Right-side inset
+        // also doubles as scrollbar gutter so wrapped text doesn't collide.
+        let padded = Rect::new(
+            inner.x + 1,
+            inner.y + 1,
+            inner.width.saturating_sub(2),
+            inner.height.saturating_sub(2),
+        );
+
+        // Status header (state badge, mergeability, checks). Sits above the
+        // body separated by a divider row. Empty when we couldn't fetch
+        // status fields (e.g., older `gh`).
+        let header_height: u16 = if status_lines.is_empty() {
+            0
+        } else {
+            status_lines.len() as u16 + 1 // status rows + divider
+        };
+
+        let body_area = Rect::new(
+            padded.x,
+            padded.y + header_height,
+            padded.width,
+            padded.height.saturating_sub(header_height),
+        );
+
+        if !status_lines.is_empty() {
+            let header_area = Rect::new(
+                padded.x,
+                padded.y,
+                padded.width,
+                status_lines.len() as u16,
+            );
+            frame.render_widget(Paragraph::new(status_lines.to_vec()), header_area);
+
+            // Divider row between header and body.
+            let divider_y = padded.y + status_lines.len() as u16;
+            let divider_area = Rect::new(padded.x, divider_y, padded.width, 1);
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "─".repeat(padded.width as usize),
+                    Style::default().fg(t.ui.border_unfocused),
+                ))),
+                divider_area,
+            );
+        }
+
+        // Render body with markdown syntax highlighting per wrapped line.
+        // We feed each wrapped line through the markdown grammar — multi-
+        // line constructs (fenced code blocks spanning wraps) won't be
+        // perfectly highlighted, but inline tokens (headers, emphasis,
+        // inline code, links) come through correctly.
         let lines: Vec<Line> = body_lines
             .iter()
             .map(|line| {
-                Line::from(Span::styled(
-                    line.clone(),
-                    Style::default().fg(t.ui.text_primary),
-                ))
+                if line.is_empty() {
+                    Line::from("")
+                } else {
+                    Line::from(highlight_line_spans(line, "_.md", None))
+                }
             })
             .collect();
 
-        // Reserve a column on the right for the scrollbar so wrapped text
-        // doesn't overlap with it.
-        let content_area = Rect::new(
-            inner.x,
-            inner.y,
-            inner.width.saturating_sub(1),
-            inner.height,
-        );
-
         let para = Paragraph::new(lines).scroll((scroll, 0));
-        frame.render_widget(para, content_area);
+        frame.render_widget(para, body_area);
 
-        let visible_height = inner.height;
+        let visible_height = body_area.height;
         if content_height > visible_height {
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
@@ -612,6 +679,8 @@ impl Modal {
                 ScrollbarState::new(content_height.saturating_sub(visible_height) as usize)
                     .position(scroll as usize);
 
+            // Draw scrollbar inside the inner area (not the padded one) so
+            // it hugs the right border instead of floating mid-modal.
             frame.render_stateful_widget(scrollbar, inner, &mut scrollbar_state);
         }
     }
