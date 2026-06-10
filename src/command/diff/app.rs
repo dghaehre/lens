@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-        MouseEventKind,
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, MouseEventKind,
     },
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
@@ -320,64 +320,74 @@ fn jump_to_annotation(
     }
 }
 
-/// Find a line-range annotation on the current file whose range contains
-/// the line at the top of the viewport. Used by `R` to reply to whatever
-/// annotation the user has scrolled to. File-target annotations are skipped
-/// — replies to those go through the `I` modal.
-fn annotation_at_cursor(state: &mut AppState) -> Option<super::state::Annotation> {
-    if state.file_diffs.is_empty() {
-        return None;
-    }
-    let filename = state.file_diffs[state.current_file].filename.clone();
-    let line = current_anchor_line(state);
-    state
-        .annotations
-        .iter()
-        .find(|a| {
-            a.filename == filename
-                && match &a.target {
-                    super::state::AnnotationTarget::File => false,
-                    super::state::AnnotationTarget::LineRange {
-                        start_line,
-                        end_line,
-                        ..
-                    } => line >= *start_line && line <= *end_line,
-                }
-        })
-        .cloned()
+/// While annotation-select mode is active, the diff view only responds to
+/// these keys: navigation (`j`/`k`/Up/Down), the in-mode actions (`R`/`X`),
+/// quit (`q`, Ctrl+c), and Esc to exit the mode. Anything else is silently
+/// ignored so the mode stays sticky until the user explicitly leaves.
+fn allowed_in_annotation_select_mode(key: &KeyEvent) -> bool {
+    matches!(
+        key.code,
+        KeyCode::Esc
+            | KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Char('j')
+            | KeyCode::Char('k')
+            | KeyCode::Char('R')
+            | KeyCode::Char('X')
+            | KeyCode::Char('q')
+    ) || (matches!(key.code, KeyCode::Char('c'))
+        && key.modifiers.contains(KeyModifiers::CONTROL))
 }
 
-/// Find the next (or previous) annotation relative to the current scroll
-/// position. Uses `(file_index, line)` ordering so traversal walks files in
-/// sidebar order, then line ascending within each file. Orphaned (file
-/// missing from diff) annotations are skipped. Clamps at the ends — does
-/// not wrap.
-fn find_adjacent_annotation(state: &mut AppState, forward: bool) -> Option<super::state::Annotation> {
-    if state.annotations.is_empty() {
-        return None;
-    }
-    let current_key = (state.current_file, current_anchor_line(state));
+/// Annotations sorted by `(file_index, start_line)`. Orphaned (file
+/// missing from diff) annotations are skipped — they're only reachable
+/// via the `I` modal.
+fn sorted_annotations(state: &AppState) -> Vec<((usize, usize), &super::state::Annotation)> {
     let mut keyed: Vec<((usize, usize), &super::state::Annotation)> = state
         .annotations
         .iter()
         .filter_map(|a| annotation_sort_key(a, &state.file_diffs).map(|k| (k, a)))
         .collect();
+    keyed.sort_by_key(|(k, _)| *k);
+    keyed
+}
+
+/// Distance between two `(file_index, line)` keys. Cross-file distance
+/// dominates so the nearest annotation in the current file wins over any
+/// annotation in another file.
+fn key_distance(a: (usize, usize), b: (usize, usize)) -> u64 {
+    let file_diff = if a.0 >= b.0 { a.0 - b.0 } else { b.0 - a.0 } as u64;
+    let line_diff = if a.1 >= b.1 { a.1 - b.1 } else { b.1 - a.1 } as u64;
+    file_diff.saturating_mul(1_000_000).saturating_add(line_diff)
+}
+
+/// Annotation whose sort key is closest to `from`. Used to pick the
+/// starting annotation when entering annotation-select mode.
+fn nearest_annotation_to(
+    state: &AppState,
+    from: (usize, usize),
+) -> Option<super::state::Annotation> {
+    sorted_annotations(state)
+        .into_iter()
+        .min_by_key(|(k, _)| key_distance(*k, from))
+        .map(|(_, a)| a.clone())
+}
+
+/// Next or previous annotation after `from` in `(file_index, line)` order.
+/// Clamps at the ends — does not wrap.
+fn adjacent_annotation_to(
+    state: &AppState,
+    from: (usize, usize),
+    forward: bool,
+) -> Option<super::state::Annotation> {
+    let keyed = sorted_annotations(state);
     if keyed.is_empty() {
         return None;
     }
-    keyed.sort_by_key(|(k, _)| *k);
-
     let picked = if forward {
-        keyed
-            .iter()
-            .find(|(k, _)| *k > current_key)
-            .or_else(|| keyed.last())
+        keyed.iter().find(|(k, _)| *k > from)
     } else {
-        keyed
-            .iter()
-            .rev()
-            .find(|(k, _)| *k < current_key)
-            .or_else(|| keyed.first())
+        keyed.iter().rev().find(|(k, _)| *k < from)
     };
     picked.map(|(_, a)| (*a).clone())
 }
@@ -634,6 +644,7 @@ fn run_app_internal(
                     state.total_removed,
                     Some(annotation_source_label_owned.as_str()),
                     annotation_source_error_owned.as_deref(),
+                    state.annotation_select.as_ref(),
                 );
                 row_offset.set(offset);
 
@@ -1454,7 +1465,18 @@ fn run_app_internal(
                         state.pending_key = PendingKey::None;
                     }
                     state.show_selection_tooltip = false;
+                    if state.annotation_select.is_some()
+                        && !allowed_in_annotation_select_mode(&key)
+                    {
+                        // Stay in annotation-select mode; swallow the key.
+                        continue;
+                    }
                     match key.code {
+                        KeyCode::Esc if state.annotation_select.is_some() => {
+                            // Annotation-select mode: Esc exits the mode and
+                            // short-circuits before any other Esc handling.
+                            state.annotation_select = None;
+                        }
                         KeyCode::Esc | KeyCode::Char('c')
                             if (key.code == KeyCode::Esc
                                 || key.modifiers.contains(KeyModifiers::CONTROL))
@@ -1609,6 +1631,46 @@ fn run_app_internal(
                         KeyCode::Char('=') => {
                             state.diff_fullscreen = DiffFullscreen::None;
                             state.mark_search_dirty();
+                        }
+                        KeyCode::Down | KeyCode::Char('j')
+                            if state.annotation_select.is_some() =>
+                        {
+                            if let Some(from) = state
+                                .annotation_select
+                                .as_ref()
+                                .and_then(|id| state.get_annotation_by_id(id))
+                                .and_then(|a| annotation_sort_key(a, &state.file_diffs))
+                            {
+                                if let Some(next) = adjacent_annotation_to(&state, from, true) {
+                                    state.annotation_select = Some(next.id.clone());
+                                    jump_to_annotation(
+                                        &mut state,
+                                        &next,
+                                        visible_height,
+                                        max_scroll,
+                                    );
+                                }
+                            }
+                        }
+                        KeyCode::Up | KeyCode::Char('k')
+                            if state.annotation_select.is_some() =>
+                        {
+                            if let Some(from) = state
+                                .annotation_select
+                                .as_ref()
+                                .and_then(|id| state.get_annotation_by_id(id))
+                                .and_then(|a| annotation_sort_key(a, &state.file_diffs))
+                            {
+                                if let Some(prev) = adjacent_annotation_to(&state, from, false) {
+                                    state.annotation_select = Some(prev.id.clone());
+                                    jump_to_annotation(
+                                        &mut state,
+                                        &prev,
+                                        visible_height,
+                                        max_scroll,
+                                    );
+                                }
+                            }
                         }
                         KeyCode::Down | KeyCode::Char('j')
                             if state.focused_panel == FocusedPanel::DiffView
@@ -1899,32 +1961,6 @@ fn run_app_internal(
                                 }
                             }
                         }
-                        KeyCode::Char(')') => {
-                            if !state.annotations.is_empty() {
-                                state.clear_selection();
-                                if let Some(ann) = find_adjacent_annotation(&mut state, true) {
-                                    jump_to_annotation(
-                                        &mut state,
-                                        &ann,
-                                        visible_height,
-                                        max_scroll,
-                                    );
-                                }
-                            }
-                        }
-                        KeyCode::Char('(') => {
-                            if !state.annotations.is_empty() {
-                                state.clear_selection();
-                                if let Some(ann) = find_adjacent_annotation(&mut state, false) {
-                                    jump_to_annotation(
-                                        &mut state,
-                                        &ann,
-                                        visible_height,
-                                        max_scroll,
-                                    );
-                                }
-                            }
-                        }
                         KeyCode::Char('v') => {
                             if state.focused_panel == FocusedPanel::DiffView
                                 && !state.file_diffs.is_empty()
@@ -1986,6 +2022,25 @@ fn run_app_internal(
                                             );
                                         }
                                     }
+                                }
+                            }
+                        }
+                        KeyCode::Char('a') => {
+                            // Enter annotation-select mode: pick the
+                            // annotation closest to the current viewport
+                            // and jump to it. No-op if nothing to walk.
+                            if state.annotation_select.is_none() && !state.annotations.is_empty() {
+                                let anchor = current_anchor_line(&mut state);
+                                let from = (state.current_file, anchor);
+                                if let Some(ann) = nearest_annotation_to(&state, from) {
+                                    state.clear_selection();
+                                    state.annotation_select = Some(ann.id.clone());
+                                    jump_to_annotation(
+                                        &mut state,
+                                        &ann,
+                                        visible_height,
+                                        max_scroll,
+                                    );
                                 }
                             }
                         }
@@ -2098,8 +2153,13 @@ fn run_app_internal(
                                 source_label(&state),
                             ));
                         }
-                        KeyCode::Char('R') => {
-                            if let Some(ann) = annotation_at_cursor(&mut state) {
+                        KeyCode::Char('R') if state.annotation_select.is_some() => {
+                            if let Some(ann) = state
+                                .annotation_select
+                                .as_ref()
+                                .and_then(|id| state.get_annotation_by_id(id))
+                                .cloned()
+                            {
                                 let editor = AnnotationEditor::new(
                                     ann.filename.clone(),
                                     ann.target.clone(),
@@ -2108,8 +2168,13 @@ fn run_app_internal(
                                 annotation_editor = Some(editor);
                             }
                         }
-                        KeyCode::Char('X') => {
-                            if let Some(ann) = annotation_at_cursor(&mut state) {
+                        KeyCode::Char('X') if state.annotation_select.is_some() => {
+                            if let Some(ann) = state
+                                .annotation_select
+                                .as_ref()
+                                .and_then(|id| state.get_annotation_by_id(id))
+                                .cloned()
+                            {
                                 state.set_annotation_resolved(&ann.id, !ann.resolved);
                             }
                         }
@@ -2406,16 +2471,16 @@ fn run_app_internal(
                                                 description: "View all annotations",
                                             },
                                             KeyBind {
-                                                key: "( / )",
-                                                description: "Jump to prev / next annotation",
+                                                key: "a",
+                                                description: "Enter annotation-select mode (j/k walk, esc exits)",
                                             },
                                             KeyBind {
                                                 key: "R",
-                                                description: "Reply to annotation at cursor",
+                                                description: "Reply to selected annotation (in select mode)",
                                             },
                                             KeyBind {
                                                 key: "X",
-                                                description: "Toggle resolved on annotation at cursor",
+                                                description: "Toggle resolved on selected annotation (in select mode)",
                                             },
                                             KeyBind {
                                                 key: "r / x (in I)",
