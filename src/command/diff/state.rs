@@ -925,7 +925,6 @@ impl AppState {
 
     pub fn select_file(&mut self, file_index: usize) {
         self.current_file = file_index;
-        self.diff_fullscreen = DiffFullscreen::None;
         self.clear_selection(); // Clear selection when changing files
         self.invalidate_cache(); // Clear cache for new file
 
