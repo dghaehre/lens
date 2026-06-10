@@ -147,6 +147,10 @@ pub struct PrInfo {
     pub head_ref: String,
     pub base_oid: String,
     pub head_oid: String,
+    /// PR title as displayed on GitHub.
+    pub title: String,
+    /// PR description body. May be empty.
+    pub body: String,
 }
 
 impl PrInfo {
@@ -160,6 +164,9 @@ struct PrViewJson {
     id: String,
     number: u64,
     url: String,
+    title: String,
+    #[serde(default)]
+    body: String,
     #[serde(rename = "baseRefName")]
     base_ref_name: String,
     #[serde(rename = "headRefName")]
@@ -186,7 +193,7 @@ pub fn resolve_pr_for_current_branch(gh: &dyn GhClient) -> Result<PrInfo, GhErro
         "pr",
         "view",
         "--json",
-        "id,number,url,baseRefName,headRefName,baseRefOid,headRefOid",
+        "id,number,url,title,body,baseRefName,headRefName,baseRefOid,headRefOid",
     ])?;
     let parsed: PrViewJson = serde_json::from_str(&stdout)
         .map_err(|e| GhError::ParseError(format!("gh pr view: {}", e)))?;
@@ -203,6 +210,8 @@ pub fn resolve_pr_for_current_branch(gh: &dyn GhClient) -> Result<PrInfo, GhErro
         head_ref: parsed.head_ref_name,
         base_oid: parsed.base_ref_oid,
         head_oid: parsed.head_ref_oid,
+        title: parsed.title,
+        body: parsed.body,
     })
 }
 
@@ -267,6 +276,8 @@ mod tests {
             "id": "PR_kwDOABCD1234",
             "number": 42,
             "url": "https://github.com/dghaehre/lens/pull/42",
+            "title": "Add the thing",
+            "body": "Long description\nwith multiple lines.",
             "baseRefName": "main",
             "headRefName": "feature",
             "baseRefOid": "aaaaaaa",
@@ -278,6 +289,8 @@ mod tests {
         assert_eq!(pr.repo_owner, "dghaehre");
         assert_eq!(pr.repo_name, "lens");
         assert_eq!(pr.head_oid, "bbbbbbb");
+        assert_eq!(pr.title, "Add the thing");
+        assert_eq!(pr.body, "Long description\nwith multiple lines.");
         assert_eq!(pr.slug(), "dghaehre/lens#42");
     }
 

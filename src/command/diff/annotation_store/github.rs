@@ -672,6 +672,8 @@ mod tests {
             head_ref: "feat".into(),
             base_oid: "a".into(),
             head_oid: "b".into(),
+            title: String::new(),
+            body: String::new(),
         }
     }
 

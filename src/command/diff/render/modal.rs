@@ -11,6 +11,10 @@ use crate::command::diff::highlight::highlight_line_spans;
 use crate::command::diff::state::{Annotation, AnnotationId};
 use crate::command::diff::theme;
 
+/// Column width the PR description modal wraps body text at. Chosen so
+/// the wrapped text fits inside an 80-column modal with borders + padding.
+const PR_DESC_WRAP_WIDTH: usize = 76;
+
 #[derive(Clone)]
 pub struct KeyBind {
     pub key: &'static str,
@@ -60,6 +64,16 @@ pub enum ModalContent {
         filtered_indices: Vec<usize>,
         query: String,
         selected: usize,
+    },
+    PrDescription {
+        /// PR slug + title rendered as the modal title bar.
+        title: String,
+        /// Body pre-wrapped to a fixed column width at construction. Kept as
+        /// a flat list of physical lines so render + input share one source
+        /// of truth for content height.
+        body_lines: Vec<String>,
+        scroll: u16,
+        content_height: u16,
     },
     Annotations {
         title: String,
@@ -145,6 +159,36 @@ impl Modal {
                 title: title.into(),
                 items,
                 selected: 0,
+            },
+        }
+    }
+
+    /// Build a PR-description modal from the title bar text and raw body.
+    /// The body is wrapped once at construction to `PR_DESC_WRAP_WIDTH` so
+    /// scroll math is stable across resizes. Empty bodies still produce one
+    /// placeholder row so the modal isn't empty.
+    pub fn pr_description(title: impl Into<String>, body: &str) -> Self {
+        let mut body_lines: Vec<String> = Vec::new();
+        for raw_line in body.split('\n') {
+            // Preserve blank lines as separators.
+            if raw_line.trim().is_empty() {
+                body_lines.push(String::new());
+                continue;
+            }
+            for wrapped in wrap_preview_line(raw_line, PR_DESC_WRAP_WIDTH) {
+                body_lines.push(wrapped);
+            }
+        }
+        if body_lines.is_empty() {
+            body_lines.push("(no description)".to_string());
+        }
+        let content_height = body_lines.len() as u16;
+        Self {
+            content: ModalContent::PrDescription {
+                title: title.into(),
+                body_lines,
+                scroll: 0,
+                content_height,
             },
         }
     }
@@ -249,6 +293,12 @@ impl Modal {
                 let height = (total_lines as u16 + 4).min(area.height * 80 / 100).max(5);
                 (width, height)
             }
+            ModalContent::PrDescription { content_height, .. } => {
+                let width = 80.min(area.width.saturating_sub(4));
+                // +3 for the title row inside the modal + top/bottom borders.
+                let height = (content_height + 3).min(area.height * 80 / 100).max(7);
+                (width, height)
+            }
             ModalContent::FilePicker {
                 filtered_indices, ..
             } => {
@@ -308,6 +358,21 @@ impl Modal {
                     modal_area,
                     title,
                     sections,
+                    *scroll,
+                    *content_height,
+                );
+            }
+            ModalContent::PrDescription {
+                title,
+                body_lines,
+                scroll,
+                content_height,
+            } => {
+                self.render_pr_description(
+                    frame,
+                    modal_area,
+                    title,
+                    body_lines,
                     *scroll,
                     *content_height,
                 );
@@ -477,6 +542,64 @@ impl Modal {
         frame.render_widget(para, content_area);
 
         // Render scrollbar if content exceeds visible area
+        let visible_height = inner.height;
+        if content_height > visible_height {
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_symbol(Some("│"))
+                .thumb_symbol("█");
+
+            let mut scrollbar_state =
+                ScrollbarState::new(content_height.saturating_sub(visible_height) as usize)
+                    .position(scroll as usize);
+
+            frame.render_stateful_widget(scrollbar, inner, &mut scrollbar_state);
+        }
+    }
+
+    fn render_pr_description(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        title: &str,
+        body_lines: &[String],
+        scroll: u16,
+        content_height: u16,
+    ) {
+        let t = theme::get();
+        let block = Block::default()
+            .title(format!(" {} ", title))
+            .title_style(Style::default().fg(t.ui.border_focused).bold())
+            .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(Style::default().fg(t.ui.border_unfocused));
+
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let lines: Vec<Line> = body_lines
+            .iter()
+            .map(|line| {
+                Line::from(Span::styled(
+                    line.clone(),
+                    Style::default().fg(t.ui.text_primary),
+                ))
+            })
+            .collect();
+
+        // Reserve a column on the right for the scrollbar so wrapped text
+        // doesn't overlap with it.
+        let content_area = Rect::new(
+            inner.x,
+            inner.y,
+            inner.width.saturating_sub(1),
+            inner.height,
+        );
+
+        let para = Paragraph::new(lines).scroll((scroll, 0));
+        frame.render_widget(para, content_area);
+
         let visible_height = inner.height;
         if content_height > visible_height {
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -798,29 +921,33 @@ impl Modal {
     /// Handle mouse scroll for the modal.
     /// Returns true if the scroll was handled.
     pub fn handle_mouse(&mut self, mouse: MouseEvent, terminal_height: u16) -> bool {
-        if let ModalContent::KeyBindings {
-            scroll,
-            content_height,
-            ..
-        } = &mut self.content
-        {
-            let visible_height =
-                calculate_keybindings_visible_height(terminal_height, *content_height);
-            let max_scroll = content_height.saturating_sub(visible_height);
-
-            match mouse.kind {
-                MouseEventKind::ScrollDown => {
-                    *scroll = (*scroll + 3).min(max_scroll);
-                    true
-                }
-                MouseEventKind::ScrollUp => {
-                    *scroll = scroll.saturating_sub(3);
-                    true
-                }
-                _ => false,
+        let (scroll, content_height) = match &mut self.content {
+            ModalContent::KeyBindings {
+                scroll,
+                content_height,
+                ..
             }
-        } else {
-            false
+            | ModalContent::PrDescription {
+                scroll,
+                content_height,
+                ..
+            } => (scroll, *content_height),
+            _ => return false,
+        };
+
+        let visible_height = calculate_keybindings_visible_height(terminal_height, content_height);
+        let max_scroll = content_height.saturating_sub(visible_height);
+
+        match mouse.kind {
+            MouseEventKind::ScrollDown => {
+                *scroll = (*scroll + 3).min(max_scroll);
+                true
+            }
+            MouseEventKind::ScrollUp => {
+                *scroll = scroll.saturating_sub(3);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -905,6 +1032,44 @@ impl Modal {
                     }
                     KeyCode::Char('G') => {
                         // Go to bottom
+                        *scroll = max_scroll;
+                        None
+                    }
+                    _ => None,
+                }
+            }
+            ModalContent::PrDescription {
+                scroll,
+                content_height,
+                ..
+            } => {
+                let visible_height =
+                    calculate_keybindings_visible_height(terminal_height, *content_height);
+                let max_scroll = content_height.saturating_sub(visible_height);
+
+                match key.code {
+                    KeyCode::Enter => Some(ModalResult::Dismissed),
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        *scroll = (*scroll + 1).min(max_scroll);
+                        None
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        *scroll = scroll.saturating_sub(1);
+                        None
+                    }
+                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        *scroll = (*scroll + visible_height / 2).min(max_scroll);
+                        None
+                    }
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        *scroll = scroll.saturating_sub(visible_height / 2);
+                        None
+                    }
+                    KeyCode::Char('g') => {
+                        *scroll = 0;
+                        None
+                    }
+                    KeyCode::Char('G') => {
                         *scroll = max_scroll;
                         None
                     }

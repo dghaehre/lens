@@ -2199,6 +2199,19 @@ fn run_app_internal(
                                 source_label(&state),
                             ));
                         }
+                        KeyCode::Char('P') => {
+                            // Show the PR description for the current branch.
+                            // Resolves `pr_info` lazily on first press so the
+                            // user doesn't need to flip to the GitHub annotation
+                            // source first. Errors (no PR, gh not installed,
+                            // not authenticated) are stashed in
+                            // `annotation_source_status` for the footer.
+                            if let Ok(pr) = state.ensure_pr_info() {
+                                let title = format!("{} · {}", pr.slug(), pr.title);
+                                let body = pr.body.clone();
+                                active_modal = Some(Modal::pr_description(title, &body));
+                            }
+                        }
                         KeyCode::Char('R') => {
                             if let Some(ann) = annotation_at_cursor(&mut state) {
                                 let editor = AnnotationEditor::new(
@@ -2388,6 +2401,10 @@ fn run_app_internal(
                                             KeyBind {
                                                 key: "ctrl+l / ctrl+h",
                                                 description: "Next / prev commit (stacked)",
+                                            },
+                                            KeyBind {
+                                                key: "P",
+                                                description: "Show PR description (current branch)",
                                             },
                                             KeyBind {
                                                 key: "?",

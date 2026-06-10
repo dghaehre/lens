@@ -386,6 +386,33 @@ impl AppState {
         self.switch_annotation_source_inner(target, local_head, Box::new(RealGhClient))
     }
 
+    /// Resolve the PR for the current branch (caching into `pr_info`) without
+    /// changing the active annotation source or building a `GithubStore`.
+    /// Used by features that only need PR metadata — the PR description
+    /// modal in particular. On failure the error is stashed in
+    /// `annotation_source_status` so the footer can surface it, mirroring
+    /// the source-switch flow.
+    pub fn ensure_pr_info(&mut self) -> Result<&PrInfo, String> {
+        self.ensure_pr_info_with(Box::new(RealGhClient))
+    }
+
+    pub fn ensure_pr_info_with(
+        &mut self,
+        gh: Box<dyn GhClient>,
+    ) -> Result<&PrInfo, String> {
+        if self.pr_info.is_none() {
+            match resolve_pr_for_current_branch(&*gh) {
+                Ok(pr) => self.pr_info = Some(pr),
+                Err(e) => {
+                    let msg = e.to_string();
+                    self.annotation_source_status = Some(msg.clone());
+                    return Err(msg);
+                }
+            }
+        }
+        Ok(self.pr_info.as_ref().expect("pr_info populated above"))
+    }
+
     /// Inner form of [`switch_annotation_source`] with the local HEAD and
     /// `gh` runner injected directly. Tests call this to stub out both;
     /// production code goes through the wrapper above.
