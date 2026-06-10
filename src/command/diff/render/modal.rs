@@ -237,11 +237,19 @@ impl Modal {
                 export_input,
                 ..
             } => {
-                let width = 120.min(area.width.saturating_sub(4));
-                let items_count = items.len().min(14) as u16;
+                // Take most of the terminal so threads and previews have
+                // room to breathe — capped to leave a small margin.
+                let width = (area.width * 92 / 100)
+                    .min(area.width.saturating_sub(4))
+                    .max(60);
+                let items_count = items.len() as u16;
                 // +1 row for the source-picker header at the top of the list.
                 let extra = if export_input.is_some() { 5 } else { 3 };
-                let height = (items_count + extra + 2).min(area.height * 85 / 100).max(12);
+                let desired = items_count + extra + 2;
+                let height = desired
+                    .min(area.height * 92 / 100)
+                    .max((area.height * 70 / 100).min(area.height.saturating_sub(2)))
+                    .max(12);
                 (width, height)
             }
         };
