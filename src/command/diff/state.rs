@@ -203,6 +203,12 @@ pub struct AppState {
     pub selection: Selection,
     /// Keyboard-driven line/range selection scoped to the focused hunk.
     pub hunk_line_selection: Option<HunkLineSelection>,
+    /// When `Some`, the diff view is in annotation-select mode: `j`/`k`
+    /// walk through annotations (sorted by `(file_index, start_line)`),
+    /// `R` and `X` operate on the selected one, and most other keys are
+    /// blocked. Cleared by Esc, or automatically if the referenced id
+    /// disappears after a store reload.
+    pub annotation_select: Option<AnnotationId>,
     /// Whether a mouse drag is in progress
     pub is_dragging: bool,
     /// Whether to show the selection action tooltip
@@ -334,6 +340,7 @@ impl AppState {
             diff_panel_focus: DiffPanelFocus::default(),
             selection: Selection::default(),
             hunk_line_selection: None,
+            annotation_select: None,
             is_dragging: false,
             show_selection_tooltip: false,
             cached_side_by_side: None,
@@ -596,6 +603,11 @@ impl AppState {
         match self.store.list_for_files(&filenames) {
             Ok(list) => self.annotations = list,
             Err(_) => self.annotations.clear(),
+        }
+        if let Some(id) = &self.annotation_select {
+            if !self.annotations.iter().any(|a| &a.id == id) {
+                self.annotation_select = None;
+            }
         }
     }
 

@@ -27,6 +27,9 @@ pub struct FooterData<'a> {
     /// switch (e.g. "no PR for branch"). Rendered in the stats-removed
     /// color so it reads as a soft warning, not normal status.
     pub annotation_source_error: Option<&'a str>,
+    /// True when the diff view is in annotation-select mode. Replaces the
+    /// hunk count / help hint with the in-mode key cheatsheet.
+    pub annotation_select_active: bool,
 }
 
 /// Truncates a file path by abbreviating directory names to their first character.
@@ -236,7 +239,20 @@ pub fn render_footer(frame: &mut Frame, footer_area: Rect, data: FooterData) {
             spans
         };
 
-        let right_spans: Vec<Span> = if data.search_state.has_query() {
+        let right_spans: Vec<Span> = if data.annotation_select_active {
+            vec![
+                Span::styled(
+                    " ANNOTATIONS ",
+                    Style::default()
+                        .fg(t.ui.footer_branch_fg)
+                        .bg(t.ui.footer_branch_bg),
+                ),
+                Span::styled(
+                    " j/k move · R reply · X resolve · esc exit ",
+                    Style::default().fg(t.ui.text_muted).bg(bg),
+                ),
+            ]
+        } else if data.search_state.has_query() {
             let match_count = data.search_state.match_count();
             let current_idx = data
                 .search_state

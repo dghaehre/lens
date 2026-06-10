@@ -1868,10 +1868,10 @@ fn render_annotation_preview(
         };
 
         if is_reply {
-            lines.push(Line::from(Span::styled(
-                "│",
-                Style::default().fg(t.ui.border_unfocused),
-            )));
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled("│", Style::default().fg(t.ui.border_unfocused)),
+            ]));
         }
 
         let mut header_line = header_prefix.clone();

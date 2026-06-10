@@ -8,7 +8,7 @@ use ratatui::{
 use crate::command::diff::context::{compute_context_lines, ContextLine};
 use crate::command::diff::highlight::{highlight_line_spans, FileHighlighter};
 use crate::command::diff::search::{MatchPanel, SearchState};
-use crate::command::diff::state::{Annotation, AnnotationTarget, RefInputState};
+use crate::command::diff::state::{Annotation, AnnotationId, AnnotationTarget, RefInputState};
 use crate::command::diff::theme;
 use crate::command::diff::types::{
     ChangeType, DiffFullscreen, DiffLine, DiffPanelFocus, DiffViewSettings, FileDiff, FocusedPanel,
@@ -705,6 +705,7 @@ pub fn render_empty_state(frame: &mut Frame, watching: bool, ref_input: &RefInpu
                 area_width: area.width,
                 annotation_source_label: None,
                 annotation_source_error: None,
+                annotation_select_active: false,
             },
         );
     }
@@ -801,16 +802,68 @@ fn is_in_ann_range(
     })
 }
 
+/// Side_by_side index range for the annotation currently selected via
+/// annotation-select mode, if any. Used to highlight that annotation's
+/// gutter marker distinctly from the others.
+fn selected_ann_range(
+    selected_id: Option<&AnnotationId>,
+    line_annotations: &[&Annotation],
+    side_by_side: &[DiffLine],
+) -> Option<(usize, usize, DiffPanelFocus)> {
+    let id = selected_id?;
+    let ann = line_annotations.iter().find(|a| &a.id == id)?;
+    if let AnnotationTarget::LineRange {
+        panel,
+        start_line,
+        end_line,
+        ..
+    } = &ann.target
+    {
+        let mut first_idx: Option<usize> = None;
+        let mut last_idx: Option<usize> = None;
+        for (idx, dl) in side_by_side.iter().enumerate() {
+            if let Some(n) = dl.line_number(*panel) {
+                if n >= *start_line && n <= *end_line {
+                    if first_idx.is_none() {
+                        first_idx = Some(idx);
+                    }
+                    last_idx = Some(idx);
+                }
+            }
+        }
+        return first_idx.zip(last_idx).map(|(f, l)| (f, l, *panel));
+    }
+    None
+}
+
+fn is_in_selected_ann_range(
+    sbs_idx: usize,
+    panel: Option<DiffPanelFocus>,
+    range: Option<(usize, usize, DiffPanelFocus)>,
+) -> bool {
+    if let Some((first, last, ann_panel)) = range {
+        sbs_idx >= first && sbs_idx <= last && panel.map_or(true, |p| ann_panel == p)
+    } else {
+        false
+    }
+}
+
 /// Build the focus/annotation indicator span for a diff line.
 fn make_indicator_span(
     in_focused: bool,
     in_annotation: bool,
+    in_selected_annotation: bool,
     line_selected: bool,
     bg: Color,
     focus_style: Style,
     annotation_style: Style,
 ) -> Span<'static> {
-    let indicator = if in_focused {
+    let indicator = if in_selected_annotation {
+        // Stronger marker for the annotation targeted in annotation-select
+        // mode so it's visually distinct from other annotations and from
+        // the hunk focus indicator.
+        Span::styled("▌", annotation_style.add_modifier(Modifier::BOLD))
+    } else if in_focused {
         Span::styled("▎", focus_style)
     } else if in_annotation {
         Span::styled("▍", annotation_style)
@@ -1008,11 +1061,24 @@ fn render_annotation_overlays(
     bg: Color,
     t: &crate::command::diff::theme::Theme,
     suppress_gutter: bool,
+    selected_annotation_id: Option<&AnnotationId>,
 ) {
-    // Annotation accent color — a subtle but visible tint
-    let ann_accent = t.ui.highlight;
-
     for (line_pos, annotation) in overlays {
+        // Selected annotation gets the stronger focus color and bold
+        // borders so it stands out from neighbours when several annotations
+        // are stacked close together.
+        let is_selected = selected_annotation_id
+            .map_or(false, |id| &annotation.id == id);
+        let ann_accent = if is_selected {
+            t.ui.border_focused
+        } else {
+            t.ui.highlight
+        };
+        let extra_modifier = if is_selected {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        };
         let screen_y = content_start_y + *line_pos as u16;
         let content_width_inner = annotation_text_width(content_width);
 
@@ -1036,7 +1102,7 @@ fn render_annotation_overlays(
 
             let muted = Style::default().fg(t.ui.text_muted);
             let check = Style::default().fg(t.ui.status_added);
-            let accent = Style::default().fg(t.ui.highlight);
+            let accent = Style::default().fg(ann_accent).add_modifier(extra_modifier);
 
             let preview = annotation.root().content.replace('\n', " ");
             let preview = preview.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -1085,8 +1151,8 @@ fn render_annotation_overlays(
         let mut ann_lines: Vec<Line> = Vec::new();
         let note_style = Style::default().fg(t.ui.text_secondary);
         let separator_style = Style::default().fg(t.ui.text_muted);
-        let border_style_ann = Style::default().fg(ann_accent);
-        let indicator_style = Style::default().fg(ann_accent);
+        let border_style_ann = Style::default().fg(ann_accent).add_modifier(extra_modifier);
+        let indicator_style = Style::default().fg(ann_accent).add_modifier(extra_modifier);
         let border_width = content_width.saturating_sub(3) as usize;
 
         // For line-range annotations, show a gutter indicator connecting to the lines above.
@@ -1222,6 +1288,7 @@ pub fn render_diff(
     total_removed: usize,
     annotation_source_label: Option<&str>,
     annotation_source_error: Option<&str>,
+    selected_annotation_id: Option<&AnnotationId>,
 ) -> (usize, Vec<(usize, usize)>) {
     let area = frame.area();
     let t = theme::get();
@@ -1326,6 +1393,7 @@ pub fn render_diff(
                 area_width: area.width,
                 annotation_source_label,
                 annotation_source_error,
+                annotation_select_active: selected_annotation_id.is_some(),
             },
         );
         return (0, Vec::new());
@@ -1414,6 +1482,8 @@ pub fn render_diff(
         }
 
         let ann_index_ranges = compute_ann_index_ranges(&line_annotations, side_by_side);
+        let selected_range =
+            selected_ann_range(selected_annotation_id, &line_annotations, side_by_side);
         let annotation_indicator_style = Style::default().fg(t.ui.highlight);
         let focus_style = Style::default().fg(t.ui.border_focused);
 
@@ -1424,6 +1494,8 @@ pub fn render_diff(
             let new_selection_range =
                 get_selection_range_for_line(line_idx, DiffPanelFocus::New, selection);
             let in_annotation = is_in_ann_range(line_idx, None, &ann_index_ranges);
+            let in_selected_annotation =
+                is_in_selected_ann_range(line_idx, None, selected_range);
             let new_line_selected =
                 new_selection_range.map_or(false, |(s, e)| s == 0 && e == usize::MAX);
             let hunk_viewed = {
@@ -1437,6 +1509,7 @@ pub fn render_diff(
                 spans.push(make_indicator_span(
                     false,
                     in_annotation,
+                    in_selected_annotation,
                     new_line_selected,
                     bg,
                     focus_style,
@@ -1513,6 +1586,7 @@ pub fn render_diff(
             bg,
             t,
             false,
+            selected_annotation_id,
         );
     } else if is_deleted_file {
         let visible_height = main_area.height.saturating_sub(2) as usize;
@@ -1579,6 +1653,8 @@ pub fn render_diff(
         }
 
         let ann_index_ranges = compute_ann_index_ranges(&line_annotations, side_by_side);
+        let selected_range =
+            selected_ann_range(selected_annotation_id, &line_annotations, side_by_side);
         let annotation_indicator_style = Style::default().fg(t.ui.highlight);
         let focus_style = Style::default().fg(t.ui.border_focused);
 
@@ -1589,6 +1665,8 @@ pub fn render_diff(
             let old_selection_range =
                 get_selection_range_for_line(line_idx, DiffPanelFocus::Old, selection);
             let in_annotation = is_in_ann_range(line_idx, None, &ann_index_ranges);
+            let in_selected_annotation =
+                is_in_selected_ann_range(line_idx, None, selected_range);
             let old_line_selected =
                 old_selection_range.map_or(false, |(s, e)| s == 0 && e == usize::MAX);
             let hunk_viewed = {
@@ -1602,6 +1680,7 @@ pub fn render_diff(
                 spans.push(make_indicator_span(
                     false,
                     in_annotation,
+                    in_selected_annotation,
                     old_line_selected,
                     bg,
                     focus_style,
@@ -1678,6 +1757,7 @@ pub fn render_diff(
             bg,
             t,
             false,
+            selected_annotation_id,
         );
     } else {
         let (old_area, new_area) = match diff_fullscreen {
@@ -1814,6 +1894,8 @@ pub fn render_diff(
         }
 
         let ann_index_ranges = compute_ann_index_ranges(&line_annotations, side_by_side);
+        let selected_range =
+            selected_ann_range(selected_annotation_id, &line_annotations, side_by_side);
 
         // Track rendered rows for new-panel border annotation markers (paragraph-relative)
         let mut border_marker_rows: Vec<usize> = Vec::new();
@@ -1860,6 +1942,10 @@ pub fn render_diff(
                 is_in_ann_range(line_idx, Some(DiffPanelFocus::Old), &ann_index_ranges);
             let new_in_annotation =
                 is_in_ann_range(line_idx, Some(DiffPanelFocus::New), &ann_index_ranges);
+            let old_in_selected_annotation =
+                is_in_selected_ann_range(line_idx, Some(DiffPanelFocus::Old), selected_range);
+            let new_in_selected_annotation =
+                is_in_selected_ann_range(line_idx, Some(DiffPanelFocus::New), selected_range);
 
             if new_in_annotation {
                 border_marker_rows.push(rendered_row);
@@ -1876,6 +1962,7 @@ pub fn render_diff(
                 old_spans.push(make_indicator_span(
                     in_focused,
                     old_in_annotation,
+                    old_in_selected_annotation,
                     old_line_selected,
                     bg,
                     focus_style,
@@ -1972,6 +2059,7 @@ pub fn render_diff(
                     new_spans.push(make_indicator_span(
                         in_focused,
                         new_in_annotation,
+                        new_in_selected_annotation,
                         new_line_selected,
                         bg,
                         focus_style,
@@ -2204,6 +2292,7 @@ pub fn render_diff(
                 bg,
                 t,
                 suppress_gutter,
+                selected_annotation_id,
             );
         }
 
@@ -2274,6 +2363,7 @@ pub fn render_diff(
             area_width: area.width,
             annotation_source_label,
             annotation_source_error,
+            annotation_select_active: selected_annotation_id.is_some(),
         },
     );
 
