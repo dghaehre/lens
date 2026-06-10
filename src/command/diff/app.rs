@@ -406,8 +406,10 @@ fn source_label(state: &AppState) -> String {
 }
 
 /// Build the items + annotations vectors for the `I` (all-annotations) modal.
-/// Active annotations come first, orphaned (anchor missing) ones after, so
-/// the user can act on stale entries from one list.
+/// Active annotations come first (sorted by sidebar file order, then by
+/// anchor line so the list reads top-to-bottom like the diff), orphaned
+/// (anchor missing) ones after, so the user can act on stale entries from
+/// one list. Orphaned entries are sorted by filename + line for stability.
 fn build_annotation_list(state: &AppState) -> (Vec<String>, Vec<super::state::Annotation>) {
     let mut active: Vec<&super::state::Annotation> = Vec::new();
     let mut orphaned: Vec<&super::state::Annotation> = Vec::new();
@@ -418,6 +420,37 @@ fn build_annotation_list(state: &AppState) -> (Vec<String>, Vec<super::state::An
             active.push(ann);
         }
     }
+
+    // Sort active by (sidebar position, line). Using sidebar_items as the
+    // source of truth ensures the modal lists files in the same order the
+    // user sees them in the file explorer (sidebar is alphabetically sorted
+    // within directories; file_diffs may be in a different order).
+    let sidebar_pos = |filename: &str| -> usize {
+        state
+            .sidebar_items
+            .iter()
+            .position(|item| {
+                matches!(item, SidebarItem::File { path, .. } if path == filename)
+            })
+            .unwrap_or(usize::MAX)
+    };
+    let anchor_line = |ann: &super::state::Annotation| -> usize {
+        match &ann.target {
+            super::state::AnnotationTarget::File => 0,
+            super::state::AnnotationTarget::LineRange { start_line, .. } => *start_line,
+        }
+    };
+    active.sort_by(|a, b| {
+        sidebar_pos(&a.filename)
+            .cmp(&sidebar_pos(&b.filename))
+            .then_with(|| anchor_line(a).cmp(&anchor_line(b)))
+    });
+    orphaned.sort_by(|a, b| {
+        a.filename
+            .cmp(&b.filename)
+            .then_with(|| anchor_line(a).cmp(&anchor_line(b)))
+    });
+
     let mut items: Vec<String> = active
         .iter()
         .map(|a| format_annotation_preview(a, false))
