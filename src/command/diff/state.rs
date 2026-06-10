@@ -9,6 +9,7 @@ use crate::command::diff::diff_algo::{
 };
 use crate::command::diff::highlight::FileHighlighter;
 use crate::vcs::github::{resolve_pr_for_current_branch, GhClient, PrInfo, RealGhClient};
+use crate::vcs::GitBackend;
 
 use crate::command::diff::search::SearchState;
 use crate::command::diff::types::{
@@ -371,19 +372,27 @@ impl AppState {
     /// network round-trip) so the user sees current PR threads. Switching
     /// back to Local restores the parked SQLite store; the GitHub store is
     /// dropped.
+    ///
+    /// `backend` is used to resolve the local `HEAD` so we can detect
+    /// "checkout drift" (local HEAD != PR head SHA). When the SHAs differ,
+    /// the GitHub store is built read-only because line numbers wouldn't
+    /// line up reliably for writes.
     pub fn switch_annotation_source(
         &mut self,
         target: AnnotationSource,
+        backend: &GitBackend,
     ) -> Result<(), String> {
-        let gh: Box<dyn GhClient> = Box::new(RealGhClient);
-        self.switch_annotation_source_with_gh(target, gh)
+        let local_head = backend.resolve_ref("HEAD").ok();
+        self.switch_annotation_source_inner(target, local_head, Box::new(RealGhClient))
     }
 
-    /// `switch_annotation_source` with an injectable `gh` runner. Used by
-    /// tests; production code calls the wrapper above.
-    pub fn switch_annotation_source_with_gh(
+    /// Inner form of [`switch_annotation_source`] with the local HEAD and
+    /// `gh` runner injected directly. Tests call this to stub out both;
+    /// production code goes through the wrapper above.
+    pub fn switch_annotation_source_inner(
         &mut self,
         target: AnnotationSource,
+        local_head: Option<String>,
         gh: Box<dyn GhClient>,
     ) -> Result<(), String> {
         if target == self.annotation_source {
@@ -408,7 +417,14 @@ impl AppState {
                     .pr_info
                     .clone()
                     .expect("pr_info populated above");
-                match GithubStore::new(pr, gh) {
+                // Writable only if the local checkout matches the PR head;
+                // otherwise we'd be posting comments anchored to lines
+                // that don't exist on the remote (GitHub rejects with 422).
+                let writable = match local_head.as_deref() {
+                    Some(h) => h == pr.head_oid.as_str(),
+                    None => false,
+                };
+                match GithubStore::new(pr, gh, writable) {
                     Ok(gh_store) => {
                         // Park the local store so we can restore it on
                         // switch-back without re-opening sqlite.
@@ -419,7 +435,14 @@ impl AppState {
                         self.inactive_local_store = Some(prev);
                         self.store = Box::new(gh_store);
                         self.annotation_source = AnnotationSource::Github;
-                        self.annotation_source_status = None;
+                        self.annotation_source_status = if writable {
+                            None
+                        } else {
+                            Some(
+                                "checkout drift: local HEAD != PR head — read-only"
+                                    .to_string(),
+                            )
+                        };
                         self.load_annotations_for_current_files();
                         Ok(())
                     }

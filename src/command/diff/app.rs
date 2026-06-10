@@ -1032,7 +1032,7 @@ fn run_app_internal(
                                     // (or see the new label) without arrowing.
                                     let target = state.annotation_source.next();
                                     let switch_result =
-                                        state.switch_annotation_source(target);
+                                        state.switch_annotation_source(target, backend);
                                     let (items, annotations) =
                                         build_annotation_list(&state);
                                     let mut modal = Modal::annotations(

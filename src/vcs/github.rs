@@ -6,7 +6,8 @@
 //! `GhClient` so they can exercise the JSON-parsing layer without shelling
 //! out.
 
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 use serde::Deserialize;
 
@@ -50,8 +51,17 @@ impl std::error::Error for GhError {}
 ///
 /// Implementors run `gh <args...>` and return stdout (UTF-8 lossy), or a
 /// classified [`GhError`] on failure.
+///
+/// `run_with_stdin` is the same contract but pipes the supplied bytes into
+/// `gh`'s stdin. Use it for `gh api -f body=@-` payloads where the body
+/// may contain newlines or shell metacharacters that aren't safe to stuff
+/// into argv. The default implementation just calls `run` and ignores
+/// stdin — fine for test fakes that don't exercise body content.
 pub trait GhClient: Send + Sync {
     fn run(&self, args: &[&str]) -> Result<String, GhError>;
+    fn run_with_stdin(&self, args: &[&str], _stdin: &str) -> Result<String, GhError> {
+        self.run(args)
+    }
 }
 
 /// Default [`GhClient`] that shells out to a real `gh` binary.
@@ -67,22 +77,53 @@ impl GhClient for RealGhClient {
             }
             Err(e) => return Err(GhError::GhFailure(e.to_string())),
         };
-        if output.status.success() {
-            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
-        }
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        // `gh` writes a distinctive "you are not logged into any GitHub hosts"
-        // message on auth failure; route that to a dedicated variant so the
-        // UI can suggest `gh auth login`.
-        let lower = stderr.to_lowercase();
-        if lower.contains("not logged into") || lower.contains("authentication required") {
-            return Err(GhError::NotAuthenticated(stderr));
-        }
-        if lower.contains("no pull requests found") || lower.contains("no pull request") {
-            return Err(GhError::NoPrForBranch);
-        }
-        Err(GhError::GhFailure(stderr))
+        classify(output.status.success(), &output.stdout, &output.stderr)
     }
+
+    fn run_with_stdin(&self, args: &[&str], stdin: &str) -> Result<String, GhError> {
+        let mut child = match Command::new("gh")
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(GhError::NotInstalled)
+            }
+            Err(e) => return Err(GhError::GhFailure(e.to_string())),
+        };
+        // Closing stdin signals EOF to gh; do that immediately so it doesn't
+        // wait forever for more input.
+        if let Some(mut stdin_pipe) = child.stdin.take() {
+            stdin_pipe
+                .write_all(stdin.as_bytes())
+                .map_err(|e| GhError::GhFailure(format!("write stdin: {}", e)))?;
+        }
+        let output = child
+            .wait_with_output()
+            .map_err(|e| GhError::GhFailure(e.to_string()))?;
+        classify(output.status.success(), &output.stdout, &output.stderr)
+    }
+}
+
+/// Shared exit-code → `Result` mapping used by both `run` and
+/// `run_with_stdin`. Classifies `gh`'s stderr into the auth / no-PR /
+/// generic-failure variants so callers can switch on them.
+fn classify(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<String, GhError> {
+    if success {
+        return Ok(String::from_utf8_lossy(stdout).to_string());
+    }
+    let stderr = String::from_utf8_lossy(stderr).trim().to_string();
+    let lower = stderr.to_lowercase();
+    if lower.contains("not logged into") || lower.contains("authentication required") {
+        return Err(GhError::NotAuthenticated(stderr));
+    }
+    if lower.contains("no pull requests found") || lower.contains("no pull request") {
+        return Err(GhError::NoPrForBranch);
+    }
+    Err(GhError::GhFailure(stderr))
 }
 
 /// Everything the GitHub-backed annotation store needs to know about a PR.
