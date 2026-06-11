@@ -771,6 +771,41 @@ fn build_annotation_list(
     (items, annotations, snippets)
 }
 
+/// Rebuild the annotations list modal from current state, carrying over the
+/// previous row selection and source-picker focus from `current` (when it is
+/// an `Annotations` modal). Used wherever the underlying annotation set may
+/// have shifted out from under an open modal — external DB writes, source
+/// switches, reply/edit/resolve actions.
+fn rebuild_annotations_modal(state: &AppState, current: Option<&Modal>) -> Modal {
+    let (prev_selected, prev_source_focused) = match current.map(|m| &m.content) {
+        Some(ModalContent::Annotations {
+            selected,
+            source_focused,
+            ..
+        }) => (*selected, *source_focused),
+        _ => (0, false),
+    };
+    let (items, annotations, snippets) = build_annotation_list(state);
+    let mut modal = Modal::annotations(
+        "Annotations",
+        items,
+        annotations,
+        snippets,
+        source_label(state),
+    );
+    if let ModalContent::Annotations {
+        selected,
+        source_focused,
+        items,
+        ..
+    } = &mut modal.content
+    {
+        *selected = prev_selected.min(items.len().saturating_sub(1));
+        *source_focused = prev_source_focused;
+    }
+    modal
+}
+
 /// Pull the lines around `ann`'s anchor out of the appropriate side of the
 /// diff (old vs new content), with a small context window so the reader
 /// has orientation. Returns `(line_number, content)` pairs; file-level
@@ -1276,8 +1311,21 @@ fn run_app_internal(
                 }
                 AppEvent::Watch(WatchEvent::AnnotationDb) => {
                     // The DB file changed from outside (CLI/agent). Refresh the
-                    // annotation cache without reloading diffs.
+                    // annotation cache without reloading diffs. If the
+                    // annotations list modal is open against the local store,
+                    // rebuild it so the user sees the external edit live.
+                    // GitHub source is skipped — its store is not backed by
+                    // lens.db, so a DB-file change can't have affected it.
                     state.reload_annotations();
+                    let annotations_modal_open = active_modal
+                        .as_ref()
+                        .is_some_and(|m| matches!(m.content, ModalContent::Annotations { .. }));
+                    if annotations_modal_open
+                        && matches!(state.annotation_source, AnnotationSource::Local)
+                    {
+                        active_modal =
+                            Some(rebuild_annotations_modal(&state, active_modal.as_ref()));
+                    }
                     continue;
                 }
                 AppEvent::Input(ev) => ev,
