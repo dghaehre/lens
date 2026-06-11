@@ -672,6 +672,15 @@ mod tests {
             head_ref: "feat".into(),
             base_oid: "a".into(),
             head_oid: "b".into(),
+            title: String::new(),
+            body: String::new(),
+            state: String::new(),
+            is_draft: false,
+            mergeable: String::new(),
+            review_decision: String::new(),
+            checks: Vec::new(),
+            author: Default::default(),
+            comments: Vec::new(),
         }
     }
 

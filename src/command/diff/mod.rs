@@ -1,6 +1,7 @@
 mod annotation;
 pub mod annotation_store;
 mod app;
+mod pr_comment_editor;
 mod context;
 mod coordinates;
 mod diff_algo;

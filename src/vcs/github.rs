@@ -147,6 +147,121 @@ pub struct PrInfo {
     pub head_ref: String,
     pub base_oid: String,
     pub head_oid: String,
+    /// PR title as displayed on GitHub.
+    pub title: String,
+    /// PR description body. May be empty.
+    pub body: String,
+    /// `OPEN` / `CLOSED` / `MERGED`. Surfaced raw so the renderer can map
+    /// to its own badge colours.
+    pub state: String,
+    pub is_draft: bool,
+    /// `MERGEABLE` / `CONFLICTING` / `UNKNOWN`.
+    pub mergeable: String,
+    /// `APPROVED` / `CHANGES_REQUESTED` / `REVIEW_REQUIRED`, or empty when
+    /// no review has been posted.
+    pub review_decision: String,
+    /// Per-check rollup. Empty when the PR has no associated checks (or
+    /// when `gh` returned nothing).
+    pub checks: Vec<PrCheck>,
+    /// PR author. `login` is always set; `name`/`is_bot` may be missing
+    /// for legacy GHES instances.
+    pub author: PrUser,
+    /// Non-annotation conversation — i.e. comments that don't anchor to a
+    /// file/line. Combines:
+    ///   - issue-level PR comments (the "Conversation" tab on github.com)
+    ///   - review-submission bodies (the summary text a reviewer leaves
+    ///     alongside the approve/request-changes button)
+    /// Sorted chronologically (oldest first) so the modal reads top-down
+    /// like the GitHub UI.
+    pub comments: Vec<PrComment>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default)]
+pub struct PrUser {
+    pub login: String,
+    /// Display name when available — falls back to login at render time.
+    pub name: String,
+    pub is_bot: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct PrComment {
+    pub author: PrUser,
+    /// Markdown body. Empty bodies are filtered out before the comment
+    /// lands here so the modal doesn't show empty entries.
+    pub body: String,
+    /// `YYYY-MM-DD` extracted from the gh-returned ISO timestamp. Kept as
+    /// a String so the renderer doesn't need to depend on a date crate.
+    pub date: String,
+    /// `None` for issue-level comments. For review submissions, one of
+    /// `APPROVED` / `CHANGES_REQUESTED` / `COMMENTED` / `DISMISSED` so the
+    /// renderer can badge them.
+    pub review_state: Option<String>,
+}
+
+/// One row from `statusCheckRollup`. The shape varies by provider:
+/// GitHub Actions emits `CheckRun` (uses `status` + `conclusion`); legacy
+/// status APIs emit `StatusContext` (uses `state`). We capture all three
+/// so [`PrCheckSummary::from_checks`] can normalise downstream.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct PrCheck {
+    pub name: String,
+    /// `COMPLETED` / `IN_PROGRESS` / `QUEUED` / `PENDING` / `WAITING` (CheckRun).
+    pub status: Option<String>,
+    /// `SUCCESS` / `FAILURE` / `SKIPPED` / `CANCELLED` / `NEUTRAL` /
+    /// `TIMED_OUT` / `ACTION_REQUIRED` / `STALE` / `STARTUP_FAILURE` (CheckRun).
+    pub conclusion: Option<String>,
+    /// `SUCCESS` / `FAILURE` / `PENDING` / `ERROR` (StatusContext).
+    pub state: Option<String>,
+}
+
+/// Bucketed counts derived from a list of checks. The renderer uses this
+/// to draw a one-line "✓ N · × M · … K" summary.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PrCheckSummary {
+    pub passed: usize,
+    pub failed: usize,
+    pub pending: usize,
+    pub skipped: usize,
+    pub total: usize,
+}
+
+impl PrCheckSummary {
+    pub fn from_checks(checks: &[PrCheck]) -> Self {
+        let mut s = Self::default();
+        for c in checks {
+            s.total += 1;
+            // Prefer `conclusion` (CheckRun) over `state` (StatusContext).
+            let outcome = c
+                .conclusion
+                .as_deref()
+                .or(c.state.as_deref())
+                .unwrap_or("");
+            let status = c.status.as_deref().unwrap_or("");
+            match outcome.to_ascii_uppercase().as_str() {
+                "SUCCESS" => s.passed += 1,
+                "FAILURE" | "TIMED_OUT" | "STARTUP_FAILURE" | "ACTION_REQUIRED" | "ERROR" => {
+                    s.failed += 1
+                }
+                "SKIPPED" | "NEUTRAL" | "CANCELLED" | "STALE" => s.skipped += 1,
+                "PENDING" | "" => {
+                    // No outcome yet — bucket by status if we have it.
+                    if status.eq_ignore_ascii_case("COMPLETED") {
+                        // Completed but no conclusion field → treat as
+                        // skipped so it doesn't masquerade as pending.
+                        s.skipped += 1;
+                    } else {
+                        s.pending += 1;
+                    }
+                }
+                _ => s.skipped += 1,
+            }
+        }
+        s
+    }
 }
 
 impl PrInfo {
@@ -160,6 +275,9 @@ struct PrViewJson {
     id: String,
     number: u64,
     url: String,
+    title: String,
+    #[serde(default)]
+    body: String,
     #[serde(rename = "baseRefName")]
     base_ref_name: String,
     #[serde(rename = "headRefName")]
@@ -168,6 +286,69 @@ struct PrViewJson {
     base_ref_oid: String,
     #[serde(rename = "headRefOid")]
     head_ref_oid: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default, rename = "isDraft")]
+    is_draft: bool,
+    #[serde(default)]
+    mergeable: String,
+    #[serde(default, rename = "reviewDecision")]
+    review_decision: String,
+    #[serde(default, rename = "statusCheckRollup")]
+    status_check_rollup: Vec<PrCheckJson>,
+    #[serde(default)]
+    author: PrUserJson,
+    #[serde(default)]
+    comments: Vec<PrCommentJson>,
+    #[serde(default)]
+    reviews: Vec<PrReviewJson>,
+}
+
+#[derive(Deserialize, Default)]
+struct PrCheckJson {
+    #[serde(default)]
+    name: String,
+    /// CheckRun checks expose `context` instead of `name`.
+    #[serde(default)]
+    context: String,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    conclusion: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct PrUserJson {
+    #[serde(default)]
+    login: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    is_bot: bool,
+}
+
+#[derive(Deserialize, Default)]
+struct PrCommentJson {
+    #[serde(default)]
+    author: PrUserJson,
+    #[serde(default)]
+    body: String,
+    #[serde(default, rename = "createdAt")]
+    created_at: String,
+}
+
+#[derive(Deserialize, Default)]
+struct PrReviewJson {
+    #[serde(default)]
+    author: PrUserJson,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default, rename = "submittedAt")]
+    submitted_at: String,
 }
 
 /// Look up the PR associated with the current branch using `gh pr view`.
@@ -186,12 +367,59 @@ pub fn resolve_pr_for_current_branch(gh: &dyn GhClient) -> Result<PrInfo, GhErro
         "pr",
         "view",
         "--json",
-        "id,number,url,baseRefName,headRefName,baseRefOid,headRefOid",
+        "id,number,url,title,body,baseRefName,headRefName,baseRefOid,headRefOid,\
+         state,isDraft,mergeable,reviewDecision,statusCheckRollup,\
+         author,comments,reviews",
     ])?;
     let parsed: PrViewJson = serde_json::from_str(&stdout)
         .map_err(|e| GhError::ParseError(format!("gh pr view: {}", e)))?;
 
     let (owner, name) = parse_repo_from_pr_url(&parsed.url)?;
+
+    let checks: Vec<PrCheck> = parsed
+        .status_check_rollup
+        .into_iter()
+        .map(|c| PrCheck {
+            // `name` is empty for StatusContext rows; fall back to `context`.
+            name: if c.name.is_empty() { c.context } else { c.name },
+            status: c.status,
+            conclusion: c.conclusion,
+            state: c.state,
+        })
+        .collect();
+
+    let author = PrUser::from(parsed.author);
+
+    // Merge issue comments and review-summary comments into a single
+    // chronological list. Both feeds skip empty bodies — for reviews this
+    // filters out "container" submissions that only carry inline threads.
+    let mut comments: Vec<PrComment> = Vec::new();
+    for c in parsed.comments {
+        if c.body.trim().is_empty() {
+            continue;
+        }
+        comments.push(PrComment {
+            author: PrUser::from(c.author),
+            body: c.body,
+            date: date_prefix(&c.created_at),
+            review_state: None,
+        });
+    }
+    for r in parsed.reviews {
+        if r.body.trim().is_empty() {
+            continue;
+        }
+        comments.push(PrComment {
+            author: PrUser::from(r.author),
+            body: r.body,
+            date: date_prefix(&r.submitted_at),
+            review_state: if r.state.is_empty() { None } else { Some(r.state) },
+        });
+    }
+    // ISO-8601 sorts lexicographically — and we kept just the YYYY-MM-DD
+    // prefix. That's enough to read chronologically; ties keep insertion
+    // order (issue comments, then reviews).
+    comments.sort_by(|a, b| a.date.cmp(&b.date));
 
     Ok(PrInfo {
         number: parsed.number,
@@ -203,7 +431,145 @@ pub fn resolve_pr_for_current_branch(gh: &dyn GhClient) -> Result<PrInfo, GhErro
         head_ref: parsed.head_ref_name,
         base_oid: parsed.base_ref_oid,
         head_oid: parsed.head_ref_oid,
+        title: parsed.title,
+        body: parsed.body,
+        state: parsed.state,
+        is_draft: parsed.is_draft,
+        mergeable: parsed.mergeable,
+        review_decision: parsed.review_decision,
+        checks,
+        author,
+        comments,
     })
+}
+
+/// Post an issue-level comment ("Conversation" tab) on the PR. The body
+/// is piped through stdin so it can contain newlines, quotes, and shell
+/// metacharacters safely. Empty bodies are rejected by `gh` itself, so
+/// callers should validate before calling.
+pub fn add_pr_comment(gh: &dyn GhClient, pr: &PrInfo, body: &str) -> Result<(), GhError> {
+    let repo = format!("{}/{}", pr.repo_owner, pr.repo_name);
+    let number = pr.number.to_string();
+    gh.run_with_stdin(
+        &[
+            "pr",
+            "comment",
+            &number,
+            "--repo",
+            &repo,
+            "--body-file",
+            "-",
+        ],
+        body,
+    )?;
+    Ok(())
+}
+
+/// Submit an approving review on the PR. The body is optional — passing
+/// an empty string approves without a comment. When non-empty, it's piped
+/// through stdin to handle multi-line / quoted content safely.
+pub fn approve_pr(gh: &dyn GhClient, pr: &PrInfo, body: &str) -> Result<(), GhError> {
+    let repo = format!("{}/{}", pr.repo_owner, pr.repo_name);
+    let number = pr.number.to_string();
+    if body.trim().is_empty() {
+        gh.run(&[
+            "pr", "review", &number, "--repo", &repo, "--approve",
+        ])?;
+    } else {
+        gh.run_with_stdin(
+            &[
+                "pr",
+                "review",
+                &number,
+                "--repo",
+                &repo,
+                "--approve",
+                "--body-file",
+                "-",
+            ],
+            body,
+        )?;
+    }
+    Ok(())
+}
+
+/// Number of inline review threads on a PR — i.e., the count of
+/// annotations the user would see if they switched the annotation source
+/// to GitHub. We fetch this through a focused GraphQL query so the PR
+/// description modal can show "💬 N inline" without pulling every
+/// comment body.
+///
+/// Returns the parsed count on success. Caller decides whether to surface
+/// errors (the PR modal currently elides them — a missing count is fine).
+pub fn count_review_threads(gh: &dyn GhClient, pr: &PrInfo) -> Result<u32, GhError> {
+    let query = format!(
+        r#"query {{
+            repository(owner: "{owner}", name: "{name}") {{
+                pullRequest(number: {num}) {{
+                    reviewThreads(first: 100) {{ totalCount }}
+                }}
+            }}
+        }}"#,
+        owner = pr.repo_owner,
+        name = pr.repo_name,
+        num = pr.number,
+    );
+    let stdout = gh.run(&["api", "graphql", "-f", &format!("query={}", query)])?;
+    let parsed: ReviewThreadCountResp = serde_json::from_str(&stdout)
+        .map_err(|e| GhError::ParseError(format!("reviewThreads count: {}", e)))?;
+    Ok(parsed
+        .data
+        .and_then(|d| d.repository)
+        .and_then(|r| r.pull_request)
+        .map(|p| p.review_threads.total_count)
+        .unwrap_or(0))
+}
+
+#[derive(Deserialize)]
+struct ReviewThreadCountResp {
+    data: Option<ReviewThreadCountData>,
+}
+
+#[derive(Deserialize)]
+struct ReviewThreadCountData {
+    repository: Option<ReviewThreadCountRepo>,
+}
+
+#[derive(Deserialize)]
+struct ReviewThreadCountRepo {
+    #[serde(rename = "pullRequest")]
+    pull_request: Option<ReviewThreadCountPr>,
+}
+
+#[derive(Deserialize)]
+struct ReviewThreadCountPr {
+    #[serde(rename = "reviewThreads")]
+    review_threads: ReviewThreadCountField,
+}
+
+#[derive(Deserialize)]
+struct ReviewThreadCountField {
+    #[serde(rename = "totalCount")]
+    total_count: u32,
+}
+
+impl From<PrUserJson> for PrUser {
+    fn from(j: PrUserJson) -> Self {
+        Self {
+            login: j.login,
+            name: j.name,
+            is_bot: j.is_bot,
+        }
+    }
+}
+
+/// `2026-06-10T10:14:53Z` → `2026-06-10`. Returns the input unchanged if
+/// it doesn't contain a `T` (defensive — older `gh` versions may format
+/// timestamps differently).
+fn date_prefix(iso: &str) -> String {
+    iso.split_once('T')
+        .map(|(d, _)| d.to_string())
+        .unwrap_or_else(|| iso.to_string())
 }
 
 /// Extract `(owner, repo)` from a GitHub PR URL of the form
@@ -267,10 +633,30 @@ mod tests {
             "id": "PR_kwDOABCD1234",
             "number": 42,
             "url": "https://github.com/dghaehre/lens/pull/42",
+            "title": "Add the thing",
+            "body": "Long description\nwith multiple lines.",
             "baseRefName": "main",
             "headRefName": "feature",
             "baseRefOid": "aaaaaaa",
-            "headRefOid": "bbbbbbb"
+            "headRefOid": "bbbbbbb",
+            "state": "OPEN",
+            "isDraft": false,
+            "mergeable": "MERGEABLE",
+            "reviewDecision": "APPROVED",
+            "statusCheckRollup": [
+                {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                {"name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"},
+                {"name": "deploy", "status": "IN_PROGRESS"}
+            ],
+            "author": {"login": "alice", "name": "Alice A", "is_bot": false},
+            "comments": [
+                {"author": {"login": "bob"}, "body": "Please update README", "createdAt": "2026-06-09T12:00:00Z"},
+                {"author": {"login": "noise"}, "body": "  ", "createdAt": "2026-06-09T13:00:00Z"}
+            ],
+            "reviews": [
+                {"author": {"login": "carol"}, "body": "LGTM overall", "state": "APPROVED", "submittedAt": "2026-06-10T08:00:00Z"},
+                {"author": {"login": "container"}, "body": "", "state": "COMMENTED", "submittedAt": "2026-06-10T09:00:00Z"}
+            ]
         }"#;
         let gh = FakeGh::with(vec![Ok(body.to_string())]);
         let pr = resolve_pr_for_current_branch(&gh).expect("should parse");
@@ -278,6 +664,26 @@ mod tests {
         assert_eq!(pr.repo_owner, "dghaehre");
         assert_eq!(pr.repo_name, "lens");
         assert_eq!(pr.head_oid, "bbbbbbb");
+        assert_eq!(pr.title, "Add the thing");
+        assert_eq!(pr.body, "Long description\nwith multiple lines.");
+        assert_eq!(pr.state, "OPEN");
+        assert!(!pr.is_draft);
+        assert_eq!(pr.mergeable, "MERGEABLE");
+        assert_eq!(pr.review_decision, "APPROVED");
+        assert_eq!(pr.checks.len(), 3);
+        let summary = PrCheckSummary::from_checks(&pr.checks);
+        assert_eq!(summary.passed, 1);
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.pending, 1);
+        assert_eq!(pr.author.login, "alice");
+        assert_eq!(pr.author.name, "Alice A");
+        // 2 valid entries — empty-body comment + empty-body review are filtered.
+        assert_eq!(pr.comments.len(), 2);
+        assert_eq!(pr.comments[0].author.login, "bob");
+        assert_eq!(pr.comments[0].date, "2026-06-09");
+        assert_eq!(pr.comments[0].review_state, None);
+        assert_eq!(pr.comments[1].author.login, "carol");
+        assert_eq!(pr.comments[1].review_state.as_deref(), Some("APPROVED"));
         assert_eq!(pr.slug(), "dghaehre/lens#42");
     }
 
@@ -306,6 +712,41 @@ mod tests {
             Err(GhError::NoPrForBranch) => {}
             other => panic!("expected NoPrForBranch, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn parses_review_thread_count() {
+        let body = r#"{
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": { "totalCount": 7 }
+                    }
+                }
+            }
+        }"#;
+        let gh = FakeGh::with(vec![Ok(body.to_string())]);
+        let pr = PrInfo {
+            number: 1,
+            url: "https://github.com/o/r/pull/1".into(),
+            node_id: "PR_x".into(),
+            repo_owner: "o".into(),
+            repo_name: "r".into(),
+            base_ref: "main".into(),
+            head_ref: "feat".into(),
+            base_oid: "a".into(),
+            head_oid: "b".into(),
+            title: String::new(),
+            body: String::new(),
+            state: String::new(),
+            is_draft: false,
+            mergeable: String::new(),
+            review_decision: String::new(),
+            checks: Vec::new(),
+            author: Default::default(),
+            comments: Vec::new(),
+        };
+        assert_eq!(count_review_threads(&gh, &pr).unwrap(), 7);
     }
 
     #[test]
