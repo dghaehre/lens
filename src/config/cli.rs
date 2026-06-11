@@ -91,6 +91,8 @@ pub enum AnnotationCommand {
     New(AnnotationNewArgs),
     /// Append a reply to an existing annotation thread.
     Reply(AnnotationReplyArgs),
+    /// Mark an annotation thread as resolved (or re-open it with --unresolve).
+    Resolve(AnnotationResolveArgs),
     /// Delete an annotation thread (and its replies).
     Delete(AnnotationDeleteArgs),
 }
@@ -138,6 +140,16 @@ pub struct AnnotationReplyArgs {
     pub source: String,
     /// Reply body.
     pub content: String,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct AnnotationResolveArgs {
+    /// Id of the annotation to mark resolved.
+    #[arg(long)]
+    pub id: i64,
+    /// Re-open a previously resolved thread instead of resolving it.
+    #[arg(long)]
+    pub unresolve: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -204,6 +216,38 @@ mod tests {
                 assert_eq!(args.source, "agent");
             }
             other => panic!("expected annotation new, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_annotation_resolve_parses() {
+        let cli = Cli::try_parse_from(["lens", "annotation", "resolve", "--id", "7"]).unwrap();
+        match cli.command {
+            Some(Command::Annotation(AnnotationCommand::Resolve(args))) => {
+                assert_eq!(args.id, 7);
+                assert!(!args.unresolve);
+            }
+            other => panic!("expected annotation resolve, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_annotation_resolve_unresolve_flag() {
+        let cli = Cli::try_parse_from([
+            "lens",
+            "annotation",
+            "resolve",
+            "--id",
+            "7",
+            "--unresolve",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Annotation(AnnotationCommand::Resolve(args))) => {
+                assert_eq!(args.id, 7);
+                assert!(args.unresolve);
+            }
+            other => panic!("expected annotation resolve, got {:?}", other),
         }
     }
 

@@ -16,7 +16,7 @@ use crate::command::diff::annotation_store::{
 use crate::command::diff::types::DiffPanelFocus;
 use crate::config::cli::{
     AnnotationCommand, AnnotationDeleteArgs, AnnotationListArgs, AnnotationNewArgs,
-    AnnotationReplyArgs, PanelArg,
+    AnnotationReplyArgs, AnnotationResolveArgs, PanelArg,
 };
 use crate::error::LensError;
 use crate::vcs::GitBackend;
@@ -28,6 +28,7 @@ pub fn run(command: AnnotationCommand, backend: &GitBackend) -> Result<(), LensE
         AnnotationCommand::List(args) => list(&store, args),
         AnnotationCommand::New(args) => new(&mut store, args),
         AnnotationCommand::Reply(args) => reply(&mut store, args),
+        AnnotationCommand::Resolve(args) => resolve(&mut store, args),
         AnnotationCommand::Delete(args) => delete(&mut store, args),
     }
 }
@@ -87,6 +88,25 @@ fn reply(store: &mut SqliteStore, args: AnnotationReplyArgs) -> Result<(), LensE
         "{}",
         serde_json::to_string_pretty(&annotation_to_json(&updated))?
     );
+    Ok(())
+}
+
+fn resolve(store: &mut SqliteStore, args: AnnotationResolveArgs) -> Result<(), LensError> {
+    let id = AnnotationId {
+        origin: "ui".to_string(),
+        native: args.id.to_string(),
+    };
+    let resolved = !args.unresolve;
+    store.set_resolved(&id, resolved).map_err(annotation_err)?;
+    let updated = store
+        .list()
+        .map_err(annotation_err)?
+        .into_iter()
+        .find(|a| a.id.native == args.id.to_string());
+    match updated {
+        Some(a) => println!("{}", serde_json::to_string_pretty(&annotation_to_json(&a))?),
+        None => println!("{}", json!({ "id": args.id, "resolved": resolved })),
+    }
     Ok(())
 }
 

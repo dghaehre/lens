@@ -42,6 +42,11 @@ lens annotation reply --id 42 "Fixed in <commit-sha>: switched to checked arithm
 # is genuinely no existing thread to attach to.
 lens annotation new --file src/main.rs --line 42 --line-end 48 "Consider extracting this branch."
 
+# Mark a thread as resolved once you've addressed it (and replied). Use
+# --unresolve to re-open a thread you closed prematurely.
+lens annotation resolve --id 42
+lens annotation resolve --id 42 --unresolve
+
 # Delete an annotation you created in error. Do not delete annotations
 # authored by the user.
 lens annotation delete --id 42
