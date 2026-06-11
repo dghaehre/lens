@@ -95,6 +95,10 @@ pub enum AnnotationCommand {
     Resolve(AnnotationResolveArgs),
     /// Delete an annotation thread (and its replies).
     Delete(AnnotationDeleteArgs),
+    /// Block until an annotation thread needs the agent's attention
+    /// (unresolved + latest comment authored by someone other than the
+    /// agent), then print the actionable threads as JSON and exit.
+    Watch(AnnotationWatchArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -157,6 +161,15 @@ pub struct AnnotationDeleteArgs {
     /// Id of the annotation to delete.
     #[arg(long)]
     pub id: i64,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct AnnotationWatchArgs {
+    /// Origin tag the agent recognizes as its own. Threads whose latest
+    /// comment carries this origin are treated as already-addressed.
+    /// Defaults to "agent", matching the default `--source` of `new`/`reply`.
+    #[arg(long, default_value = "agent")]
+    pub agent_origin: String,
 }
 
 #[derive(clap::ValueEnum, Debug, Clone, Copy)]
