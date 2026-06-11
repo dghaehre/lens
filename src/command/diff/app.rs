@@ -771,6 +771,41 @@ fn build_annotation_list(
     (items, annotations, snippets)
 }
 
+/// Rebuild the annotations list modal from current state, carrying over the
+/// previous row selection and source-picker focus from `current` (when it is
+/// an `Annotations` modal). Used wherever the underlying annotation set may
+/// have shifted out from under an open modal — external DB writes, source
+/// switches, reply/edit/resolve actions.
+fn rebuild_annotations_modal(state: &AppState, current: Option<&Modal>) -> Modal {
+    let (prev_selected, prev_source_focused) = match current.map(|m| &m.content) {
+        Some(ModalContent::Annotations {
+            selected,
+            source_focused,
+            ..
+        }) => (*selected, *source_focused),
+        _ => (0, false),
+    };
+    let (items, annotations, snippets) = build_annotation_list(state);
+    let mut modal = Modal::annotations(
+        "Annotations",
+        items,
+        annotations,
+        snippets,
+        source_label(state),
+    );
+    if let ModalContent::Annotations {
+        selected,
+        source_focused,
+        items,
+        ..
+    } = &mut modal.content
+    {
+        *selected = prev_selected.min(items.len().saturating_sub(1));
+        *source_focused = prev_source_focused;
+    }
+    modal
+}
+
 /// Pull the lines around `ann`'s anchor out of the appropriate side of the
 /// diff (old vs new content), with a small context window so the reader
 /// has orientation. Returns `(line_number, content)` pairs; file-level
@@ -973,8 +1008,9 @@ fn run_app_internal(
             let loading_message_owned = state.loading_message.clone();
             let row_offset = std::cell::Cell::new(0usize);
             let gaps_cell = std::cell::RefCell::new(Vec::new());
+            let total_ann_height = std::cell::Cell::new(0usize);
             terminal.draw(|frame| {
-                let (offset, gaps) = render_diff(
+                let (offset, gaps, total_ann) = render_diff(
                     frame,
                     diff,
                     &state.file_diffs,
@@ -1017,6 +1053,7 @@ fn run_app_internal(
                     loading_message_owned.as_deref(),
                 );
                 row_offset.set(offset);
+                total_ann_height.set(total_ann);
 
                 // Selection action tooltip (shown after drag completes)
                 if state.show_selection_tooltip
@@ -1114,6 +1151,7 @@ fn run_app_internal(
             })?;
             state.content_row_offset = row_offset.get();
             state.annotation_overlay_gaps = gaps_cell.into_inner();
+            state.total_annotation_height = total_ann_height.get();
         }
 
         // Drain a queued blocking `gh` call now — i.e. AFTER the draw above
@@ -1276,8 +1314,21 @@ fn run_app_internal(
                 }
                 AppEvent::Watch(WatchEvent::AnnotationDb) => {
                     // The DB file changed from outside (CLI/agent). Refresh the
-                    // annotation cache without reloading diffs.
+                    // annotation cache without reloading diffs. If the
+                    // annotations list modal is open against the local store,
+                    // rebuild it so the user sees the external edit live.
+                    // GitHub source is skipped — its store is not backed by
+                    // lens.db, so a DB-file change can't have affected it.
                     state.reload_annotations();
+                    let annotations_modal_open = active_modal
+                        .as_ref()
+                        .is_some_and(|m| matches!(m.content, ModalContent::Annotations { .. }));
+                    if annotations_modal_open
+                        && matches!(state.annotation_source, AnnotationSource::Local)
+                    {
+                        active_modal =
+                            Some(rebuild_annotations_modal(&state, active_modal.as_ref()));
+                    }
                     continue;
                 }
                 AppEvent::Input(ev) => ev,
@@ -1286,7 +1337,11 @@ fn run_app_internal(
             let bottom_padding = 5;
             let max_scroll = if !state.file_diffs.is_empty() {
                 let total_lines = state.total_lines();
-                total_lines.saturating_sub(visible_height.saturating_sub(bottom_padding))
+                // Annotations (file-level + inline overlays) push content rows past the
+                // visible window, so add their total height to keep the bottom reachable.
+                let annotation_pad = state.total_annotation_height;
+                (total_lines + annotation_pad)
+                    .saturating_sub(visible_height.saturating_sub(bottom_padding))
             } else {
                 0
             };

@@ -262,6 +262,11 @@ pub struct AppState {
     /// visible content line index after which an overlay gap of `gap_height` rows appears.
     /// Used by mouse handlers to correctly map screen rows to side_by_side indices.
     pub annotation_overlay_gaps: Vec<(usize, usize)>,
+    /// Total height (in rows) of every annotation overlay attached to the current
+    /// file — file-level plus inline. Set by render_diff each frame so the input
+    /// loop can extend `max_scroll` enough that the bottom of the diff stays
+    /// reachable when annotations push content past the visible window.
+    pub total_annotation_height: usize,
     /// Total added lines across all files in the current diff. Recomputed on reload.
     pub total_added: usize,
     /// Total removed lines across all files in the current diff. Recomputed on reload.
@@ -382,6 +387,7 @@ impl AppState {
             search_dirty: true,
             content_row_offset: 0,
             annotation_overlay_gaps: Vec::new(),
+            total_annotation_height: 0,
             total_added,
             total_removed,
         };
@@ -804,6 +810,7 @@ impl AppState {
         self.search_dirty = true;
         self.content_row_offset = 0;
         self.annotation_overlay_gaps.clear();
+        self.total_annotation_height = 0;
     }
 
     /// Adjust a screen-relative content row for annotation overlay gaps.

@@ -1244,11 +1244,14 @@ fn render_annotation_overlays(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Returns `(content_row_offset, annotation_overlay_gaps)`.
+/// Returns `(content_row_offset, annotation_overlay_gaps, total_annotation_height)`.
 /// - `content_row_offset`: the number of non-diff rows at the top
 ///   (context lines + file annotation placeholders), used for mouse coordinate mapping.
 /// - `annotation_overlay_gaps`: list of `(content_line_after, gap_height)` pairs describing
 ///   inline annotation overlay gaps within the content area.
+/// - `total_annotation_height`: combined height of every annotation overlay attached
+///   to the current file (file-level + inline), used to extend `max_scroll` so the bottom
+///   of the diff stays reachable even when annotations push rows past the visible window.
 #[allow(clippy::too_many_arguments)]
 pub fn render_diff(
     frame: &mut Frame,
@@ -1291,7 +1294,7 @@ pub fn render_diff(
     annotation_source_error: Option<&str>,
     selected_annotation_id: Option<&AnnotationId>,
     loading_message: Option<&str>,
-) -> (usize, Vec<(usize, usize)>) {
+) -> (usize, Vec<(usize, usize)>, usize) {
     let area = frame.area();
     let t = theme::get();
     let bg = t.ui.bg;
@@ -1399,7 +1402,7 @@ pub fn render_diff(
                 loading_message,
             },
         );
-        return (0, Vec::new());
+        return (0, Vec::new(), 0);
     }
 
     // side_by_side is now passed as a parameter (pre-computed and cached)
@@ -1412,6 +1415,9 @@ pub fn render_diff(
     let content_row_offset: usize;
     // Track inline annotation overlay gaps for mouse coordinate mapping
     let mut overlay_gaps: Vec<(usize, usize)> = Vec::new();
+    // Total rows consumed by every annotation overlay on this file (file + inline).
+    // Returned so the input loop can extend `max_scroll` past the naive line count.
+    let total_annotation_height: usize;
 
     let border_style = Style::default().fg(t.ui.border_unfocused);
     let title_style = if focused_panel == FocusedPanel::DiffView {
@@ -1449,6 +1455,11 @@ pub fn render_diff(
 
         let overlay_width = main_area.width.saturating_sub(2);
         let annotation_height = file_annotation_height(&file_annotations, overlay_width);
+        let line_annotation_total: usize = line_annotations
+            .iter()
+            .map(|a| annotation_overlay_height(a, overlay_width))
+            .sum();
+        total_annotation_height = annotation_height + line_annotation_total;
         content_row_offset = context_count + annotation_height;
 
         let base_content_height = visible_height.saturating_sub(context_count);
@@ -1620,6 +1631,11 @@ pub fn render_diff(
 
         let overlay_width = main_area.width.saturating_sub(2);
         let annotation_height = file_annotation_height(&file_annotations, overlay_width);
+        let line_annotation_total: usize = line_annotations
+            .iter()
+            .map(|a| annotation_overlay_height(a, overlay_width))
+            .sum();
+        total_annotation_height = annotation_height + line_annotation_total;
         content_row_offset = context_count + annotation_height;
 
         let base_content_height = visible_height.saturating_sub(context_count);
@@ -1795,17 +1811,6 @@ pub fn render_diff(
         let visible_height = reference_area.height.saturating_sub(2) as usize;
         let scroll_usize = scroll as usize;
 
-        let content_height = visible_height.saturating_sub(context_count);
-        let visible_lines: Vec<&DiffLine> = side_by_side
-            .iter()
-            .skip(scroll_usize)
-            .take(content_height)
-            .collect();
-
-        let mut old_lines: Vec<Line> = Vec::new();
-        let mut new_lines: Vec<Line> = Vec::new();
-        let mut annotation_overlays: Vec<(usize, &Annotation)> = Vec::new();
-
         // Collect file-level annotations
         let file_annotations: Vec<&Annotation> = annotations
             .iter()
@@ -1831,7 +1836,27 @@ pub fn render_diff(
             reference_area.width.saturating_sub(2)
         };
         let file_ann_height = file_annotation_height(&file_annotations, file_overlay_width);
+        let line_annotation_total: usize = line_annotations
+            .iter()
+            .map(|a| {
+                let w = overlay_content_width(a, old_area, new_area, main_area);
+                annotation_overlay_height(a, w)
+            })
+            .sum();
+        total_annotation_height = file_ann_height + line_annotation_total;
         content_row_offset = context_count + file_ann_height;
+
+        let base_content_height = visible_height.saturating_sub(context_count);
+        let content_height = base_content_height.saturating_sub(file_ann_height);
+        let visible_lines: Vec<&DiffLine> = side_by_side
+            .iter()
+            .skip(scroll_usize)
+            .take(content_height)
+            .collect();
+
+        let mut old_lines: Vec<Line> = Vec::new();
+        let mut new_lines: Vec<Line> = Vec::new();
+        let mut annotation_overlays: Vec<(usize, &Annotation)> = Vec::new();
 
         if settings.context.enabled && context_count > 0 {
             if old_area.is_some() {
@@ -2371,7 +2396,7 @@ pub fn render_diff(
         },
     );
 
-    (content_row_offset, overlay_gaps)
+    (content_row_offset, overlay_gaps, total_annotation_height)
 }
 
 #[cfg(test)]
