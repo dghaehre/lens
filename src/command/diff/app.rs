@@ -25,7 +25,8 @@ use super::render::{
     ModalContent, ModalFileStatus, ModalResult,
 };
 use super::state::{
-    adjust_scroll_for_hunk, adjust_scroll_to_line, AnnotationSource, AppState, PendingKey,
+    adjust_scroll_for_hunk, adjust_scroll_to_line, AnnotationSource, AppState, PendingGhAction,
+    PendingKey,
 };
 use super::theme;
 use super::types::{
@@ -698,6 +699,7 @@ fn run_app_internal(
             // closure capture below.
             let annotation_source_label_owned = source_label(&state);
             let annotation_source_error_owned = state.annotation_source_status.clone();
+            let loading_message_owned = state.loading_message.clone();
             let row_offset = std::cell::Cell::new(0usize);
             let gaps_cell = std::cell::RefCell::new(Vec::new());
             terminal.draw(|frame| {
@@ -741,6 +743,7 @@ fn run_app_internal(
                     Some(annotation_source_label_owned.as_str()),
                     annotation_source_error_owned.as_deref(),
                     state.annotation_select.as_ref(),
+                    loading_message_owned.as_deref(),
                 );
                 row_offset.set(offset);
 
@@ -834,6 +837,68 @@ fn run_app_internal(
             })?;
             state.content_row_offset = row_offset.get();
             state.annotation_overlay_gaps = gaps_cell.into_inner();
+        }
+
+        // Drain a queued blocking `gh` call now — i.e. AFTER the draw above
+        // has flushed the loading indicator to screen, so the user sees it
+        // for the duration of the freeze. After the call returns, clear the
+        // indicator and loop back to redraw with fresh state before
+        // blocking on input again.
+        if let Some(action) = state.pending_gh_action.take() {
+            match action {
+                PendingGhAction::SwitchAnnotationSource(target) => {
+                    let switch_result = state.switch_annotation_source(target, backend);
+                    let (items, annotations, snippets) = build_annotation_list(&state);
+                    let mut modal = Modal::annotations(
+                        "Annotations",
+                        items,
+                        annotations,
+                        snippets,
+                        source_label(&state),
+                    );
+                    modal.annotations_focus_source();
+                    if let Err(msg) = switch_result {
+                        modal.annotations_set_error(msg);
+                    }
+                    active_modal = Some(modal);
+                }
+                PendingGhAction::CopyAnnotationToOther(annotation_id) => {
+                    let push_result =
+                        state.copy_annotation_to_other_source(&annotation_id, backend);
+                    let prev_selected = match &active_modal {
+                        Some(m) => match &m.content {
+                            ModalContent::Annotations { selected, .. } => *selected,
+                            _ => 0,
+                        },
+                        None => 0,
+                    };
+                    let (items, annotations, snippets) = build_annotation_list(&state);
+                    let mut modal = Modal::annotations(
+                        "Annotations",
+                        items,
+                        annotations,
+                        snippets,
+                        source_label(&state),
+                    );
+                    if let ModalContent::Annotations {
+                        selected, items, ..
+                    } = &mut modal.content
+                    {
+                        *selected = prev_selected.min(items.len().saturating_sub(1));
+                    }
+                    match push_result {
+                        Ok(()) => {
+                            if let Some(msg) = state.annotation_source_status.clone() {
+                                modal.annotations_set_info(msg);
+                            }
+                        }
+                        Err(msg) => modal.annotations_set_error(msg),
+                    }
+                    active_modal = Some(modal);
+                }
+            }
+            state.loading_message = None;
+            continue 'main;
         }
 
         // Block waiting for the next event (input or watcher). Then drain any
@@ -1135,27 +1200,16 @@ fn run_app_internal(
                                     active_modal = Some(modal);
                                 }
                                 ModalResult::AnnotationSourceSwitch => {
-                                    // Cycle to the other source, rebuild the
-                                    // modal contents, and keep focus on the
-                                    // picker row so the user can flip again
-                                    // (or see the new label) without arrowing.
+                                    // Defer the (blocking) switch by one
+                                    // frame so the loading indicator is
+                                    // visible while `gh` runs. The drainer
+                                    // below this match block executes the
+                                    // call and rebuilds the modal.
                                     let target = state.annotation_source.next();
-                                    let switch_result =
-                                        state.switch_annotation_source(target, backend);
-                                    let (items, annotations, snippets) =
-                                        build_annotation_list(&state);
-                                    let mut modal = Modal::annotations(
-                                        "Annotations",
-                                        items,
-                                        annotations,
-                                        snippets,
-                                        source_label(&state),
-                                    );
-                                    modal.annotations_focus_source();
-                                    if let Err(msg) = switch_result {
-                                        modal.annotations_set_error(msg);
-                                    }
-                                    active_modal = Some(modal);
+                                    state.loading_message =
+                                        Some("fetching from github…".to_string());
+                                    state.pending_gh_action =
+                                        Some(PendingGhAction::SwitchAnnotationSource(target));
                                 }
                                 ModalResult::AnnotationCopyAll => {
                                     // Copy all annotations to clipboard
@@ -1166,43 +1220,19 @@ fn run_app_internal(
                                     active_modal = None;
                                 }
                                 ModalResult::AnnotationCopyToOther { annotation_id } => {
-                                    let push_result = state
-                                        .copy_annotation_to_other_source(&annotation_id, backend);
-                                    let prev_selected = match &active_modal {
-                                        Some(m) => match &m.content {
-                                            ModalContent::Annotations { selected, .. } => {
-                                                *selected
-                                            }
-                                            _ => 0,
-                                        },
-                                        None => 0,
-                                    };
-                                    let (items, annotations, snippets) = build_annotation_list(&state);
-                                    let mut modal = Modal::annotations(
-                                        "Annotations",
-                                        items,
-                                        annotations,
-                                        snippets,
-                                        source_label(&state),
-                                    );
-                                    if let ModalContent::Annotations {
-                                        selected, items, ..
-                                    } = &mut modal.content
-                                    {
-                                        *selected =
-                                            prev_selected.min(items.len().saturating_sub(1));
-                                    }
-                                    match push_result {
-                                        Ok(()) => {
-                                            if let Some(msg) =
-                                                state.annotation_source_status.clone()
-                                            {
-                                                modal.annotations_set_info(msg);
-                                            }
+                                    // Defer the blocking copy by one frame
+                                    // so the loading indicator is visible
+                                    // while `gh` runs. Drained below.
+                                    state.loading_message = Some(match state.annotation_source {
+                                        AnnotationSource::Local => {
+                                            "pushing annotation to github…".to_string()
                                         }
-                                        Err(msg) => modal.annotations_set_error(msg),
-                                    }
-                                    active_modal = Some(modal);
+                                        AnnotationSource::Github => {
+                                            "copying annotation to local…".to_string()
+                                        }
+                                    });
+                                    state.pending_gh_action =
+                                        Some(PendingGhAction::CopyAnnotationToOther(annotation_id));
                                 }
                                 ModalResult::AnnotationExport(filename) => {
                                     // Write annotations to file

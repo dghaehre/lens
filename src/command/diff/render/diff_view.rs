@@ -706,6 +706,7 @@ pub fn render_empty_state(frame: &mut Frame, watching: bool, ref_input: &RefInpu
                 annotation_source_label: None,
                 annotation_source_error: None,
                 annotation_select_active: false,
+                loading_message: None,
             },
         );
     }
@@ -1289,6 +1290,7 @@ pub fn render_diff(
     annotation_source_label: Option<&str>,
     annotation_source_error: Option<&str>,
     selected_annotation_id: Option<&AnnotationId>,
+    loading_message: Option<&str>,
 ) -> (usize, Vec<(usize, usize)>) {
     let area = frame.area();
     let t = theme::get();
@@ -1394,6 +1396,7 @@ pub fn render_diff(
                 annotation_source_label,
                 annotation_source_error,
                 annotation_select_active: selected_annotation_id.is_some(),
+                loading_message,
             },
         );
         return (0, Vec::new());
@@ -2364,6 +2367,7 @@ pub fn render_diff(
             annotation_source_label,
             annotation_source_error,
             annotation_select_active: selected_annotation_id.is_some(),
+            loading_message,
         },
     );
 

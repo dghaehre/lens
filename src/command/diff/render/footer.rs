@@ -30,6 +30,10 @@ pub struct FooterData<'a> {
     /// True when the diff view is in annotation-select mode. Replaces the
     /// hunk count / help hint with the in-mode key cheatsheet.
     pub annotation_select_active: bool,
+    /// When set, a blocking network call is in flight (or about to be).
+    /// Rendered on the right side of the footer in place of the usual hunk
+    /// counter so the user knows the UI freeze is expected.
+    pub loading_message: Option<&'a str>,
 }
 
 /// Truncates a file path by abbreviating directory names to their first character.
@@ -239,7 +243,20 @@ pub fn render_footer(frame: &mut Frame, footer_area: Rect, data: FooterData) {
             spans
         };
 
-        let right_spans: Vec<Span> = if data.annotation_select_active {
+        let right_spans: Vec<Span> = if let Some(msg) = data.loading_message {
+            vec![
+                Span::styled(
+                    " ⟳ ",
+                    Style::default()
+                        .fg(t.ui.footer_branch_fg)
+                        .bg(t.ui.footer_branch_bg),
+                ),
+                Span::styled(
+                    format!(" {} ", msg),
+                    Style::default().fg(t.ui.highlight).bg(bg),
+                ),
+            ]
+        } else if data.annotation_select_active {
             vec![
                 Span::styled(
                     " ANNOTATIONS ",

@@ -48,6 +48,19 @@ impl AnnotationSource {
     }
 }
 
+/// A blocking operation against the GitHub `gh` CLI that has been queued by
+/// the UI but not yet executed. The main loop drains this *after* the next
+/// `terminal.draw()`, so the corresponding `loading_message` is visible on
+/// screen for the duration of the freeze.
+#[derive(Clone, Debug)]
+pub enum PendingGhAction {
+    /// Flip the active annotation source to `target`. May resolve the PR for
+    /// the current branch on first use.
+    SwitchAnnotationSource(AnnotationSource),
+    /// Copy the given annotation to the *other* source than the active one.
+    CopyAnnotationToOther(AnnotationId),
+}
+
 /// Input state for the "change diff reference" prompt. When `active`, the
 /// footer renders an input box and key events are routed into `query`. An
 /// empty query on Enter means "diff against the worktree" (no ref).
@@ -188,6 +201,15 @@ pub struct AppState {
     /// One-shot status string for the footer (e.g., "no PR for branch",
     /// "gh not installed"). Cleared on the next successful source switch.
     pub annotation_source_status: Option<String>,
+    /// Set when a blocking network call is queued or in flight. Surfaces in
+    /// the footer so the user knows the upcoming UI freeze is expected. The
+    /// main loop sets this just before draining `pending_gh_action` and
+    /// clears it once the call returns.
+    pub loading_message: Option<String>,
+    /// A queued blocking `gh` call. The main loop drains this right after a
+    /// draw so the corresponding `loading_message` is visible on screen
+    /// while `gh` is running.
+    pub pending_gh_action: Option<PendingGhAction>,
     // Stacked mode fields
     pub stacked_mode: bool,
     pub stacked_commits: Vec<StackedCommitInfo>,
@@ -332,6 +354,8 @@ impl AppState {
             inactive_local_store: None,
             pr_info: None,
             annotation_source_status: None,
+            loading_message: None,
+            pending_gh_action: None,
             stacked_mode: false,
             stacked_commits: Vec::new(),
             current_commit_index: 0,
