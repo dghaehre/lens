@@ -973,8 +973,9 @@ fn run_app_internal(
             let loading_message_owned = state.loading_message.clone();
             let row_offset = std::cell::Cell::new(0usize);
             let gaps_cell = std::cell::RefCell::new(Vec::new());
+            let total_ann_height = std::cell::Cell::new(0usize);
             terminal.draw(|frame| {
-                let (offset, gaps) = render_diff(
+                let (offset, gaps, total_ann) = render_diff(
                     frame,
                     diff,
                     &state.file_diffs,
@@ -1017,6 +1018,7 @@ fn run_app_internal(
                     loading_message_owned.as_deref(),
                 );
                 row_offset.set(offset);
+                total_ann_height.set(total_ann);
 
                 // Selection action tooltip (shown after drag completes)
                 if state.show_selection_tooltip
@@ -1114,6 +1116,7 @@ fn run_app_internal(
             })?;
             state.content_row_offset = row_offset.get();
             state.annotation_overlay_gaps = gaps_cell.into_inner();
+            state.total_annotation_height = total_ann_height.get();
         }
 
         // Drain a queued blocking `gh` call now — i.e. AFTER the draw above
@@ -1286,7 +1289,11 @@ fn run_app_internal(
             let bottom_padding = 5;
             let max_scroll = if !state.file_diffs.is_empty() {
                 let total_lines = state.total_lines();
-                total_lines.saturating_sub(visible_height.saturating_sub(bottom_padding))
+                // Annotations (file-level + inline overlays) push content rows past the
+                // visible window, so add their total height to keep the bottom reachable.
+                let annotation_pad = state.total_annotation_height;
+                (total_lines + annotation_pad)
+                    .saturating_sub(visible_height.saturating_sub(bottom_padding))
             } else {
                 0
             };
