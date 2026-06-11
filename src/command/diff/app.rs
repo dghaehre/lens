@@ -1139,6 +1139,29 @@ fn run_app_internal(
                     }
                     active_modal = Some(modal);
                 }
+                PendingGhAction::ShowPrDescription => {
+                    // Two `gh` calls + a modal build. Errors are swallowed
+                    // here to match the pre-defer behaviour: refresh failures
+                    // are already stashed into `annotation_source_status` by
+                    // `refresh_pr_info`, surfaced by the footer next frame.
+                    if let Ok(pr) = state.refresh_pr_info() {
+                        let title = format!("{} · {}", pr.slug(), pr.title);
+                        let body = build_pr_body_markdown(pr);
+                        let inline_threads = crate::vcs::github::count_review_threads(
+                            &crate::vcs::github::RealGhClient,
+                            pr,
+                        )
+                        .ok();
+                        let status_lines = build_pr_status_header(pr, inline_threads);
+                        let term_width = terminal.size()?.width;
+                        active_modal = Some(Modal::pr_description(
+                            title,
+                            status_lines,
+                            &body,
+                            term_width,
+                        ));
+                    }
+                }
                 PendingGhAction::CopyAnnotationToOther(annotation_id) => {
                     let push_result =
                         state.copy_annotation_to_other_source(&annotation_id, backend);
@@ -2682,34 +2705,14 @@ fn run_app_internal(
                             ));
                         }
                         KeyCode::Char('P') => {
-                            // Show the PR description for the current branch.
-                            // Always re-fetches so status + CI checks reflect
-                            // current state (a re-fetch is cheap — one `gh`
-                            // call). Errors (no PR, gh not installed, not
-                            // authenticated) are stashed in
-                            // `annotation_source_status` for the footer.
-                            if let Ok(pr) = state.refresh_pr_info() {
-                                let title = format!("{} · {}", pr.slug(), pr.title);
-                                let body = build_pr_body_markdown(pr);
-                                // Second `gh` call: count inline review
-                                // threads so we can tell the user how many
-                                // annotations to expect. Best-effort — a
-                                // failure just elides the segment.
-                                let inline_threads = crate::vcs::github::count_review_threads(
-                                    &crate::vcs::github::RealGhClient,
-                                    pr,
-                                )
-                                .ok();
-                                let status_lines =
-                                    build_pr_status_header(pr, inline_threads);
-                                let term_width = terminal.size()?.width;
-                                active_modal = Some(Modal::pr_description(
-                                    title,
-                                    status_lines,
-                                    &body,
-                                    term_width,
-                                ));
-                            }
+                            // Defer the (blocking) PR fetch by one frame so
+                            // the loading indicator is visible while `gh`
+                            // runs. The drainer below the draw block does
+                            // the refresh + thread count and opens the
+                            // modal.
+                            state.loading_message =
+                                Some("fetching PR from github…".to_string());
+                            state.pending_gh_action = Some(PendingGhAction::ShowPrDescription);
                         }
                         KeyCode::Char('R') if state.annotation_select.is_some() => {
                             if let Some(ann) = state

@@ -59,6 +59,9 @@ pub enum PendingGhAction {
     SwitchAnnotationSource(AnnotationSource),
     /// Copy the given annotation to the *other* source than the active one.
     CopyAnnotationToOther(AnnotationId),
+    /// Fetch fresh PR metadata + inline thread count and open the
+    /// PR-description modal. Triggered by the `P` shortcut.
+    ShowPrDescription,
 }
 
 /// Input state for the "change diff reference" prompt. When `active`, the
