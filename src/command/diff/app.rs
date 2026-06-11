@@ -1162,6 +1162,55 @@ fn run_app_internal(
                         ));
                     }
                 }
+                PendingGhAction::SubmitPrComment { intent, body } => {
+                    // Submit the comment/approval, then on success re-fetch
+                    // the PR + thread count and reopen the description
+                    // modal so the user sees their new entry. On failure
+                    // we stash the message into `annotation_source_status`
+                    // for the footer to surface.
+                    let result = if let Some(pr) = state.pr_info.clone() {
+                        let gh = crate::vcs::github::RealGhClient;
+                        match intent {
+                            PrCommentIntent::Comment => {
+                                crate::vcs::github::add_pr_comment(&gh, &pr, &body)
+                            }
+                            PrCommentIntent::Approve => {
+                                crate::vcs::github::approve_pr(&gh, &pr, &body)
+                            }
+                        }
+                    } else {
+                        Err(crate::vcs::github::GhError::GhFailure(
+                            "no PR resolved".into(),
+                        ))
+                    };
+
+                    match result {
+                        Ok(()) => {
+                            if let Ok(pr) = state.refresh_pr_info() {
+                                let title = format!("{} · {}", pr.slug(), pr.title);
+                                let body_md = build_pr_body_markdown(pr);
+                                let inline_threads =
+                                    crate::vcs::github::count_review_threads(
+                                        &crate::vcs::github::RealGhClient,
+                                        pr,
+                                    )
+                                    .ok();
+                                let status_lines =
+                                    build_pr_status_header(pr, inline_threads);
+                                let term_width = terminal.size()?.width;
+                                active_modal = Some(Modal::pr_description(
+                                    title,
+                                    status_lines,
+                                    &body_md,
+                                    term_width,
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            state.annotation_source_status = Some(format!("{}", e));
+                        }
+                    }
+                }
                 PendingGhAction::CopyAnnotationToOther(annotation_id) => {
                     let push_result =
                         state.copy_annotation_to_other_source(&annotation_id, backend);
@@ -1344,75 +1393,20 @@ fn run_app_internal(
                                 // re-render a stale modal underneath.
                                 pr_comment_editor = None;
 
-                                // The PR resolved earlier is cached on
-                                // state.pr_info — both gh helpers need it
-                                // for repo coordinates. If it's somehow
-                                // missing, we surface that as an error.
-                                let result = if let Some(pr) =
-                                    state.pr_info.clone()
-                                {
-                                    let gh = crate::vcs::github::RealGhClient;
-                                    match intent {
-                                        PrCommentIntent::Comment => {
-                                            crate::vcs::github::add_pr_comment(
-                                                &gh, &pr, &body,
-                                            )
-                                        }
-                                        PrCommentIntent::Approve => {
-                                            crate::vcs::github::approve_pr(
-                                                &gh, &pr, &body,
-                                            )
-                                        }
+                                // Defer the chain (submit → refresh →
+                                // count threads → rebuild modal) by one
+                                // frame so the loading indicator paints
+                                // first. Drained below the next draw.
+                                state.loading_message = Some(match intent {
+                                    PrCommentIntent::Comment => {
+                                        "posting comment to github…".to_string()
                                     }
-                                } else {
-                                    Err(crate::vcs::github::GhError::GhFailure(
-                                        "no PR resolved".into(),
-                                    ))
-                                };
-
-                                match result {
-                                    Ok(()) => {
-                                        // Refresh + reopen the modal so
-                                        // the user sees their new
-                                        // comment/review in the list.
-                                        if let Ok(pr) =
-                                            state.refresh_pr_info()
-                                        {
-                                            let title = format!(
-                                                "{} · {}",
-                                                pr.slug(),
-                                                pr.title
-                                            );
-                                            let body_md =
-                                                build_pr_body_markdown(pr);
-                                            let inline_threads =
-                                                crate::vcs::github::count_review_threads(
-                                                    &crate::vcs::github::RealGhClient,
-                                                    pr,
-                                                )
-                                                .ok();
-                                            let status_lines =
-                                                build_pr_status_header(
-                                                    pr,
-                                                    inline_threads,
-                                                );
-                                            let term_width =
-                                                terminal.size()?.width;
-                                            active_modal = Some(
-                                                Modal::pr_description(
-                                                    title,
-                                                    status_lines,
-                                                    &body_md,
-                                                    term_width,
-                                                ),
-                                            );
-                                        }
+                                    PrCommentIntent::Approve => {
+                                        "submitting approval to github…".to_string()
                                     }
-                                    Err(e) => {
-                                        state.annotation_source_status =
-                                            Some(format!("{}", e));
-                                    }
-                                }
+                                });
+                                state.pending_gh_action =
+                                    Some(PendingGhAction::SubmitPrComment { intent, body });
                             }
                             PrCommentEditorResult::Cancel => {
                                 pr_comment_editor = None;

@@ -8,6 +8,7 @@ use crate::command::diff::diff_algo::{
     compute_side_by_side, count_added_removed, find_hunk_starts,
 };
 use crate::command::diff::highlight::FileHighlighter;
+use crate::command::diff::pr_comment_editor::PrCommentIntent;
 use crate::vcs::github::{resolve_pr_for_current_branch, GhClient, PrInfo, RealGhClient};
 use crate::vcs::GitBackend;
 
@@ -62,6 +63,10 @@ pub enum PendingGhAction {
     /// Fetch fresh PR metadata + inline thread count and open the
     /// PR-description modal. Triggered by the `P` shortcut.
     ShowPrDescription,
+    /// Submit a PR-level comment or approving review, then refresh the
+    /// PR-description modal so the user sees the new entry. Triggered when
+    /// the PR-comment editor saves.
+    SubmitPrComment { intent: PrCommentIntent, body: String },
 }
 
 /// Input state for the "change diff reference" prompt. When `active`, the
