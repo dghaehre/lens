@@ -144,7 +144,7 @@ Annotated lines display a `▍` gutter indicator. Use `I` to view, edit, delete,
 
 ### Agent Skill
 
-`lens` ships a [SKILL.md](./SKILL.md) that teaches coding agents how to read and reply to annotations via the `lens annotation` subcommands. Install it once per machine:
+`lens` ships a [SKILL.md](./SKILL.md) that teaches coding agents how to read, reply to, and continuously watch for annotations via the `lens annotation` subcommands. The watch loop uses `lens annotation watch`, an fs-notify-backed blocking subcommand that returns when an unresolved thread has a non-agent latest comment. Install the skill once per machine:
 
 ```bash
 # Claude Code → ~/.claude/skills/lens-annotations/SKILL.md

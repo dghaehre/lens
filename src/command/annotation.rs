@@ -5,8 +5,10 @@
 //! without entering the TUI.
 
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::mpsc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use serde_json::{json, Value};
 
 use crate::command::diff::annotation_store::{
@@ -16,7 +18,7 @@ use crate::command::diff::annotation_store::{
 use crate::command::diff::types::DiffPanelFocus;
 use crate::config::cli::{
     AnnotationCommand, AnnotationDeleteArgs, AnnotationListArgs, AnnotationNewArgs,
-    AnnotationReplyArgs, AnnotationResolveArgs, PanelArg,
+    AnnotationReplyArgs, AnnotationResolveArgs, AnnotationWatchArgs, PanelArg,
 };
 use crate::error::LensError;
 use crate::vcs::GitBackend;
@@ -30,6 +32,7 @@ pub fn run(command: AnnotationCommand, backend: &GitBackend) -> Result<(), LensE
         AnnotationCommand::Reply(args) => reply(&mut store, args),
         AnnotationCommand::Resolve(args) => resolve(&mut store, args),
         AnnotationCommand::Delete(args) => delete(&mut store, args),
+        AnnotationCommand::Watch(args) => watch(&db_path, args),
     }
 }
 
@@ -207,4 +210,211 @@ fn secs_since_epoch(t: SystemTime) -> i64 {
 
 fn annotation_err(e: AnnotationError) -> LensError {
     LensError::InvalidArguments(e.to_string())
+}
+
+/// Block until at least one annotation needs the agent's attention, then
+/// print those threads as JSON (same shape as `list`) and exit.
+///
+/// "Needs attention" = unresolved AND latest comment's `origin` is not
+/// `args.agent_origin`. The agent's own replies (origin "agent" by
+/// default) are skipped so the watcher doesn't re-fire on its own writes.
+///
+/// On startup we evaluate state once and return immediately if anything's
+/// already actionable. Otherwise we fs-notify the DB's parent directory
+/// (matching `lens.db` and its `-wal` / `-shm` / `-journal` sidecars) and
+/// re-evaluate on every debounced change.
+fn watch(db_path: &Path, args: AnnotationWatchArgs) -> Result<(), LensError> {
+    let agent_origin = args.agent_origin;
+
+    // Initial state — fire immediately if there's already work pending.
+    let store = open_store(db_path)?;
+    let actionable = collect_actionable(&store, &agent_origin)?;
+    drop(store);
+    if !actionable.is_empty() {
+        emit_actionable(&actionable);
+        return Ok(());
+    }
+
+    let db_dir = db_path.parent().ok_or_else(|| {
+        LensError::InvalidConfiguration(format!(
+            "annotation db path has no parent: {}",
+            db_path.display()
+        ))
+    })?;
+    let db_file_name = db_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| {
+            LensError::InvalidConfiguration(format!(
+                "annotation db path has no filename: {}",
+                db_path.display()
+            ))
+        })?
+        .to_string();
+
+    let (tx, rx) = mpsc::channel::<()>();
+    let db_file_name_for_cb = db_file_name.clone();
+    let mut debouncer = new_debouncer(
+        Duration::from_millis(250),
+        move |res: Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify::Error>| {
+            let Ok(events) = res else { return };
+            for event in events {
+                if event.kind != DebouncedEventKind::Any {
+                    continue;
+                }
+                if matches_db_path(&event.path, &db_file_name_for_cb) {
+                    let _ = tx.send(());
+                    break;
+                }
+            }
+        },
+    )
+    .map_err(|e| LensError::InvalidConfiguration(format!("watch setup failed: {e}")))?;
+
+    debouncer
+        .watcher()
+        .watch(db_dir, notify::RecursiveMode::NonRecursive)
+        .map_err(|e| LensError::InvalidConfiguration(format!("watch start failed: {e}")))?;
+
+    loop {
+        rx.recv()
+            .map_err(|e| LensError::InvalidConfiguration(format!("watch channel closed: {e}")))?;
+        // Drain any additional notifications that arrived during processing
+        // so we only re-query once per burst.
+        while rx.try_recv().is_ok() {}
+        let store = open_store(db_path)?;
+        let actionable = collect_actionable(&store, &agent_origin)?;
+        if !actionable.is_empty() {
+            emit_actionable(&actionable);
+            return Ok(());
+        }
+    }
+}
+
+fn collect_actionable(
+    store: &SqliteStore,
+    agent_origin: &str,
+) -> Result<Vec<Annotation>, LensError> {
+    let all = store.list().map_err(annotation_err)?;
+    Ok(all
+        .into_iter()
+        .filter(|a| !a.resolved)
+        .filter(|a| {
+            a.comments
+                .last()
+                .map(|c| c.origin != agent_origin)
+                .unwrap_or(false)
+        })
+        .collect())
+}
+
+fn emit_actionable(annotations: &[Annotation]) {
+    let arr: Vec<Value> = annotations.iter().map(annotation_to_json).collect();
+    // `to_string_pretty` cannot fail for a `Value::Array`.
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&Value::Array(arr))
+            .expect("serde_json::Value serialization is infallible")
+    );
+}
+
+/// True if `path` is the annotation DB itself or one of its SQLite
+/// sidecars (`-journal`, `-wal`, `-shm`). Compared by filename so the
+/// `notify` event path's canonicalization doesn't cause false negatives.
+fn matches_db_path(path: &Path, db_file_name: &str) -> bool {
+    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    if name == db_file_name {
+        return true;
+    }
+    if let Some(rest) = name.strip_prefix(db_file_name) {
+        matches!(rest, "-journal" | "-wal" | "-shm")
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::SystemTime;
+
+    use crate::command::diff::annotation_store::{
+        Annotation, AnnotationId, AnnotationTarget, Author, Comment,
+    };
+
+    fn comment(origin: &str) -> Comment {
+        Comment {
+            native_id: None,
+            author: Author::for_origin(origin),
+            origin: origin.to_string(),
+            content: String::new(),
+            created_at: SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    fn ann(id: &str, resolved: bool, comments: Vec<Comment>) -> Annotation {
+        Annotation {
+            id: AnnotationId {
+                origin: "ui".to_string(),
+                native: id.to_string(),
+            },
+            filename: "x.rs".to_string(),
+            target: AnnotationTarget::File,
+            comments,
+            resolved,
+        }
+    }
+
+    fn actionable(all: Vec<Annotation>, agent: &str) -> Vec<String> {
+        all.into_iter()
+            .filter(|a| !a.resolved)
+            .filter(|a| {
+                a.comments
+                    .last()
+                    .map(|c| c.origin != agent)
+                    .unwrap_or(false)
+            })
+            .map(|a| a.id.native)
+            .collect()
+    }
+
+    #[test]
+    fn fresh_ui_thread_is_actionable() {
+        let xs = vec![ann("1", false, vec![comment("ui")])];
+        assert_eq!(actionable(xs, "agent"), vec!["1".to_string()]);
+    }
+
+    #[test]
+    fn agent_last_reply_is_not_actionable() {
+        let xs = vec![ann("1", false, vec![comment("ui"), comment("agent")])];
+        assert!(actionable(xs, "agent").is_empty());
+    }
+
+    #[test]
+    fn user_reply_after_agent_is_actionable() {
+        let xs = vec![ann(
+            "1",
+            false,
+            vec![comment("ui"), comment("agent"), comment("ui")],
+        )];
+        assert_eq!(actionable(xs, "agent"), vec!["1".to_string()]);
+    }
+
+    #[test]
+    fn resolved_thread_is_skipped() {
+        let xs = vec![ann("1", true, vec![comment("ui")])];
+        assert!(actionable(xs, "agent").is_empty());
+    }
+
+    #[test]
+    fn matches_db_sidecars() {
+        assert!(matches_db_path(Path::new("/x/lens.db"), "lens.db"));
+        assert!(matches_db_path(Path::new("/x/lens.db-wal"), "lens.db"));
+        assert!(matches_db_path(Path::new("/x/lens.db-shm"), "lens.db"));
+        assert!(matches_db_path(Path::new("/x/lens.db-journal"), "lens.db"));
+        assert!(!matches_db_path(Path::new("/x/other"), "lens.db"));
+        assert!(!matches_db_path(Path::new("/x/lens.db.bak"), "lens.db"));
+    }
 }
