@@ -313,12 +313,19 @@ impl Modal {
                 (width, height)
             }
             ModalContent::KeyBindings { sections, .. } => {
-                let width = 60.min(area.width.saturating_sub(4));
+                // Cap at 100 cols on widescreens so the modal stays
+                // readable, but always fit within the terminal. Long
+                // descriptions need ~75+ cols to avoid truncation, so we
+                // give the modal more horizontal room than the old 60.
+                let width = area.width.saturating_sub(4).min(100);
                 let total_lines: usize = sections
                     .iter()
                     .map(|s| s.bindings.len() + 2) // +2 for section title and spacing
                     .sum();
-                let height = (total_lines as u16 + 4).min(area.height * 80 / 100).max(5);
+                // +5 = top/bottom borders (2) + footer hint row (1) +
+                // a small breathing buffer (2). Allow up to 90% of the
+                // terminal so the help screen can grow with the list.
+                let height = (total_lines as u16 + 5).min(area.height * 90 / 100).max(8);
                 (width, height)
             }
             ModalContent::PrDescription {
@@ -583,19 +590,26 @@ impl Modal {
             }
         }
 
-        // Reserve space for scrollbar on the right
+        // Reserve the bottom row for a scroll-hint footer. Because the
+        // help screen itself documents keys, we surface its own scroll
+        // controls so users don't have to guess that they can scroll.
+        let hint_height: u16 = 1;
+        let body_height = inner.height.saturating_sub(hint_height);
+
+        // Body area: reserves 1 col on the right for the scrollbar gutter.
         let content_area = Rect::new(
             inner.x,
             inner.y,
             inner.width.saturating_sub(1),
-            inner.height,
+            body_height,
         );
 
         let para = Paragraph::new(lines).scroll((scroll, 0));
         frame.render_widget(para, content_area);
 
-        // Render scrollbar if content exceeds visible area
-        let visible_height = inner.height;
+        // Render scrollbar if content exceeds visible area. Constrain to
+        // the body area so it doesn't overlap the footer hint row.
+        let visible_height = body_height;
         if content_height > visible_height {
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
@@ -607,8 +621,31 @@ impl Modal {
                 ScrollbarState::new(content_height.saturating_sub(visible_height) as usize)
                     .position(scroll as usize);
 
-            frame.render_stateful_widget(scrollbar, inner, &mut scrollbar_state);
+            let scrollbar_area = Rect::new(inner.x, inner.y, inner.width, body_height);
+            frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
         }
+
+        let hint_area = Rect::new(inner.x, inner.y + body_height, inner.width, hint_height);
+        let key_style = Style::default().fg(t.ui.highlight).bold();
+        let desc_style = Style::default().fg(t.ui.text_muted);
+        let sep_style = Style::default().fg(t.ui.border_unfocused);
+        let hint = Line::from(vec![
+            Span::styled("j/k", key_style),
+            Span::styled(" scroll  ", desc_style),
+            Span::styled("│  ", sep_style),
+            Span::styled("ctrl+d/u", key_style),
+            Span::styled(" half-page  ", desc_style),
+            Span::styled("│  ", sep_style),
+            Span::styled("g/G", key_style),
+            Span::styled(" top/bottom  ", desc_style),
+            Span::styled("│  ", sep_style),
+            Span::styled("esc", key_style),
+            Span::styled(" close", desc_style),
+        ]);
+        frame.render_widget(
+            Paragraph::new(hint).alignment(Alignment::Center),
+            hint_area,
+        );
     }
 
     fn render_pr_description(
@@ -1051,21 +1088,28 @@ impl Modal {
     /// Handle mouse scroll for the modal.
     /// Returns true if the scroll was handled.
     pub fn handle_mouse(&mut self, mouse: MouseEvent, terminal_height: u16) -> bool {
-        let (scroll, content_height) = match &mut self.content {
+        let (scroll, content_height, visible_height) = match &mut self.content {
             ModalContent::KeyBindings {
                 scroll,
                 content_height,
                 ..
+            } => {
+                let visible =
+                    calculate_keybindings_visible_height(terminal_height, *content_height);
+                (scroll, *content_height, visible)
             }
-            | ModalContent::PrDescription {
+            ModalContent::PrDescription {
                 scroll,
                 content_height,
                 ..
-            } => (scroll, *content_height),
+            } => {
+                let visible =
+                    calculate_pr_description_visible_height(terminal_height, *content_height);
+                (scroll, *content_height, visible)
+            }
             _ => return false,
         };
 
-        let visible_height = calculate_keybindings_visible_height(terminal_height, content_height);
         let max_scroll = content_height.saturating_sub(visible_height);
 
         match mouse.kind {
@@ -1174,7 +1218,7 @@ impl Modal {
                 ..
             } => {
                 let visible_height =
-                    calculate_keybindings_visible_height(terminal_height, *content_height);
+                    calculate_pr_description_visible_height(terminal_height, *content_height);
                 let max_scroll = content_height.saturating_sub(visible_height);
 
                 match key.code {
@@ -1456,9 +1500,19 @@ fn pr_desc_wrap_width(terminal_width: u16) -> usize {
 }
 
 fn calculate_keybindings_visible_height(terminal_height: u16, content_height: u16) -> u16 {
-    // Modal height calculation from render: (total_lines + 4).min(height * 80 / 100).max(5)
+    // Mirrors the modal sizing in `Modal::render` for KeyBindings so
+    // scroll math matches the rendered viewport:
+    //   modal_height = (content + 5).min(terminal * 90 / 100).max(8)
+    //   visible      = modal_height - 2 (borders) - 1 (footer hint)
+    let modal_height = (content_height + 5).min(terminal_height * 90 / 100).max(8);
+    modal_height.saturating_sub(3)
+}
+
+/// Approximate visible body height for the PR description modal. Mirrors
+/// the prior shared formula — only used for scroll-math clamping, so an
+/// off-by-a-few-rows result just means `j/k` stop a row early or late.
+fn calculate_pr_description_visible_height(terminal_height: u16, content_height: u16) -> u16 {
     let modal_height = (content_height + 4).min(terminal_height * 80 / 100).max(5);
-    // Subtract 2 for top/bottom borders
     modal_height.saturating_sub(2)
 }
 
