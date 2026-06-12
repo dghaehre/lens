@@ -1040,7 +1040,11 @@ fn run_app_internal(
                     state.current_commit_index,
                     state.stacked_commits.len(),
                     &side_by_side,
-                    &state.annotations,
+                    if state.show_annotations {
+                        state.annotations.as_slice()
+                    } else {
+                        &[]
+                    },
                     &state.selection,
                     old_hl,
                     new_hl,
@@ -1049,7 +1053,11 @@ fn run_app_internal(
                     state.total_removed,
                     Some(annotation_source_label_owned.as_str()),
                     annotation_source_error_owned.as_deref(),
-                    state.annotation_select.as_ref(),
+                    if state.show_annotations {
+                        state.annotation_select.as_ref()
+                    } else {
+                        None
+                    },
                     loading_message_owned.as_deref(),
                 );
                 row_offset.set(offset);
@@ -2119,6 +2127,12 @@ fn run_app_internal(
                                 state.focused_panel = FocusedPanel::DiffView;
                             }
                         }
+                        KeyCode::Char('A') => {
+                            state.show_annotations = !state.show_annotations;
+                            if !state.show_annotations {
+                                state.annotation_select = None;
+                            }
+                        }
                         KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             if !state.file_diffs.is_empty() {
                                 let mut next = state.sidebar_selected + 1;
@@ -3083,6 +3097,10 @@ fn run_app_internal(
                                             KeyBind {
                                                 key: "I",
                                                 description: "View all annotations",
+                                            },
+                                            KeyBind {
+                                                key: "A",
+                                                description: "Toggle annotation overlays in diff",
                                             },
                                             KeyBind {
                                                 key: "a",

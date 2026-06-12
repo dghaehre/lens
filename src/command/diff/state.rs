@@ -181,6 +181,10 @@ pub struct AppState {
     /// Values are hunk indices within that file's `find_hunk_starts` result.
     pub viewed_hunks: HashMap<String, HashSet<usize>>,
     pub show_sidebar: bool,
+    /// When false, annotations are skipped during render — the diff shows
+    /// without inline/file overlays. Stored annotations are untouched; the
+    /// toggle only affects display. Bound to `A` in the diff view.
+    pub show_annotations: bool,
     pub settings: DiffViewSettings,
     pub diff_fullscreen: DiffFullscreen,
     pub search_state: SearchState,
@@ -354,6 +358,7 @@ impl AppState {
             viewed_files: HashSet::new(),
             viewed_hunks: HashMap::new(),
             show_sidebar: true,
+            show_annotations: true,
             settings,
             diff_fullscreen: DiffFullscreen::default(),
             search_state: SearchState::default(),
