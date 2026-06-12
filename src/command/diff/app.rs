@@ -1003,7 +1003,14 @@ fn run_app_internal(
             let commit_ref = state.diff_reference.as_deref().unwrap_or(&branch_fallback);
             // Built outside `terminal.draw` so the borrow lives across the
             // closure capture below.
-            let annotation_source_label_owned = source_label(&state);
+            let annotation_source_label_owned = {
+                let base = source_label(&state);
+                if state.show_annotations {
+                    base
+                } else {
+                    format!("{} (hidden)", base)
+                }
+            };
             let annotation_source_error_owned = state.annotation_source_status.clone();
             let loading_message_owned = state.loading_message.clone();
             let row_offset = std::cell::Cell::new(0usize);
@@ -2641,8 +2648,13 @@ fn run_app_internal(
                         KeyCode::Char('a') => {
                             // Enter annotation-select mode: pick the
                             // annotation closest to the current viewport
-                            // and jump to it. No-op if nothing to walk.
-                            if state.annotation_select.is_none() && !state.annotations.is_empty() {
+                            // and jump to it. No-op if nothing to walk, or
+                            // when annotations are hidden — the mode would
+                            // act on invisible targets.
+                            if state.show_annotations
+                                && state.annotation_select.is_none()
+                                && !state.annotations.is_empty()
+                            {
                                 let anchor = current_anchor_line(&mut state);
                                 let from = (state.current_file, anchor);
                                 if let Some(ann) = nearest_annotation_to(&state, from) {
