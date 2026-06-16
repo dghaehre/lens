@@ -47,7 +47,9 @@ pub fn get_changed_files(options: &DiffOptions, backend: &GitBackend) -> Vec<Str
         }
         DiffMode::Ref(r) => {
             // Union of `r..HEAD` and the working tree.
-            let range_files = backend.get_range_changed_files(r, "HEAD").unwrap_or_default();
+            let range_files = backend
+                .get_range_changed_files(r, "HEAD")
+                .unwrap_or_default();
             let wt_files = backend.get_working_tree_changed_files().unwrap_or_default();
             let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
             let mut combined: Vec<String> = Vec::new();
@@ -269,7 +271,9 @@ mod tests {
 
         let backend = crate::vcs::GitBackend::from_cwd().expect("should open repo");
         let options = super::super::DiffOptions {
-            reference: Some(crate::commit_reference::CommitReference("HEAD~1".to_string())),
+            reference: Some(crate::commit_reference::CommitReference(
+                "HEAD~1".to_string(),
+            )),
             file: None,
             watch: false,
             theme: None,
@@ -536,9 +540,10 @@ mod tests {
             "unstaged mode must not include staged-only file, got: {:?}",
             filenames
         );
-        let both = diffs.iter().find(|d| d.filename == "both.txt").expect(
-            "unstaged mode should include file with worktree-vs-index diff",
-        );
+        let both = diffs
+            .iter()
+            .find(|d| d.filename == "both.txt")
+            .expect("unstaged mode should include file with worktree-vs-index diff");
         // old = index (staged value), new = worktree
         assert_eq!(both.old_content, "staged value\n");
         assert_eq!(both.new_content, "worktree value\n");
@@ -572,7 +577,12 @@ mod tests {
         let only_staged = diffs
             .iter()
             .find(|d| d.filename == "only_staged.txt")
-            .unwrap_or_else(|| panic!("staged mode should include only_staged.txt, got: {:?}", filenames));
+            .unwrap_or_else(|| {
+                panic!(
+                    "staged mode should include only_staged.txt, got: {:?}",
+                    filenames
+                )
+            });
         // old = HEAD, new = index
         assert_eq!(only_staged.old_content, "base\n");
         assert_eq!(only_staged.new_content, "staged value\n");

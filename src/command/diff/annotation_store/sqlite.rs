@@ -269,11 +269,7 @@ impl AnnotationStore for SqliteStore {
         }
     }
 
-    fn reply(
-        &mut self,
-        id: &AnnotationId,
-        reply: NewReply,
-    ) -> Result<Annotation, AnnotationError> {
+    fn reply(&mut self, id: &AnnotationId, reply: NewReply) -> Result<Annotation, AnnotationError> {
         if !is_local_origin(&id.origin) {
             return Err(AnnotationError::WrongOrigin);
         }
@@ -310,11 +306,7 @@ impl AnnotationStore for SqliteStore {
         get_annotation(&self.conn, annotation_row_id)
     }
 
-    fn set_resolved(
-        &mut self,
-        id: &AnnotationId,
-        resolved: bool,
-    ) -> Result<(), AnnotationError> {
+    fn set_resolved(&mut self, id: &AnnotationId, resolved: bool) -> Result<(), AnnotationError> {
         if !is_local_origin(&id.origin) {
             return Err(AnnotationError::WrongOrigin);
         }
@@ -372,7 +364,10 @@ fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<AnnotationMeta> {
     let target = match target_kind.as_str() {
         "file" => AnnotationTarget::File,
         "line_range" => AnnotationTarget::LineRange {
-            panel: panel.as_deref().map(str_to_panel).unwrap_or(DiffPanelFocus::New),
+            panel: panel
+                .as_deref()
+                .map(str_to_panel)
+                .unwrap_or(DiffPanelFocus::New),
             start_line: start_line.unwrap_or(0) as usize,
             end_line: end_line.unwrap_or(0) as usize,
         },
@@ -413,9 +408,12 @@ fn load_with_comments(
     );
     let ids: Vec<i64> = metas.iter().map(|m| m.id).collect();
     let mut stmt = conn.prepare(&sql).map_err(backend_err)?;
-    let mut rows = stmt.query(params_from_iter(ids.iter())).map_err(backend_err)?;
+    let mut rows = stmt
+        .query(params_from_iter(ids.iter()))
+        .map_err(backend_err)?;
 
-    let mut grouped: std::collections::HashMap<i64, Vec<Comment>> = std::collections::HashMap::new();
+    let mut grouped: std::collections::HashMap<i64, Vec<Comment>> =
+        std::collections::HashMap::new();
     while let Some(row) = rows.next().map_err(backend_err)? {
         let comment_id: i64 = row.get(0).map_err(backend_err)?;
         let annotation_id: i64 = row.get(1).map_err(backend_err)?;
@@ -461,7 +459,10 @@ fn load_with_comments(
     Ok(out)
 }
 
-fn get_annotation(conn: &Connection, annotation_row_id: i64) -> Result<Annotation, AnnotationError> {
+fn get_annotation(
+    conn: &Connection,
+    annotation_row_id: i64,
+) -> Result<Annotation, AnnotationError> {
     let mut stmt = conn
         .prepare(
             "SELECT id, filename, target_kind, panel, start_line, end_line, resolved \
@@ -727,9 +728,7 @@ mod tests {
         store.create(draft_file("b.rs", "B", "ui")).unwrap();
         store.create(draft_file("c.rs", "C", "ui")).unwrap();
 
-        let only_b = store
-            .list_for_files(&["b.rs".to_string()])
-            .unwrap();
+        let only_b = store.list_for_files(&["b.rs".to_string()]).unwrap();
         assert_eq!(only_b.len(), 1);
         assert_eq!(only_b[0].filename, "b.rs");
 
@@ -748,7 +747,9 @@ mod tests {
         let path = dir.path().join("lens.db");
         {
             let mut store = SqliteStore::open(&path).unwrap();
-            let a = store.create(draft_file("a.rs", "persistent", "ui")).unwrap();
+            let a = store
+                .create(draft_file("a.rs", "persistent", "ui"))
+                .unwrap();
             store
                 .reply(
                     &a.id,

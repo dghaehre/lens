@@ -235,11 +235,7 @@ impl PrCheckSummary {
         for c in checks {
             s.total += 1;
             // Prefer `conclusion` (CheckRun) over `state` (StatusContext).
-            let outcome = c
-                .conclusion
-                .as_deref()
-                .or(c.state.as_deref())
-                .unwrap_or("");
+            let outcome = c.conclusion.as_deref().or(c.state.as_deref()).unwrap_or("");
             let status = c.status.as_deref().unwrap_or("");
             match outcome.to_ascii_uppercase().as_str() {
                 "SUCCESS" => s.passed += 1,
@@ -413,7 +409,11 @@ pub fn resolve_pr_for_current_branch(gh: &dyn GhClient) -> Result<PrInfo, GhErro
             author: PrUser::from(r.author),
             body: r.body,
             date: date_prefix(&r.submitted_at),
-            review_state: if r.state.is_empty() { None } else { Some(r.state) },
+            review_state: if r.state.is_empty() {
+                None
+            } else {
+                Some(r.state)
+            },
         });
     }
     // ISO-8601 sorts lexicographically — and we kept just the YYYY-MM-DD
@@ -472,9 +472,7 @@ pub fn approve_pr(gh: &dyn GhClient, pr: &PrInfo, body: &str) -> Result<(), GhEr
     let repo = format!("{}/{}", pr.repo_owner, pr.repo_name);
     let number = pr.number.to_string();
     if body.trim().is_empty() {
-        gh.run(&[
-            "pr", "review", &number, "--repo", &repo, "--approve",
-        ])?;
+        gh.run(&["pr", "review", &number, "--repo", &repo, "--approve"])?;
     } else {
         gh.run_with_stdin(
             &[
@@ -577,10 +575,7 @@ fn date_prefix(iso: &str) -> String {
 /// by matching on the literal path component after `github.com/` — for
 /// non-`github.com` deployments we fall back to whatever follows the host.
 fn parse_repo_from_pr_url(url: &str) -> Result<(String, String), GhError> {
-    let after_host = url
-        .split_once("://")
-        .map(|(_, rest)| rest)
-        .unwrap_or(url);
+    let after_host = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
     let path = after_host
         .split_once('/')
         .map(|(_, rest)| rest)

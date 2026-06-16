@@ -90,11 +90,7 @@ impl AnnotationStore for InMemoryStore {
         }
     }
 
-    fn reply(
-        &mut self,
-        id: &AnnotationId,
-        reply: NewReply,
-    ) -> Result<Annotation, AnnotationError> {
+    fn reply(&mut self, id: &AnnotationId, reply: NewReply) -> Result<Annotation, AnnotationError> {
         if !is_local_origin(&id.origin) {
             return Err(AnnotationError::WrongOrigin);
         }
@@ -114,11 +110,7 @@ impl AnnotationStore for InMemoryStore {
         Ok(ann.clone())
     }
 
-    fn set_resolved(
-        &mut self,
-        id: &AnnotationId,
-        resolved: bool,
-    ) -> Result<(), AnnotationError> {
+    fn set_resolved(&mut self, id: &AnnotationId, resolved: bool) -> Result<(), AnnotationError> {
         if !is_local_origin(&id.origin) {
             return Err(AnnotationError::WrongOrigin);
         }

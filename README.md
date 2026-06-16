@@ -151,7 +151,7 @@ Annotated lines display a `▍` gutter indicator. Use `I` to view, edit, delete,
 # Claude Code → ~/.claude/skills/lens-annotations/SKILL.md
 lens skill install claude
 
-# Codex → idempotent block in ~/.codex/AGENTS.md (re-run to update in place)
+# Codex → ~/.codex/skills/lens-annotations/SKILL.md
 lens skill install codex
 ```
 
