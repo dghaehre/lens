@@ -1203,7 +1203,7 @@ fn render_annotation_overlays(
         }
 
         let num_lines = inner_rows.len() + 2; // +2 for top and bottom borders
-        // top_skip rows have already been scrolled off the top of the overlay.
+                                              // top_skip rows have already been scrolled off the top of the overlay.
         let visible_after_skip = num_lines.saturating_sub(top_skip);
 
         let overlay_height = visible_after_skip.min(available_height) as u16;
@@ -2494,7 +2494,11 @@ pub fn render_diff(
                 area,
             );
             // Inner content area: new panel may not have a left border (shared with old).
-            let inner_x = if old_area.is_some() { area.x } else { area.x + 1 };
+            let inner_x = if old_area.is_some() {
+                area.x
+            } else {
+                area.x + 1
+            };
             let inner_y = area.y + 1;
             let inner_width = if old_area.is_some() {
                 area.width.saturating_sub(1)

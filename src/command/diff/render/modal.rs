@@ -7,6 +7,7 @@ use ratatui::{
     },
 };
 
+use crate::command::diff::annotation::{AnnotationEditor, AnnotationEditorResult};
 use crate::command::diff::highlight::highlight_line_spans;
 use crate::command::diff::state::{Annotation, AnnotationId};
 use crate::command::diff::theme;
@@ -49,7 +50,6 @@ pub enum FileStatus {
     Deleted,
 }
 
-#[derive(Clone)]
 pub enum ModalContent {
     #[allow(dead_code)]
     Info { title: String, message: String },
@@ -124,6 +124,11 @@ pub enum ModalContent {
         /// render time. Used together with `preview_content_height` to
         /// clamp scroll bounds in input/mouse handlers.
         preview_visible_height: u16,
+        /// Inline reply composer shown at the bottom of the focused-preview
+        /// view when the user presses `r`. `None` outside of compose mode.
+        /// Keys are forwarded to this editor while it is `Some` — the modal
+        /// itself only sees the result (save/cancel) from delegation.
+        reply_editor: Option<AnnotationEditor<'static>>,
     },
 }
 
@@ -145,6 +150,13 @@ pub enum ModalResult {
     },
     AnnotationReply {
         annotation_id: AnnotationId,
+    },
+    /// Inline reply composed inside the focused-preview view. Carries the
+    /// fully-typed body so the app can append it to the thread without
+    /// opening the standalone editor.
+    AnnotationReplyInline {
+        annotation_id: AnnotationId,
+        content: String,
     },
     AnnotationDelete {
         annotation_id: AnnotationId,
@@ -285,6 +297,7 @@ impl Modal {
                 preview_scroll: 0,
                 preview_content_height: 0,
                 preview_visible_height: 0,
+                reply_editor: None,
             },
         }
     }
@@ -486,6 +499,7 @@ impl Modal {
                 preview_scroll,
                 preview_content_height,
                 preview_visible_height,
+                reply_editor,
             } => {
                 Self::render_annotations(
                     frame,
@@ -504,6 +518,7 @@ impl Modal {
                     preview_scroll,
                     preview_content_height,
                     preview_visible_height,
+                    reply_editor.as_ref(),
                 );
             }
         }
@@ -900,6 +915,7 @@ impl Modal {
         preview_scroll: &mut u16,
         preview_content_height: &mut u16,
         preview_visible_height: &mut u16,
+        reply_editor: Option<&AnnotationEditor<'static>>,
     ) {
         let t = theme::get();
 
@@ -914,6 +930,7 @@ impl Modal {
                 preview_scroll,
                 preview_content_height,
                 preview_visible_height,
+                reply_editor,
                 t,
             );
             return;
@@ -1360,6 +1377,7 @@ impl Modal {
                 preview_scroll,
                 preview_content_height,
                 preview_visible_height,
+                reply_editor,
                 ..
             } => {
                 // Focused-preview mode: list is hidden, only the thread is
@@ -1367,6 +1385,29 @@ impl Modal {
                 // returns to the list view, scroll keys move within the
                 // thread, and esc/q close the modal.
                 if *focused_preview {
+                    // When the inline reply composer is active, forward
+                    // keys to it. Save emits a result the app handles by
+                    // adding the reply and rebuilding the modal; cancel /
+                    // delete just close the composer.
+                    if let Some(editor) = reply_editor.as_mut() {
+                        return match editor.handle_input(key) {
+                            AnnotationEditorResult::Continue => None,
+                            AnnotationEditorResult::Cancel | AnnotationEditorResult::Delete => {
+                                *reply_editor = None;
+                                None
+                            }
+                            AnnotationEditorResult::Save => {
+                                let content = editor.content();
+                                let annotation_id = editor.id.clone();
+                                *reply_editor = None;
+                                annotation_id.map(|id| ModalResult::AnnotationReplyInline {
+                                    annotation_id: id,
+                                    content,
+                                })
+                            }
+                        };
+                    }
+
                     let content_height = *preview_content_height;
                     let visible_height = (*preview_visible_height).max(1);
                     let max_scroll = content_height.saturating_sub(visible_height);
@@ -1378,6 +1419,18 @@ impl Modal {
                         KeyCode::Char('h') | KeyCode::Left => {
                             *focused_preview = false;
                             *preview_scroll = 0;
+                            None
+                        }
+                        // Open the inline reply composer for the currently
+                        // displayed annotation. Skipped silently when the
+                        // list is empty — no thread = nothing to reply to.
+                        KeyCode::Char('r') => {
+                            if let Some(ann) = annotations.get(*selected) {
+                                *reply_editor = Some(
+                                    AnnotationEditor::new(ann.filename.clone(), ann.target.clone())
+                                        .with_reply(ann.id.clone()),
+                                );
+                            }
                             None
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
@@ -2248,6 +2301,7 @@ fn render_annotations_focused(
     preview_scroll: &mut u16,
     preview_content_height: &mut u16,
     preview_visible_height: &mut u16,
+    reply_editor: Option<&AnnotationEditor<'static>>,
     t: &theme::Theme,
 ) {
     let annotation = annotations.get(selected);
@@ -2272,12 +2326,30 @@ fn render_annotations_focused(
     frame.render_widget(block, area);
 
     use ratatui::layout::{Constraint, Direction, Layout};
+    // When the inline reply composer is active, carve a fixed-height block
+    // off the bottom of the inner area for it (above the footer). The
+    // preview shrinks to fit so the thread + draft are visible together.
+    const REPLY_BLOCK_HEIGHT: u16 = 7;
+    let reply_visible = reply_editor.is_some();
+    let constraints: Vec<Constraint> = if reply_visible {
+        vec![
+            Constraint::Min(1),
+            Constraint::Length(REPLY_BLOCK_HEIGHT),
+            Constraint::Length(1),
+        ]
+    } else {
+        vec![Constraint::Min(1), Constraint::Length(1)]
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints(constraints)
         .split(inner);
     let body_area = chunks[0];
-    let footer_area = chunks[1];
+    let (reply_area, footer_area) = if reply_visible {
+        (Some(chunks[1]), chunks[2])
+    } else {
+        (None, chunks[1])
+    };
 
     if let Some(ann) = annotation {
         let snippet = snippets.get(selected).map(|s| s.as_slice()).unwrap_or(&[]);
@@ -2331,23 +2403,54 @@ fn render_annotations_focused(
         *preview_visible_height = body_area.height;
     }
 
-    // Footer with key hints for the focused view.
+    // Inline reply composer (bordered box). The editor owns its own
+    // TextArea; we just provide the frame + label + footer hints.
+    if let (Some(area), Some(editor)) = (reply_area, reply_editor) {
+        let reply_block = Block::default()
+            .title(" Reply ")
+            .title_style(Style::default().fg(t.ui.text_secondary))
+            .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(Style::default().fg(t.ui.border_focused));
+        let reply_inner = reply_block.inner(area);
+        frame.render_widget(reply_block, area);
+        frame.render_widget(editor.textarea(), reply_inner);
+    }
+
+    // Footer with key hints for the focused view. When the reply composer
+    // is active, the hints reflect the editor's own keys instead.
     let key_style = Style::default().fg(t.ui.highlight).bold();
     let desc_style = Style::default().fg(t.ui.text_muted);
     let sep_style = Style::default().fg(t.ui.border_unfocused);
-    let footer_spans = vec![
-        Span::styled("h", key_style),
-        Span::styled(" back  ", desc_style),
-        Span::styled("·  ", sep_style),
-        Span::styled("j/k", key_style),
-        Span::styled(" scroll  ", desc_style),
-        Span::styled("·  ", sep_style),
-        Span::styled("g/G", key_style),
-        Span::styled(" top/bottom  ", desc_style),
-        Span::styled("·  ", sep_style),
-        Span::styled("esc", key_style),
-        Span::styled(" close", desc_style),
-    ];
+    let footer_spans: Vec<Span> = if reply_visible {
+        vec![
+            Span::styled("↵", key_style),
+            Span::styled(" send  ", desc_style),
+            Span::styled("·  ", sep_style),
+            Span::styled("ctrl+j", key_style),
+            Span::styled(" newline  ", desc_style),
+            Span::styled("·  ", sep_style),
+            Span::styled("esc", key_style),
+            Span::styled(" cancel", desc_style),
+        ]
+    } else {
+        vec![
+            Span::styled("h", key_style),
+            Span::styled(" back  ", desc_style),
+            Span::styled("·  ", sep_style),
+            Span::styled("j/k", key_style),
+            Span::styled(" scroll  ", desc_style),
+            Span::styled("·  ", sep_style),
+            Span::styled("r", key_style),
+            Span::styled(" reply  ", desc_style),
+            Span::styled("·  ", sep_style),
+            Span::styled("g/G", key_style),
+            Span::styled(" top/bottom  ", desc_style),
+            Span::styled("·  ", sep_style),
+            Span::styled("esc", key_style),
+            Span::styled(" close", desc_style),
+        ]
+    };
     let footer =
         Paragraph::new(Line::from(footer_spans)).alignment(ratatui::prelude::Alignment::Center);
     frame.render_widget(footer, footer_area);

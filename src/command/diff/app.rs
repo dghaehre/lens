@@ -1110,9 +1110,9 @@ fn run_app_internal(
 
                         // Position below the selection end, accounting for sub_scroll
                         // shifting the inline area upward.
-                        let screen_y = (header_h + 1 + offset as u16 + content_y as u16
-                            + cum_gaps + 1)
-                            .saturating_sub(state.sub_scroll);
+                        let screen_y =
+                            (header_h + 1 + offset as u16 + content_y as u16 + cum_gaps + 1)
+                                .saturating_sub(state.sub_scroll);
 
                         let (panel_x, panel_w) = match sel.panel {
                             DiffPanelFocus::Old => (layout.old_panel_x, layout.old_panel_width),
@@ -1606,6 +1606,16 @@ fn run_app_internal(
                                     }
                                     active_modal = None;
                                 }
+                                ModalResult::AnnotationReplyInline {
+                                    annotation_id,
+                                    content,
+                                } => {
+                                    state.add_reply(&annotation_id, content);
+                                    active_modal = Some(rebuild_annotations_modal(
+                                        &state,
+                                        active_modal.as_ref(),
+                                    ));
+                                }
                                 ModalResult::AnnotationDelete { annotation_id } => {
                                     state.remove_annotation(&annotation_id);
                                     let (items, annotations, snippets) =
@@ -1864,8 +1874,8 @@ fn run_app_internal(
                                         // The inline area is shifted up by sub_scroll on screen.
                                         // Add sub_scroll back so adjust_for_overlay_gaps walks the
                                         // pre-scroll content stream.
-                                        let content_y =
-                                            rel_y - state.content_row_offset + state.sub_scroll as usize;
+                                        let content_y = rel_y - state.content_row_offset
+                                            + state.sub_scroll as usize;
                                         // Adjust for inline annotation overlay gaps
                                         let adjusted_y =
                                             match state.adjust_for_overlay_gaps(content_y) {

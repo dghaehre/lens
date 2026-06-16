@@ -104,6 +104,12 @@ impl<'a> AnnotationEditor<'a> {
         self.textarea.lines().join("\n")
     }
 
+    /// Borrow the underlying textarea so callers can embed it inside their
+    /// own widgets (e.g., the annotation modal's inline reply composer).
+    pub fn textarea(&self) -> &TextArea<'a> {
+        &self.textarea
+    }
+
     /// Get the creation time (original if editing, now if new)
     pub fn created_at(&self) -> SystemTime {
         self.original_created_at.unwrap_or_else(SystemTime::now)
