@@ -111,6 +111,10 @@ pub enum ModalContent {
         /// `ModalResult::AnnotationSourceSwitch`; arrow keys move focus
         /// back into the list.
         source_focused: bool,
+        /// When `d` has been pressed once on the highlighted annotation but
+        /// not yet confirmed. The footer switches to a confirmation prompt;
+        /// pressing `d` again deletes, any other key cancels.
+        pending_delete: Option<AnnotationId>,
     },
 }
 
@@ -268,6 +272,7 @@ impl Modal {
                 info_message: None,
                 source_label: source_label.into(),
                 source_focused: false,
+                pending_delete: None,
             },
         }
     }
@@ -465,6 +470,7 @@ impl Modal {
                 info_message,
                 source_label,
                 source_focused,
+                pending_delete,
             } => {
                 self.render_annotations(
                     frame,
@@ -479,6 +485,7 @@ impl Modal {
                     info_message.as_deref(),
                     source_label,
                     *source_focused,
+                    pending_delete.is_some(),
                 );
             }
         }
@@ -876,6 +883,7 @@ impl Modal {
         info_message: Option<&str>,
         source_label: &str,
         source_focused: bool,
+        delete_pending: bool,
     ) {
         let t = theme::get();
 
@@ -1053,6 +1061,13 @@ impl Modal {
         };
         if export_input.is_some() {
             push_pair(&mut spans, "↵", "confirm", false);
+            push_pair(&mut spans, "esc", "cancel", true);
+        } else if delete_pending {
+            spans.push(Span::styled(
+                "delete this annotation?  ",
+                Style::default().fg(t.ui.status_deleted).bold(),
+            ));
+            push_pair(&mut spans, "d", "confirm", false);
             push_pair(&mut spans, "esc", "cancel", true);
         } else {
             let copy_to = if source_label.contains("github") {
@@ -1305,6 +1320,7 @@ impl Modal {
                 export_input,
                 error_message,
                 source_focused,
+                pending_delete,
                 ..
             } => {
                 // Export input mode
@@ -1341,6 +1357,22 @@ impl Modal {
                             None
                         }
                         _ => None,
+                    }
+                } else if let Some(target_id) = pending_delete.clone() {
+                    // Delete-confirmation mode: only `d` confirms; anything
+                    // else cancels and is swallowed so the user can't
+                    // accidentally chain into another destructive action.
+                    match key.code {
+                        KeyCode::Char('d') if !*source_focused => {
+                            *pending_delete = None;
+                            Some(ModalResult::AnnotationDelete {
+                                annotation_id: target_id,
+                            })
+                        }
+                        _ => {
+                            *pending_delete = None;
+                            None
+                        }
                     }
                 } else {
                     // Normal mode
@@ -1398,11 +1430,10 @@ impl Modal {
                                 })
                         }
                         KeyCode::Char('d') if !*source_focused => {
-                            annotations
-                                .get(*selected)
-                                .map(|ann| ModalResult::AnnotationDelete {
-                                    annotation_id: ann.id.clone(),
-                                })
+                            if let Some(ann) = annotations.get(*selected) {
+                                *pending_delete = Some(ann.id.clone());
+                            }
+                            None
                         }
                         KeyCode::Char('x') if !*source_focused => {
                             annotations.get(*selected).map(|ann| {
