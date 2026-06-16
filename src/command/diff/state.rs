@@ -177,6 +177,12 @@ pub struct AppState {
     pub sidebar_scroll: usize,
     pub sidebar_h_scroll: u16,
     pub scroll: u16,
+    /// Row offset *inside* the annotation overlay attached to the line at
+    /// `scroll`. Snap-scrolling state: 0 means the anchor line sits at the top
+    /// of the viewport; values up to `overlay_heights[scroll]` walk through
+    /// the overlay one row at a time before `scroll` advances. Reset to 0 on
+    /// any non-incremental scroll (file change, jump-to-hunk/annotation, etc).
+    pub sub_scroll: u16,
     pub h_scroll: u16,
     pub focused_panel: FocusedPanel,
     pub viewed_files: HashSet<usize>,
@@ -269,6 +275,11 @@ pub struct AppState {
     /// visible content line index after which an overlay gap of `gap_height` rows appears.
     /// Used by mouse handlers to correctly map screen rows to side_by_side indices.
     pub annotation_overlay_gaps: Vec<(usize, usize)>,
+    /// Per-line overlay heights for the current file: `sbs_idx → total overlay
+    /// height (rows) attached to that side_by_side line`. Populated by render_diff
+    /// each frame so scroll handlers can walk inside an overlay one row at a
+    /// time (`sub_scroll`) regardless of whether the overlay is currently visible.
+    pub overlay_heights: HashMap<usize, usize>,
     /// Total height (in rows) of every annotation overlay attached to the current
     /// file — file-level plus inline. Set by render_diff each frame so the input
     /// loop can extend `max_scroll` enough that the bottom of the diff stays
@@ -356,6 +367,7 @@ impl AppState {
             sidebar_scroll: 0,
             sidebar_h_scroll: 0,
             scroll,
+            sub_scroll: 0,
             h_scroll: 0,
             focused_panel: FocusedPanel::default(),
             viewed_files: HashSet::new(),
@@ -395,6 +407,7 @@ impl AppState {
             search_dirty: true,
             content_row_offset: 0,
             annotation_overlay_gaps: Vec::new(),
+            overlay_heights: HashMap::new(),
             total_annotation_height: 0,
             total_added,
             total_removed,
@@ -407,6 +420,9 @@ impl AppState {
     /// an external CLI/agent write reported by the file watcher).
     pub fn reload_annotations(&mut self) {
         self.load_annotations_for_current_files();
+        // The overlay attached to the current scroll line may have changed
+        // size or disappeared; sub_scroll into a stale overlay would skip rows.
+        self.sub_scroll = 0;
     }
 
     /// Whether the active store is read-only (e.g., the Phase-1 GitHub
@@ -805,7 +821,9 @@ impl AppState {
         self.search_dirty = true;
         self.content_row_offset = 0;
         self.annotation_overlay_gaps.clear();
+        self.overlay_heights.clear();
         self.total_annotation_height = 0;
+        self.sub_scroll = 0;
     }
 
     /// Adjust a screen-relative content row for annotation overlay gaps.
@@ -844,6 +862,41 @@ impl AppState {
             cumulative += gap_height;
         }
         content_y - cumulative
+    }
+
+    /// Total overlay height (rows) attached to the diff line at `scroll`,
+    /// or 0 if none. Drives sub-row snap scrolling: while `sub_scroll < this`,
+    /// `j`/`k` advance the sub-row position rather than jumping over the overlay.
+    pub fn overlay_height_at_scroll(&self) -> u16 {
+        self.overlay_heights
+            .get(&(self.scroll as usize))
+            .copied()
+            .unwrap_or(0) as u16
+    }
+
+    /// Advance the viewport by one rendered row. If the current scroll line
+    /// has an inline overlay and we haven't fully scrolled past it, step
+    /// `sub_scroll`; otherwise step `scroll` and reset `sub_scroll`.
+    pub fn scroll_down_one_row(&mut self, max_scroll: u16) {
+        let n = self.overlay_height_at_scroll();
+        if self.sub_scroll < n {
+            self.sub_scroll += 1;
+        } else if self.scroll < max_scroll {
+            self.scroll += 1;
+            self.sub_scroll = 0;
+        }
+    }
+
+    /// Retreat the viewport by one rendered row. If we're partway through an
+    /// overlay, step back inside it; otherwise step `scroll` and land at the
+    /// bottom of the previous line's overlay (so the next `k` continues smoothly).
+    pub fn scroll_up_one_row(&mut self) {
+        if self.sub_scroll > 0 {
+            self.sub_scroll -= 1;
+        } else if self.scroll > 0 {
+            self.scroll -= 1;
+            self.sub_scroll = self.overlay_height_at_scroll();
+        }
     }
 
     /// Clear all selection state
