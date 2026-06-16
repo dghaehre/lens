@@ -113,6 +113,7 @@ LENS_THEME=catppuccin-mocha lens
 | One Dark | `one-dark` |
 | Gruvbox | `gruvbox-dark`, `gruvbox-light` |
 | Solarized | `solarized-dark`, `solarized-light` |
+| Thamos | `thamos` |
 
 Priority: CLI flag > config file > `LENS_THEME` env var > OS auto-detect.
 
