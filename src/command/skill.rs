@@ -3,8 +3,7 @@
 //!
 //! Destinations:
 //! - claude → `~/.claude/skills/lens-annotations/SKILL.md`
-//! - codex  → `~/.codex/AGENTS.md` (idempotent block between markers, so
-//!   re-running update in place without duplicating the content)
+//! - codex  → `~/.codex/skills/lens-annotations/SKILL.md`
 
 use std::fs;
 use std::path::Path;
@@ -47,71 +46,55 @@ fn install_claude(home: &Path) -> Result<(), LensError> {
 }
 
 fn install_codex(home: &Path) -> Result<(), LensError> {
-    let dir = home.join(".codex");
-    let target = dir.join("AGENTS.md");
+    let dir = home.join(".codex").join("skills").join("lens-annotations");
+    let target = dir.join("SKILL.md");
     fs::create_dir_all(&dir)?;
-
-    let existing = match fs::read_to_string(&target) {
-        Ok(s) => Some(s),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(e.into()),
-    };
-
-    // Codex's AGENTS.md is a shared file the user may have other content in,
-    // so we wrap our payload in HTML-comment markers and overwrite only the
-    // text between them. This makes `lens skill install codex` idempotent.
-    let block = format!(
-        "{start}\n<!-- managed by `lens skill install codex` — re-run to update -->\n{body}\n{end}\n",
-        start = CODEX_BLOCK_START,
-        body = SKILL_MD.trim_end(),
-        end = CODEX_BLOCK_END,
-    );
-
-    let new_contents = match existing {
-        None => block,
-        Some(prev) => match replace_block(&prev, &block) {
-            Some(replaced) => replaced,
-            None => {
-                // No existing block. Preserve user content; append ours after a
-                // blank line.
-                let mut out = prev;
-                if !out.ends_with('\n') {
-                    out.push('\n');
-                }
-                if !out.is_empty() {
-                    out.push('\n');
-                }
-                out.push_str(&block);
-                out
-            }
-        },
-    };
-
-    fs::write(&target, new_contents)?;
+    fs::write(&target, SKILL_MD)?;
+    cleanup_legacy_codex_agents(home)?;
     println!("installed lens skill for codex → {}", target.display());
     Ok(())
 }
 
-/// Swap the managed `lens-skill` block inside an existing AGENTS.md for a
-/// freshly-built one. The block is delimited by `CODEX_BLOCK_START` /
-/// `CODEX_BLOCK_END` HTML comments so we can find and overwrite it without
-/// touching anything else in the file. Returns `None` when no block is
-/// present (caller falls back to appending).
-fn replace_block(existing: &str, block: &str) -> Option<String> {
+/// Remove the old managed `lens-skill` block from Codex's AGENTS.md when users
+/// reinstall with a newer Lens. User-owned content outside the block stays in
+/// place; an AGENTS.md that only contained the managed block is removed.
+fn cleanup_legacy_codex_agents(home: &Path) -> Result<(), LensError> {
+    let target = home.join(".codex").join("AGENTS.md");
+    let existing = match fs::read_to_string(&target) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+
+    let Some(cleaned) = remove_legacy_codex_block(&existing) else {
+        return Ok(());
+    };
+
+    if cleaned.trim().is_empty() {
+        fs::remove_file(&target)?;
+    } else {
+        fs::write(&target, cleaned)?;
+    }
+    Ok(())
+}
+
+fn remove_legacy_codex_block(existing: &str) -> Option<String> {
     let start = existing.find(CODEX_BLOCK_START)?;
     let end_marker = existing[start..].find(CODEX_BLOCK_END)?;
     let end = start + end_marker + CODEX_BLOCK_END.len();
-    let mut out = String::with_capacity(existing.len() + block.len());
-    out.push_str(&existing[..start]);
-    out.push_str(block.trim_end());
-    // Preserve a single trailing newline after the block.
-    let tail = &existing[end..];
-    let tail = tail.trim_start_matches('\n');
-    out.push('\n');
-    if !tail.is_empty() {
+
+    let before = existing[..start].trim_end_matches('\n');
+    let after = existing[end..].trim_start_matches('\n');
+    let mut out = String::new();
+
+    if !before.is_empty() {
+        out.push_str(before);
         out.push('\n');
-        out.push_str(tail);
     }
+    if !before.is_empty() && !after.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(after);
     Some(out)
 }
 
@@ -120,26 +103,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn replace_block_swaps_existing_block() {
+    fn remove_legacy_codex_block_preserves_user_content() {
         let existing = format!(
             "# AGENTS\n\nintro text\n\n{start}\nold body\n{end}\n\ntrailing\n",
             start = CODEX_BLOCK_START,
             end = CODEX_BLOCK_END,
         );
-        let new_block = format!(
-            "{start}\nnew body\n{end}\n",
-            start = CODEX_BLOCK_START,
-            end = CODEX_BLOCK_END,
-        );
-        let out = replace_block(&existing, &new_block).expect("block present");
-        assert!(out.contains("new body"));
+        let out = remove_legacy_codex_block(&existing).expect("block present");
         assert!(!out.contains("old body"));
         assert!(out.contains("trailing"));
         assert!(out.contains("intro text"));
+        assert_eq!(out, "# AGENTS\n\nintro text\n\ntrailing\n");
     }
 
     #[test]
-    fn replace_block_returns_none_when_missing() {
-        assert!(replace_block("# AGENTS\n\nno block here\n", "ignored").is_none());
+    fn remove_legacy_codex_block_returns_none_when_missing() {
+        assert!(remove_legacy_codex_block("# AGENTS\n\nno block here\n").is_none());
+    }
+
+    #[test]
+    fn install_codex_writes_skill_file_without_agents() {
+        let home = tempfile::tempdir().expect("tempdir");
+        install_codex(home.path()).expect("install codex");
+
+        let skill = home
+            .path()
+            .join(".codex")
+            .join("skills")
+            .join("lens-annotations")
+            .join("SKILL.md");
+        assert_eq!(fs::read_to_string(skill).expect("skill file"), SKILL_MD);
+        assert!(!home.path().join(".codex").join("AGENTS.md").exists());
+    }
+
+    #[test]
+    fn install_codex_removes_legacy_agents_file_when_only_managed_block() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let codex_dir = home.path().join(".codex");
+        fs::create_dir_all(&codex_dir).expect("codex dir");
+        fs::write(
+            codex_dir.join("AGENTS.md"),
+            format!(
+                "{start}\nold body\n{end}\n",
+                start = CODEX_BLOCK_START,
+                end = CODEX_BLOCK_END,
+            ),
+        )
+        .expect("legacy agents");
+
+        install_codex(home.path()).expect("install codex");
+
+        assert!(!codex_dir.join("AGENTS.md").exists());
     }
 }
