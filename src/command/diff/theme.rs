@@ -834,56 +834,56 @@ impl Theme {
         Self {
             mode: ThemeMode::Dark,
             syntax: SyntaxColors {
-                comment: Color::Rgb(118, 118, 118),           // xterm 243
-                keyword: Color::Rgb(235, 203, 139),           // Keyword = yellow (cterm 11)
-                string: Color::Rgb(191, 97, 106),             // Constant default = red (cterm 9)
-                number: Color::Rgb(191, 97, 106),             // Constant
-                function: Color::Rgb(129, 161, 193),          // Function = blue (cterm 12)
-                function_macro: Color::Rgb(135, 215, 255),    // PreProc = xterm 117
-                r#type: Color::Rgb(175, 215, 175),            // Type = xterm 151
-                variable_builtin: Color::Rgb(136, 192, 208),  // Identifier = cyan (cterm 14)
-                variable_member: Color::Rgb(136, 192, 208),   // Identifier
-                module: Color::Rgb(135, 215, 255),            // PreProc-ish
-                operator: Color::Rgb(129, 161, 193),          // Statement = blue (cterm 12)
-                tag: Color::Rgb(180, 142, 173),               // Special = magenta (cterm 13)
-                attribute: Color::Rgb(135, 215, 255),         // PreProc
-                label: Color::Rgb(180, 142, 173),             // Special
-                punctuation: Color::Rgb(255, 215, 215),       // Delimiter = xterm 224
-                default_text: Color::Rgb(216, 222, 233),      // Alacritty fg / Nord nord4
+                comment: Color::Rgb(118, 118, 118),          // xterm 243
+                keyword: Color::Rgb(235, 203, 139),          // Keyword = yellow (cterm 11)
+                string: Color::Rgb(191, 97, 106),            // Constant default = red (cterm 9)
+                number: Color::Rgb(191, 97, 106),            // Constant
+                function: Color::Rgb(129, 161, 193),         // Function = blue (cterm 12)
+                function_macro: Color::Rgb(135, 215, 255),   // PreProc = xterm 117
+                r#type: Color::Rgb(175, 215, 175),           // Type = xterm 151
+                variable_builtin: Color::Rgb(136, 192, 208), // Identifier = cyan (cterm 14)
+                variable_member: Color::Rgb(136, 192, 208),  // Identifier
+                module: Color::Rgb(135, 215, 255),           // PreProc-ish
+                operator: Color::Rgb(129, 161, 193),         // Statement = blue (cterm 12)
+                tag: Color::Rgb(180, 142, 173),              // Special = magenta (cterm 13)
+                attribute: Color::Rgb(135, 215, 255),        // PreProc
+                label: Color::Rgb(180, 142, 173),            // Special
+                punctuation: Color::Rgb(255, 215, 215),      // Delimiter = xterm 224
+                default_text: Color::Rgb(216, 222, 233),     // Alacritty fg / Nord nord4
             },
             diff: DiffColors {
                 added_bg: Color::Rgb(40, 55, 50),
                 added_gutter_bg: Color::Rgb(50, 75, 60),
-                added_gutter_fg: Color::Rgb(163, 190, 140),   // Nord green
+                added_gutter_fg: Color::Rgb(163, 190, 140), // Nord green
                 deleted_bg: Color::Rgb(55, 45, 50),
                 deleted_gutter_bg: Color::Rgb(75, 55, 60),
-                deleted_gutter_fg: Color::Rgb(191, 97, 106),  // Nord red
-                context_bg: Color::Rgb(34, 39, 46),           // Alacritty bg #22272e
+                deleted_gutter_fg: Color::Rgb(191, 97, 106), // Nord red
+                context_bg: Color::Rgb(34, 39, 46),          // Alacritty bg #22272e
                 empty_placeholder_fg: Color::Rgb(76, 86, 106),
                 added_word_bg: Color::Rgb(60, 100, 75),
                 deleted_word_bg: Color::Rgb(110, 65, 70),
             },
             ui: UiColors {
-                border_focused: Color::Rgb(129, 161, 193),    // Nord blue (StatusBarRight)
-                border_unfocused: Color::Rgb(76, 86, 106),    // TabLine bright-black
-                text_primary: Color::Rgb(216, 222, 233),      // Alacritty fg
-                text_secondary: Color::Rgb(178, 178, 178),    // xterm 249 (CursorLineNr)
-                text_muted: Color::Rgb(118, 118, 118),        // xterm 243
+                border_focused: Color::Rgb(129, 161, 193), // Nord blue (StatusBarRight)
+                border_unfocused: Color::Rgb(76, 86, 106), // TabLine bright-black
+                text_primary: Color::Rgb(216, 222, 233),   // Alacritty fg
+                text_secondary: Color::Rgb(178, 178, 178), // xterm 249 (CursorLineNr)
+                text_muted: Color::Rgb(118, 118, 118),     // xterm 243
                 line_number: Color::Rgb(118, 118, 118),
                 bg: Color::Reset,
                 footer_branch_bg: Color::Rgb(67, 76, 94),
-                footer_branch_fg: Color::Rgb(136, 192, 208),  // StatusBarGit = cyan
+                footer_branch_fg: Color::Rgb(136, 192, 208), // StatusBarGit = cyan
                 status_added: Color::Rgb(163, 190, 140),
-                status_modified: Color::Rgb(235, 203, 139),   // StatusBarWarning = yellow
-                status_deleted: Color::Rgb(191, 97, 106),     // StatusBarError = red
+                status_modified: Color::Rgb(235, 203, 139), // StatusBarWarning = yellow
+                status_deleted: Color::Rgb(191, 97, 106),   // StatusBarError = red
                 stats_added: Color::Rgb(163, 190, 140),
                 stats_removed: Color::Rgb(191, 97, 106),
-                selection_bg: Color::Rgb(136, 192, 208),      // Nord cyan
+                selection_bg: Color::Rgb(136, 192, 208), // Nord cyan
                 selection_fg: Color::Rgb(34, 39, 46),
-                highlight: Color::Rgb(255, 135, 175),         // TODO = xterm 211
-                viewed: Color::Rgb(175, 215, 175),            // pale green (Type)
-                watching: Color::Rgb(235, 203, 139),          // StatusBarWarning
-                search_match_bg: Color::Rgb(108, 108, 108),   // Search = xterm 242
+                highlight: Color::Rgb(255, 135, 175), // TODO = xterm 211
+                viewed: Color::Rgb(175, 215, 175),    // pale green (Type)
+                watching: Color::Rgb(235, 203, 139),  // StatusBarWarning
+                search_match_bg: Color::Rgb(108, 108, 108), // Search = xterm 242
                 search_match_fg: Color::Rgb(216, 222, 233),
                 search_current_bg: Color::Rgb(235, 203, 139),
                 search_current_fg: Color::Rgb(34, 39, 46),

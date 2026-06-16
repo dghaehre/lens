@@ -764,14 +764,22 @@ fn build_annotation_list(
 /// have shifted out from under an open modal — external DB writes, source
 /// switches, reply/edit/resolve actions.
 fn rebuild_annotations_modal(state: &AppState, current: Option<&Modal>) -> Modal {
-    let (prev_selected, prev_source_focused) = match current.map(|m| &m.content) {
-        Some(ModalContent::Annotations {
-            selected,
-            source_focused,
-            ..
-        }) => (*selected, *source_focused),
-        _ => (0, false),
-    };
+    let (prev_selected, prev_source_focused, prev_focused_preview, prev_preview_scroll) =
+        match current.map(|m| &m.content) {
+            Some(ModalContent::Annotations {
+                selected,
+                source_focused,
+                focused_preview,
+                preview_scroll,
+                ..
+            }) => (
+                *selected,
+                *source_focused,
+                *focused_preview,
+                *preview_scroll,
+            ),
+            _ => (0, false, false, 0),
+        };
     let (items, annotations, snippets) = build_annotation_list(state);
     let mut modal = Modal::annotations(
         "Annotations",
@@ -783,12 +791,16 @@ fn rebuild_annotations_modal(state: &AppState, current: Option<&Modal>) -> Modal
     if let ModalContent::Annotations {
         selected,
         source_focused,
+        focused_preview,
+        preview_scroll,
         items,
         ..
     } = &mut modal.content
     {
         *selected = prev_selected.min(items.len().saturating_sub(1));
         *source_focused = prev_source_focused;
+        *focused_preview = prev_focused_preview && !items.is_empty();
+        *preview_scroll = prev_preview_scroll;
     }
     modal
 }
@@ -964,7 +976,7 @@ fn run_app_internal(
         if state.file_diffs.is_empty() {
             terminal.draw(|frame| {
                 render_empty_state(frame, options.watch, &state.ref_input);
-                if let Some(ref modal) = active_modal {
+                if let Some(ref mut modal) = active_modal {
                     modal.render(frame);
                 }
             })?;
@@ -1098,9 +1110,9 @@ fn run_app_internal(
 
                         // Position below the selection end, accounting for sub_scroll
                         // shifting the inline area upward.
-                        let screen_y = (header_h + 1 + offset as u16 + content_y as u16
-                            + cum_gaps + 1)
-                            .saturating_sub(state.sub_scroll);
+                        let screen_y =
+                            (header_h + 1 + offset as u16 + content_y as u16 + cum_gaps + 1)
+                                .saturating_sub(state.sub_scroll);
 
                         let (panel_x, panel_w) = match sel.panel {
                             DiffPanelFocus::Old => (layout.old_panel_x, layout.old_panel_width),
@@ -1151,7 +1163,7 @@ fn run_app_internal(
                 if let Some(ref editor) = pr_comment_editor {
                     editor.render(frame);
                 }
-                if let Some(ref modal) = active_modal {
+                if let Some(ref mut modal) = active_modal {
                     modal.render(frame);
                 }
             })?;
@@ -1594,6 +1606,16 @@ fn run_app_internal(
                                     }
                                     active_modal = None;
                                 }
+                                ModalResult::AnnotationReplyInline {
+                                    annotation_id,
+                                    content,
+                                } => {
+                                    state.add_reply(&annotation_id, content);
+                                    active_modal = Some(rebuild_annotations_modal(
+                                        &state,
+                                        active_modal.as_ref(),
+                                    ));
+                                }
                                 ModalResult::AnnotationDelete { annotation_id } => {
                                     state.remove_annotation(&annotation_id);
                                     let (items, annotations, snippets) =
@@ -1613,33 +1635,13 @@ fn run_app_internal(
                                     if let Some(resolved) = new_state {
                                         state.set_annotation_resolved(&annotation_id, resolved);
                                     }
-                                    // Rebuild the modal contents but keep the
-                                    // selection on the same row — the list count
-                                    // hasn't changed, only the row's badge.
-                                    let prev_selected = match &active_modal {
-                                        Some(m) => match &m.content {
-                                            ModalContent::Annotations { selected, .. } => *selected,
-                                            _ => 0,
-                                        },
-                                        None => 0,
-                                    };
-                                    let (items, annotations, snippets) =
-                                        build_annotation_list(&state);
-                                    let mut modal = Modal::annotations(
-                                        "Annotations",
-                                        items,
-                                        annotations,
-                                        snippets,
-                                        source_label(&state),
-                                    );
-                                    if let ModalContent::Annotations {
-                                        selected, items, ..
-                                    } = &mut modal.content
-                                    {
-                                        *selected =
-                                            prev_selected.min(items.len().saturating_sub(1));
-                                    }
-                                    active_modal = Some(modal);
+                                    // Rebuild preserves the row, focused-preview
+                                    // mode, and scroll position — only the row's
+                                    // resolved badge changes.
+                                    active_modal = Some(rebuild_annotations_modal(
+                                        &state,
+                                        active_modal.as_ref(),
+                                    ));
                                 }
                                 ModalResult::AnnotationSourceSwitch => {
                                     // Defer the (blocking) switch by one
@@ -1852,8 +1854,8 @@ fn run_app_internal(
                                         // The inline area is shifted up by sub_scroll on screen.
                                         // Add sub_scroll back so adjust_for_overlay_gaps walks the
                                         // pre-scroll content stream.
-                                        let content_y =
-                                            rel_y - state.content_row_offset + state.sub_scroll as usize;
+                                        let content_y = rel_y - state.content_row_offset
+                                            + state.sub_scroll as usize;
                                         // Adjust for inline annotation overlay gaps
                                         let adjusted_y =
                                             match state.adjust_for_overlay_gaps(content_y) {
