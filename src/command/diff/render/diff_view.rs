@@ -1068,8 +1068,7 @@ fn render_annotation_overlays(
         // Selected annotation gets the stronger focus color and bold
         // borders so it stands out from neighbours when several annotations
         // are stacked close together.
-        let is_selected = selected_annotation_id
-            .map_or(false, |id| &annotation.id == id);
+        let is_selected = selected_annotation_id.map_or(false, |id| &annotation.id == id);
         let ann_accent = if is_selected {
             t.ui.border_focused
         } else {
@@ -1096,8 +1095,8 @@ fn render_annotation_overlays(
         // Resolved annotations render as a single compact row so they don't
         // crowd the diff. The full thread remains available in the modal.
         if annotation.resolved {
-            let has_gutter = !suppress_gutter
-                && matches!(annotation.target, AnnotationTarget::LineRange { .. });
+            let has_gutter =
+                !suppress_gutter && matches!(annotation.target, AnnotationTarget::LineRange { .. });
             let overlay_area = Rect::new(content_x, screen_y, content_width, 1);
             frame.render_widget(ratatui::widgets::Clear, overlay_area);
 
@@ -1508,8 +1507,7 @@ pub fn render_diff(
             let new_selection_range =
                 get_selection_range_for_line(line_idx, DiffPanelFocus::New, selection);
             let in_annotation = is_in_ann_range(line_idx, None, &ann_index_ranges);
-            let in_selected_annotation =
-                is_in_selected_ann_range(line_idx, None, selected_range);
+            let in_selected_annotation = is_in_selected_ann_range(line_idx, None, selected_range);
             let new_line_selected =
                 new_selection_range.map_or(false, |(s, e)| s == 0 && e == usize::MAX);
             let hunk_viewed = {
@@ -1684,8 +1682,7 @@ pub fn render_diff(
             let old_selection_range =
                 get_selection_range_for_line(line_idx, DiffPanelFocus::Old, selection);
             let in_annotation = is_in_ann_range(line_idx, None, &ann_index_ranges);
-            let in_selected_annotation =
-                is_in_selected_ann_range(line_idx, None, selected_range);
+            let in_selected_annotation = is_in_selected_ann_range(line_idx, None, selected_range);
             let old_line_selected =
                 old_selection_range.map_or(false, |(s, e)| s == 0 && e == usize::MAX);
             let hunk_viewed = {
@@ -2457,7 +2454,10 @@ mod tests {
 
     #[test]
     fn resolved_annotation_collapses_to_single_row() {
-        let mut ann = annotation("a long comment that would normally wrap", &["another reply"]);
+        let mut ann = annotation(
+            "a long comment that would normally wrap",
+            &["another reply"],
+        );
         ann.resolved = true;
 
         assert_eq!(annotation_overlay_height(&ann, 80), 1);

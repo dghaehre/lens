@@ -278,19 +278,11 @@ pub trait AnnotationStore {
 
     /// Append a reply to an existing annotation thread. Returns the
     /// refreshed annotation including the new comment.
-    fn reply(
-        &mut self,
-        id: &AnnotationId,
-        reply: NewReply,
-    ) -> Result<Annotation, AnnotationError>;
+    fn reply(&mut self, id: &AnnotationId, reply: NewReply) -> Result<Annotation, AnnotationError>;
 
     /// Mark an annotation thread as resolved or re-open it. Equivalent to
     /// GitHub's "Resolve conversation" / "Unresolve" toggle on a PR review.
-    fn set_resolved(
-        &mut self,
-        id: &AnnotationId,
-        resolved: bool,
-    ) -> Result<(), AnnotationError>;
+    fn set_resolved(&mut self, id: &AnnotationId, resolved: bool) -> Result<(), AnnotationError>;
 
     fn delete(&mut self, id: &AnnotationId) -> Result<(), AnnotationError>;
 }

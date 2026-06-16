@@ -66,9 +66,7 @@ impl<'a> PrCommentEditor<'a> {
                 PrCommentEditorResult::Cancel
             }
             // Ctrl+S saves regardless of where the cursor is.
-            KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.try_save()
-            }
+            KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => self.try_save(),
             KeyCode::Enter => {
                 if key
                     .modifiers

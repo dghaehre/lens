@@ -14,8 +14,8 @@ use crate::vcs::github::{GhClient, GhError, PrInfo};
 
 use super::super::types::DiffPanelFocus;
 use super::{
-    is_github_origin, Annotation, AnnotationError, AnnotationId, AnnotationStore,
-    AnnotationTarget, Author, Capabilities, Comment, NewAnnotation, NewReply,
+    is_github_origin, Annotation, AnnotationError, AnnotationId, AnnotationStore, AnnotationTarget,
+    Author, Capabilities, Comment, NewAnnotation, NewReply,
 };
 
 /// `AnnotationStore::id` value. Annotations also carry `origin = "github"`
@@ -105,24 +105,19 @@ impl AnnotationStore for GithubStore {
             .and_then(|v| v.as_i64())
             .map(|n| n.to_string())
             .ok_or_else(|| {
-                AnnotationError::Backend(
-                    "create: response missing comment `id`".to_string(),
-                )
+                AnnotationError::Backend("create: response missing comment `id`".to_string())
             })?;
         self.cache = fetch_threads(&*self.gh, &self.pr).map_err(gh_err)?;
         self.cache
             .iter()
             .find(|a| {
-                a.comments
-                    .first()
-                    .and_then(|c| c.native_id.as_deref())
+                a.comments.first().and_then(|c| c.native_id.as_deref())
                     == Some(new_comment_id.as_str())
             })
             .cloned()
             .ok_or_else(|| {
                 AnnotationError::Backend(
-                    "create: comment posted but not found in refreshed cache"
-                        .to_string(),
+                    "create: comment posted but not found in refreshed cache".to_string(),
                 )
             })
     }
@@ -147,11 +142,7 @@ impl AnnotationStore for GithubStore {
         Ok(())
     }
 
-    fn reply(
-        &mut self,
-        id: &AnnotationId,
-        reply: NewReply,
-    ) -> Result<Annotation, AnnotationError> {
+    fn reply(&mut self, id: &AnnotationId, reply: NewReply) -> Result<Annotation, AnnotationError> {
         if !is_github_origin(&id.origin) {
             return Err(AnnotationError::WrongOrigin);
         }
@@ -174,11 +165,7 @@ impl AnnotationStore for GithubStore {
             .ok_or(AnnotationError::NotFound)
     }
 
-    fn set_resolved(
-        &mut self,
-        id: &AnnotationId,
-        resolved: bool,
-    ) -> Result<(), AnnotationError> {
+    fn set_resolved(&mut self, id: &AnnotationId, resolved: bool) -> Result<(), AnnotationError> {
         if !is_github_origin(&id.origin) {
             return Err(AnnotationError::WrongOrigin);
         }
@@ -553,7 +540,11 @@ fn parse_iso8601_utc(s: &str) -> Option<SystemTime> {
         return None;
     }
     let bytes = s.as_bytes();
-    if bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' || bytes[13] != b':' || bytes[16] != b':'
+    if bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
     {
         return None;
     }
@@ -810,7 +801,11 @@ mod tests {
         let store = GithubStore::new(pr(), Box::new(gh), true).unwrap();
         let all = store.list().unwrap();
         match &all[0].target {
-            AnnotationTarget::LineRange { panel, start_line, end_line } => {
+            AnnotationTarget::LineRange {
+                panel,
+                start_line,
+                end_line,
+            } => {
                 assert!(matches!(panel, DiffPanelFocus::Old));
                 assert_eq!(*start_line, 5);
                 assert_eq!(*end_line, 5);
@@ -823,9 +818,7 @@ mod tests {
     fn list_for_files_filters_by_filename() {
         let gh = FakeGh::with(vec![Ok(two_thread_payload().to_string())]);
         let store = GithubStore::new(pr(), Box::new(gh), true).unwrap();
-        let only_readme = store
-            .list_for_files(&["README.md".to_string()])
-            .unwrap();
+        let only_readme = store.list_for_files(&["README.md".to_string()]).unwrap();
         assert_eq!(only_readme.len(), 1);
         assert_eq!(only_readme[0].filename, "README.md");
     }
@@ -967,7 +960,9 @@ mod tests {
         let gh_for_store: Box<dyn GhClient> = Box::new(ArcGh(gh_arc.clone()));
         let mut store = GithubStore::new(pr(), gh_for_store, true).unwrap();
 
-        let created = store.create(line_range_draft()).expect("create should succeed");
+        let created = store
+            .create(line_range_draft())
+            .expect("create should succeed");
         assert_eq!(created.id.origin, "github");
         assert_eq!(created.id.native, "PRRT_NEW");
         assert_eq!(created.filename, "src/main.rs");
@@ -982,7 +977,10 @@ mod tests {
         assert_eq!(post_args[2], "POST");
         assert_eq!(post_args[3], "repos/o/r/pulls/7/comments");
         let body = serde_json::from_str::<serde_json::Value>(
-            calls[1].stdin.as_ref().expect("POST should pipe body via stdin"),
+            calls[1]
+                .stdin
+                .as_ref()
+                .expect("POST should pipe body via stdin"),
         )
         .unwrap();
         assert_eq!(body["commit_id"], "b"); // pr().head_oid
@@ -1002,15 +1000,13 @@ mod tests {
             Ok(r#"{ "id": 1234, "body": "thoughts" }"#.to_string()),
             Ok(refetch_payload_with_new_comment(1234)),
         ]));
-        let mut store =
-            GithubStore::new(pr(), Box::new(ArcGh(gh_arc.clone())), true).unwrap();
+        let mut store = GithubStore::new(pr(), Box::new(ArcGh(gh_arc.clone())), true).unwrap();
 
         store.create(file_draft()).unwrap();
 
-        let body = serde_json::from_str::<serde_json::Value>(
-            gh_arc.calls()[1].stdin.as_ref().unwrap(),
-        )
-        .unwrap();
+        let body =
+            serde_json::from_str::<serde_json::Value>(gh_arc.calls()[1].stdin.as_ref().unwrap())
+                .unwrap();
         assert_eq!(body["subject_type"], "file");
         // File-target comments don't carry line/side fields.
         assert!(body.get("line").is_none());
@@ -1024,8 +1020,7 @@ mod tests {
             Ok(two_thread_payload().to_string()),
             Ok(r#"{ "id": 1001, "body": "updated" }"#.to_string()),
         ]));
-        let mut store =
-            GithubStore::new(pr(), Box::new(ArcGh(gh_arc.clone())), true).unwrap();
+        let mut store = GithubStore::new(pr(), Box::new(ArcGh(gh_arc.clone())), true).unwrap();
 
         let id = AnnotationId {
             origin: "github".to_string(),
@@ -1075,8 +1070,7 @@ mod tests {
             Ok(r#"{ "id": 1003 }"#.to_string()), // POST reply response
             Ok(refetch_with_reply.to_string()),
         ]));
-        let mut store =
-            GithubStore::new(pr(), Box::new(ArcGh(gh_arc.clone())), true).unwrap();
+        let mut store = GithubStore::new(pr(), Box::new(ArcGh(gh_arc.clone())), true).unwrap();
 
         let id = AnnotationId {
             origin: "github".to_string(),
@@ -1095,10 +1089,7 @@ mod tests {
 
         let calls = gh_arc.calls();
         // POST args target the root comment's replies endpoint.
-        assert_eq!(
-            calls[1].args[3],
-            "repos/o/r/pulls/7/comments/1001/replies"
-        );
+        assert_eq!(calls[1].args[3], "repos/o/r/pulls/7/comments/1001/replies");
         assert_eq!(updated.comments.len(), 3);
         assert_eq!(updated.comments[2].content, "ack");
     }
@@ -1107,11 +1098,12 @@ mod tests {
     fn set_resolved_true_calls_graphql_resolve_mutation() {
         let gh_arc = std::sync::Arc::new(FakeGh::with(vec![
             Ok(two_thread_payload().to_string()),
-            Ok(r#"{ "data": { "resolveReviewThread": { "thread": { "id": "PRRT_1" } } } }"#
-                .to_string()),
+            Ok(
+                r#"{ "data": { "resolveReviewThread": { "thread": { "id": "PRRT_1" } } } }"#
+                    .to_string(),
+            ),
         ]));
-        let mut store =
-            GithubStore::new(pr(), Box::new(ArcGh(gh_arc.clone())), true).unwrap();
+        let mut store = GithubStore::new(pr(), Box::new(ArcGh(gh_arc.clone())), true).unwrap();
         let id = AnnotationId {
             origin: "github".to_string(),
             native: "PRRT_1".to_string(),
@@ -1126,18 +1118,25 @@ mod tests {
         assert!(query_field.contains("PRRT_1"));
 
         let cached = store.list().unwrap();
-        assert!(cached.iter().find(|a| a.id.native == "PRRT_1").unwrap().resolved);
+        assert!(
+            cached
+                .iter()
+                .find(|a| a.id.native == "PRRT_1")
+                .unwrap()
+                .resolved
+        );
     }
 
     #[test]
     fn set_resolved_false_calls_unresolve_mutation() {
         let gh_arc = std::sync::Arc::new(FakeGh::with(vec![
             Ok(two_thread_payload().to_string()),
-            Ok(r#"{ "data": { "unresolveReviewThread": { "thread": { "id": "PRRT_2" } } } }"#
-                .to_string()),
+            Ok(
+                r#"{ "data": { "unresolveReviewThread": { "thread": { "id": "PRRT_2" } } } }"#
+                    .to_string(),
+            ),
         ]));
-        let mut store =
-            GithubStore::new(pr(), Box::new(ArcGh(gh_arc.clone())), true).unwrap();
+        let mut store = GithubStore::new(pr(), Box::new(ArcGh(gh_arc.clone())), true).unwrap();
         let id = AnnotationId {
             origin: "github".to_string(),
             native: "PRRT_2".to_string(),
@@ -1151,11 +1150,12 @@ mod tests {
     fn graphql_errors_surface_as_backend_error() {
         let gh_arc = std::sync::Arc::new(FakeGh::with(vec![
             Ok(two_thread_payload().to_string()),
-            Ok(r#"{ "data": null, "errors": [ { "message": "Thread is outdated" } ] }"#
-                .to_string()),
+            Ok(
+                r#"{ "data": null, "errors": [ { "message": "Thread is outdated" } ] }"#
+                    .to_string(),
+            ),
         ]));
-        let mut store =
-            GithubStore::new(pr(), Box::new(ArcGh(gh_arc.clone())), true).unwrap();
+        let mut store = GithubStore::new(pr(), Box::new(ArcGh(gh_arc.clone())), true).unwrap();
         let id = AnnotationId {
             origin: "github".to_string(),
             native: "PRRT_1".to_string(),
@@ -1172,8 +1172,7 @@ mod tests {
             Ok(two_thread_payload().to_string()),
             Ok(String::new()), // DELETE returns 204 / empty body
         ]));
-        let mut store =
-            GithubStore::new(pr(), Box::new(ArcGh(gh_arc.clone())), true).unwrap();
+        let mut store = GithubStore::new(pr(), Box::new(ArcGh(gh_arc.clone())), true).unwrap();
         let id = AnnotationId {
             origin: "github".to_string(),
             native: "PRRT_1".to_string(),
@@ -1202,5 +1201,4 @@ mod tests {
             self.0.run_with_stdin(args, stdin)
         }
     }
-
 }

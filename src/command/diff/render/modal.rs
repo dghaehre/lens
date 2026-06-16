@@ -597,12 +597,7 @@ impl Modal {
         let body_height = inner.height.saturating_sub(hint_height);
 
         // Body area: reserves 1 col on the right for the scrollbar gutter.
-        let content_area = Rect::new(
-            inner.x,
-            inner.y,
-            inner.width.saturating_sub(1),
-            body_height,
-        );
+        let content_area = Rect::new(inner.x, inner.y, inner.width.saturating_sub(1), body_height);
 
         let para = Paragraph::new(lines).scroll((scroll, 0));
         frame.render_widget(para, content_area);
@@ -642,10 +637,7 @@ impl Modal {
             Span::styled("esc", key_style),
             Span::styled(" close", desc_style),
         ]);
-        frame.render_widget(
-            Paragraph::new(hint).alignment(Alignment::Center),
-            hint_area,
-        );
+        frame.render_widget(Paragraph::new(hint).alignment(Alignment::Center), hint_area);
     }
 
     fn render_pr_description(
@@ -720,18 +712,11 @@ impl Modal {
             Span::styled("esc", key_style),
             Span::styled(" close", desc_style),
         ]);
-        frame.render_widget(
-            Paragraph::new(hint).alignment(Alignment::Center),
-            hint_area,
-        );
+        frame.render_widget(Paragraph::new(hint).alignment(Alignment::Center), hint_area);
 
         if !status_lines.is_empty() {
-            let header_area = Rect::new(
-                padded.x,
-                padded.y,
-                padded.width,
-                status_lines.len() as u16,
-            );
+            let header_area =
+                Rect::new(padded.x, padded.y, padded.width, status_lines.len() as u16);
             frame.render_widget(Paragraph::new(status_lines.to_vec()), header_area);
 
             // Divider row between header and body.
@@ -903,7 +888,11 @@ impl Modal {
                 Style::default().fg(t.ui.highlight).bold(),
             ),
             Span::styled(
-                if items.len() == 1 { " thread " } else { " threads " },
+                if items.len() == 1 {
+                    " thread "
+                } else {
+                    " threads "
+                },
                 Style::default().fg(t.ui.text_muted),
             ),
         ]);
@@ -1416,21 +1405,21 @@ impl Modal {
                                 })
                         }
                         KeyCode::Char('x') if !*source_focused => {
-                            annotations
-                                .get(*selected)
-                                .map(|ann| ModalResult::AnnotationToggleResolved {
+                            annotations.get(*selected).map(|ann| {
+                                ModalResult::AnnotationToggleResolved {
                                     annotation_id: ann.id.clone(),
-                                })
+                                }
+                            })
                         }
                         KeyCode::Char('y') if !*source_focused => {
                             Some(ModalResult::AnnotationCopyAll)
                         }
                         KeyCode::Char('p') if !*source_focused => {
-                            annotations
-                                .get(*selected)
-                                .map(|ann| ModalResult::AnnotationCopyToOther {
+                            annotations.get(*selected).map(|ann| {
+                                ModalResult::AnnotationCopyToOther {
                                     annotation_id: ann.id.clone(),
-                                })
+                                }
+                            })
                         }
                         KeyCode::Char('o') if !*source_focused => {
                             *export_input = Some(String::from("annotations.txt"));
@@ -1488,9 +1477,7 @@ fn fuzzy_match(text: &str, pattern: &str) -> bool {
 /// Clamped between min and max so very narrow or ultra-wide terminals
 /// still produce readable output.
 fn pr_desc_wrap_width(terminal_width: u16) -> usize {
-    let modal_width = (terminal_width as usize)
-        .saturating_mul(PR_DESC_MODAL_PCT as usize)
-        / 100;
+    let modal_width = (terminal_width as usize).saturating_mul(PR_DESC_MODAL_PCT as usize) / 100;
     let modal_width = modal_width.min(terminal_width.saturating_sub(4) as usize);
     // 2 for borders + 2 for inner padding + 1 for scrollbar gutter = 5.
     let body_width = modal_width.saturating_sub(5);
@@ -1551,7 +1538,11 @@ fn render_source_picker_row(
         Span::styled(format!(" {} ", source_label), value_style),
         Span::styled("   ", Style::default()),
         Span::styled(
-            if focused { "↵ switch" } else { "↑↓ navigate · ↵ switch" },
+            if focused {
+                "↵ switch"
+            } else {
+                "↑↓ navigate · ↵ switch"
+            },
             hint_style,
         ),
     ];
@@ -1651,7 +1642,11 @@ fn render_annotation_list(
             // which throws off the padding math. Plain text keeps layout
             // deterministic.
             let time = ann.format_time();
-            let count_word = if comment_count == 1 { "comment" } else { "comments" };
+            let count_word = if comment_count == 1 {
+                "comment"
+            } else {
+                "comments"
+            };
             let count_text = format!("{} {}", comment_count, count_word);
             let right_text = format!("{} · {}", count_text, time);
             let right_w_estimate = right_text.chars().count();
@@ -1671,9 +1666,7 @@ fn render_annotation_list(
                 .max(8);
             let truncated_title = truncate_with_ellipsis(title_raw, title_max);
             let used = PREFIX_W + truncated_title.chars().count() + right_w_estimate;
-            let padding = available
-                .saturating_sub(used)
-                .max(RIGHT_MARGIN);
+            let padding = available.saturating_sub(used).max(RIGHT_MARGIN);
 
             // Line 2 layout: ` ▎   <subtitle> ` — same bar column, indented
             // to align under the title text on line 1 (bar+space+glyph+space
@@ -1835,10 +1828,7 @@ fn expand_tabs_in_spans<'a>(spans: Vec<Span<'a>>, tab_width: usize) -> Vec<Span<
 /// Returns the truncated spans plus a flag indicating whether truncation
 /// happened, so callers can append their own ellipsis. Empty / over-budget
 /// spans are dropped cleanly without producing zero-content spans.
-fn truncate_spans_to_width<'a>(
-    spans: Vec<Span<'a>>,
-    max_cols: usize,
-) -> (Vec<Span<'a>>, bool) {
+fn truncate_spans_to_width<'a>(spans: Vec<Span<'a>>, max_cols: usize) -> (Vec<Span<'a>>, bool) {
     let mut out: Vec<Span<'a>> = Vec::with_capacity(spans.len());
     let mut used = 0usize;
     let mut truncated = false;
@@ -1916,7 +1906,11 @@ fn render_annotation_preview(
     if reply_count > 0 {
         header_spans.push(Span::styled("  ", Style::default()));
         header_spans.push(Span::styled(
-            format!(" ↳ {} {} ", reply_count, if reply_count == 1 { "reply" } else { "replies" }),
+            format!(
+                " ↳ {} {} ",
+                reply_count,
+                if reply_count == 1 { "reply" } else { "replies" }
+            ),
             Style::default()
                 .fg(t.ui.selection_fg)
                 .bg(t.ui.highlight)
@@ -1958,20 +1952,10 @@ fn render_annotation_preview(
         } else {
             let head = SNIPPET_MAX_ROWS / 2;
             let tail = SNIPPET_MAX_ROWS - head - 1;
-            let mut out: Vec<Option<(usize, String)>> = snippet
-                .iter()
-                .take(head)
-                .cloned()
-                .map(Some)
-                .collect();
+            let mut out: Vec<Option<(usize, String)>> =
+                snippet.iter().take(head).cloned().map(Some).collect();
             out.push(None); // ellipsis row
-            out.extend(
-                snippet
-                    .iter()
-                    .skip(snippet.len() - tail)
-                    .cloned()
-                    .map(Some),
-            );
+            out.extend(snippet.iter().skip(snippet.len() - tail).cloned().map(Some));
             out
         };
         // Width budget for the code column. The preview pane is rendered
@@ -2015,10 +1999,7 @@ fn render_annotation_preview(
             // width stays exactly at `content_w`.
             let highlighted = highlight_line_spans(cleaned, &ann.filename, None);
             let highlighted = expand_tabs_in_spans(highlighted, TAB_WIDTH);
-            let total_cols: usize = highlighted
-                .iter()
-                .map(|s| s.content.chars().count())
-                .sum();
+            let total_cols: usize = highlighted.iter().map(|s| s.content.chars().count()).sum();
             let did_truncate = total_cols > content_w;
             let budget = if did_truncate {
                 content_w.saturating_sub(1)
@@ -2038,10 +2019,7 @@ fn render_annotation_preview(
             ];
             spans.extend(code_spans);
             if did_truncate {
-                spans.push(Span::styled(
-                    "…",
-                    Style::default().fg(t.ui.text_muted),
-                ));
+                spans.push(Span::styled("…", Style::default().fg(t.ui.text_muted)));
             }
             lines.push(Line::from(spans));
         }
@@ -2069,7 +2047,10 @@ fn render_annotation_preview(
             )
         } else {
             (
-                vec![Span::styled("● ", Style::default().fg(t.ui.highlight).bold())],
+                vec![Span::styled(
+                    "● ",
+                    Style::default().fg(t.ui.highlight).bold(),
+                )],
                 vec![Span::styled("  ", Style::default())],
                 (area.width.saturating_sub(4) as usize).max(10),
             )

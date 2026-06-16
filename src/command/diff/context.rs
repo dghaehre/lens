@@ -306,7 +306,11 @@ fn collect_context_nodes(source: &str, filename: &str, tab_width: usize) -> Vec<
     nodes
 }
 
-fn filter_to_lines(nodes: &[ContextNode], scroll_position: usize, max_lines: usize) -> Vec<ContextLine> {
+fn filter_to_lines(
+    nodes: &[ContextNode],
+    scroll_position: usize,
+    max_lines: usize,
+) -> Vec<ContextLine> {
     nodes
         .iter()
         .filter(|n| n.start_line < scroll_position && n.end_line >= scroll_position)
