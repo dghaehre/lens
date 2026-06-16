@@ -884,12 +884,15 @@ fn make_indicator_span(
 
 /// One row of the inner (between borders) area of an annotation overlay.
 ///
-/// Built from the annotation's comments: the root's content lines, then for
-/// each reply a `Separator` row labelling the author/time followed by the
-/// reply's content lines.
+/// Mirrors the per-comment layout of the annotations modal preview: each
+/// comment gets a header row (`● author  time` for the root, `↳ author  time`
+/// for replies) followed by its wrapped body lines, with a blank spacer
+/// between comments.
 enum OverlayRow {
-    Text(String),
-    Separator(String),
+    RootHeader { author: String, time: String },
+    ReplyHeader { author: String, time: String },
+    Body(String),
+    Spacer,
 }
 
 fn annotation_text_width(content_width: u16) -> usize {
@@ -971,22 +974,104 @@ fn fit_to_char_width(text: &str, width: usize) -> String {
     fitted
 }
 
-/// Build the inner rows of an annotation overlay: root content + one separator
-/// per reply followed by the reply content.
+/// Build the inner rows of an annotation overlay.
+///
+/// Layout per comment (matching the annotations modal preview):
+/// - a header row with author + time (`●` for root, `↳` for replies)
+/// - the wrapped body lines, indented two columns under the header
+/// - a blank spacer row separating one comment from the next
 fn annotation_inner_rows(annotation: &Annotation, text_width: usize) -> Vec<OverlayRow> {
+    // Body lines sit two columns to the right of the bullet, so they wrap
+    // to the narrower budget rather than the full text width.
+    let body_width = text_width.saturating_sub(2).max(1);
     let mut rows: Vec<OverlayRow> = Vec::new();
-    for line in wrap_annotation_text(&annotation.root().content, text_width) {
-        rows.push(OverlayRow::Text(line));
+
+    let root = annotation.root();
+    rows.push(OverlayRow::RootHeader {
+        author: root.author.login.clone(),
+        time: format_clock(root.created_at),
+    });
+    for line in wrap_annotation_text(&root.content, body_width) {
+        rows.push(OverlayRow::Body(line));
     }
+
     for reply in annotation.comments.iter().skip(1) {
-        let time_str = format_clock(reply.created_at);
-        let label = format!("@{} · {}", reply.author.login, time_str);
-        rows.push(OverlayRow::Separator(label));
-        for line in wrap_annotation_text(&reply.content, text_width) {
-            rows.push(OverlayRow::Text(line));
+        rows.push(OverlayRow::Spacer);
+        rows.push(OverlayRow::ReplyHeader {
+            author: reply.author.login.clone(),
+            time: format_clock(reply.created_at),
+        });
+        for line in wrap_annotation_text(&reply.content, body_width) {
+            rows.push(OverlayRow::Body(line));
         }
     }
     rows
+}
+
+/// Build a per-comment header line for the overlay interior:
+/// `<bullet><author>  <time>`, left-aligned and padded with trailing spaces
+/// to `width` so the box's right border lines up. Mirrors the layout used
+/// by the annotations modal preview.
+fn build_comment_header_spans(
+    bullet: &str,
+    bullet_style: Style,
+    author: &str,
+    time: &str,
+    author_style: Style,
+    time_style: Style,
+    width: usize,
+) -> Vec<Span<'static>> {
+    let bullet_len = bullet.chars().count();
+    let time_len = time.chars().count();
+    let gap_len = 2;
+    let author_len = author.chars().count();
+
+    // Happy path: everything fits — pad the unused tail with spaces so the
+    // line fills `width` and the right border lines up.
+    if bullet_len + author_len + gap_len + time_len <= width {
+        let used = bullet_len + author_len + gap_len + time_len;
+        let mut spans = vec![
+            Span::styled(bullet.to_string(), bullet_style),
+            Span::styled(author.to_string(), author_style),
+            Span::raw("  ".to_string()),
+            Span::styled(time.to_string(), time_style),
+        ];
+        if used < width {
+            spans.push(Span::raw(" ".repeat(width - used)));
+        }
+        return spans;
+    }
+
+    // Tight: there's not room for `bullet + author + "  " + time`. Shrink the
+    // author first (it's the longest, lowest-signal part). If even bullet +
+    // gap + time doesn't fit, drop the time and truncate the author.
+    if width <= bullet_len + gap_len + time_len {
+        let author_budget = width.saturating_sub(bullet_len);
+        let author_fit: String = author.chars().take(author_budget).collect();
+        let used = bullet_len + author_fit.chars().count();
+        let mut spans = vec![
+            Span::styled(bullet.to_string(), bullet_style),
+            Span::styled(author_fit, author_style),
+        ];
+        if used < width {
+            spans.push(Span::raw(" ".repeat(width - used)));
+        }
+        return spans;
+    }
+
+    let author_budget = width - bullet_len - gap_len - time_len;
+    let author_fit: String = author.chars().take(author_budget).collect();
+    let used = bullet_len + author_fit.chars().count() + gap_len + time_len;
+    let mut spans = vec![
+        Span::styled(bullet.to_string(), bullet_style),
+        Span::styled(author_fit, author_style),
+        Span::raw("  ".to_string()),
+        Span::styled(time.to_string(), time_style),
+    ];
+    if used < width {
+        spans.push(Span::raw(" ".repeat(width - used)));
+    }
+    spans
 }
 
 /// Total rendered height of a single annotation overlay (inner rows + borders).
@@ -1149,8 +1234,11 @@ fn render_annotation_overlays(
 
         // Build annotation lines
         let mut ann_lines: Vec<Line> = Vec::new();
-        let note_style = Style::default().fg(t.ui.text_secondary);
-        let separator_style = Style::default().fg(t.ui.text_muted);
+        let body_style = Style::default().fg(t.ui.text_primary);
+        let muted_style = Style::default().fg(t.ui.text_muted);
+        let author_style = Style::default().fg(t.ui.text_primary).bold();
+        let bullet_style = Style::default().fg(ann_accent).bold();
+        let reply_marker_style = Style::default().fg(t.ui.text_muted);
         let border_style_ann = Style::default().fg(ann_accent).add_modifier(extra_modifier);
         let indicator_style = Style::default().fg(ann_accent).add_modifier(extra_modifier);
         let border_width = content_width.saturating_sub(3) as usize;
@@ -1174,24 +1262,38 @@ fn render_annotation_overlays(
             )]));
         }
 
-        // Add inner rows (root content, separators, replies)
+        // Add inner rows (per-comment headers + wrapped bodies).
         for row in inner_rows.iter().take(available_height.saturating_sub(2)) {
-            let (text_span, is_separator) = match row {
-                OverlayRow::Text(line) => (
-                    Span::styled(fit_to_char_width(line, content_width_inner), note_style),
-                    false,
+            let content_spans: Vec<Span<'static>> = match row {
+                OverlayRow::RootHeader { author, time } => build_comment_header_spans(
+                    "● ",
+                    bullet_style,
+                    author,
+                    time,
+                    author_style,
+                    muted_style,
+                    content_width_inner,
                 ),
-                OverlayRow::Separator(label) => {
-                    // Render as: "── label ─────────"
-                    let label_with_pad = format!("── {} ", label);
-                    let label_chars = label_with_pad.chars().count();
-                    let separator = if label_chars >= content_width_inner {
-                        fit_to_char_width(&label_with_pad, content_width_inner)
-                    } else {
-                        let trailing = content_width_inner - label_chars;
-                        format!("{}{}", label_with_pad, "─".repeat(trailing))
-                    };
-                    (Span::styled(separator, separator_style), true)
+                OverlayRow::ReplyHeader { author, time } => build_comment_header_spans(
+                    "↳ ",
+                    reply_marker_style,
+                    author,
+                    time,
+                    author_style,
+                    muted_style,
+                    content_width_inner,
+                ),
+                OverlayRow::Body(line) => {
+                    // Indent body two columns so it tucks under the header
+                    // bullet, just like the modal preview.
+                    let indent = "  ";
+                    let indent_len = indent.chars().count();
+                    let inner_budget = content_width_inner.saturating_sub(indent_len);
+                    let fitted = fit_to_char_width(line, inner_budget);
+                    vec![Span::raw(indent.to_string()), Span::styled(fitted, body_style)]
+                }
+                OverlayRow::Spacer => {
+                    vec![Span::raw(" ".repeat(content_width_inner))]
                 }
             };
 
@@ -1200,40 +1302,28 @@ fn render_annotation_overlays(
             } else {
                 Span::styled(" ", Style::default())
             };
-            // Use a thinner left/right bar for separators so they read as
-            // dividers inside the thread rather than another comment line.
-            let (left_bar, right_bar) = if is_separator {
-                ("├─", "┤")
-            } else {
-                ("│ ", "│")
-            };
-            ann_lines.push(Line::from(vec![
+            let mut line_spans = vec![
                 left_indicator,
-                Span::styled(left_bar, border_style_ann),
-                text_span,
-                Span::styled(right_bar, border_style_ann),
-            ]));
+                Span::styled("│ ", border_style_ann),
+            ];
+            line_spans.extend(content_spans);
+            line_spans.push(Span::styled("│", border_style_ann));
+            ann_lines.push(Line::from(line_spans));
         }
 
-        // Add bottom border with time if there's room
+        // Add a plain bottom border. Per-comment headers carry the time now,
+        // so the trailing timestamp that used to live here is redundant.
         if ann_lines.len() < available_height {
-            let time_str = annotation.format_time();
-            let time_with_padding = format!(" {} ", time_str);
-            let time_len = time_with_padding.len();
-            let dashes_before = border_width.saturating_sub(time_len + 1);
             if has_gutter {
                 ann_lines.push(Line::from(vec![
                     Span::styled("▍", indicator_style),
-                    Span::styled(format!("└{}", "─".repeat(dashes_before)), border_style_ann),
-                    Span::styled(time_with_padding, Style::default().fg(t.ui.text_muted)),
-                    Span::styled("─┘", border_style_ann),
+                    Span::styled(format!("└{}┘", "─".repeat(border_width)), border_style_ann),
                 ]));
             } else {
-                ann_lines.push(Line::from(vec![
-                    Span::styled(format!(" └{}", "─".repeat(dashes_before)), border_style_ann),
-                    Span::styled(time_with_padding, Style::default().fg(t.ui.text_muted)),
-                    Span::styled("─┘", border_style_ann),
-                ]));
+                ann_lines.push(Line::from(vec![Span::styled(
+                    format!(" └{}┘", "─".repeat(border_width)),
+                    border_style_ann,
+                )]));
             }
         }
 
@@ -2448,8 +2538,13 @@ mod tests {
     fn annotation_overlay_height_uses_wrapped_comment_rows() {
         let annotation = annotation("root", &["reply wraps"]);
 
-        assert_eq!(annotation_overlay_height(&annotation, 80), 5);
-        assert_eq!(annotation_overlay_height(&annotation, 12), 6);
+        // width 80 → inner rows: RootHeader + "root" body + Spacer
+        // + ReplyHeader + "reply wraps" body = 5; +2 borders = 7.
+        assert_eq!(annotation_overlay_height(&annotation, 80), 7);
+        // width 12 → text_width = 8, body_width = 6 → "reply wraps" wraps
+        // to two lines. Inner: RootHeader + root body + Spacer
+        // + ReplyHeader + 2 reply body lines = 6; +2 borders = 8.
+        assert_eq!(annotation_overlay_height(&annotation, 12), 8);
     }
 
     #[test]
