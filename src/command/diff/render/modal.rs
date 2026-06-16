@@ -111,6 +111,19 @@ pub enum ModalContent {
         /// `ModalResult::AnnotationSourceSwitch`; arrow keys move focus
         /// back into the list.
         source_focused: bool,
+        /// When true, the modal hides the list and shows only the
+        /// currently-selected thread, scrollable. Entered with `l`,
+        /// exited with `h`.
+        focused_preview: bool,
+        /// Scroll position within the focused-preview view.
+        preview_scroll: u16,
+        /// Total line count of the focused-preview content, computed at
+        /// render time so scroll math can clamp without rebuilding.
+        preview_content_height: u16,
+        /// Visible body height of the focused-preview view, computed at
+        /// render time. Used together with `preview_content_height` to
+        /// clamp scroll bounds in input/mouse handlers.
+        preview_visible_height: u16,
     },
 }
 
@@ -268,6 +281,10 @@ impl Modal {
                 info_message: None,
                 source_label: source_label.into(),
                 source_focused: false,
+                focused_preview: false,
+                preview_scroll: 0,
+                preview_content_height: 0,
+                preview_visible_height: 0,
             },
         }
     }
@@ -296,7 +313,7 @@ impl Modal {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame) {
+    pub fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
 
         let (modal_width, modal_height) = match &self.content {
@@ -394,16 +411,16 @@ impl Modal {
 
         frame.render_widget(Clear, modal_area);
 
-        match &self.content {
+        match &mut self.content {
             ModalContent::Info { title, message } => {
-                self.render_info(frame, modal_area, title, message);
+                Self::render_info(frame, modal_area, title, message);
             }
             ModalContent::Select {
                 title,
                 items,
                 selected,
             } => {
-                self.render_select(frame, modal_area, title, items, *selected);
+                Self::render_select(frame, modal_area, title, items, *selected);
             }
             ModalContent::KeyBindings {
                 title,
@@ -411,7 +428,7 @@ impl Modal {
                 scroll,
                 content_height,
             } => {
-                self.render_keybindings(
+                Self::render_keybindings(
                     frame,
                     modal_area,
                     title,
@@ -427,7 +444,7 @@ impl Modal {
                 scroll,
                 content_height,
             } => {
-                self.render_pr_description(
+                Self::render_pr_description(
                     frame,
                     modal_area,
                     title,
@@ -444,7 +461,7 @@ impl Modal {
                 query,
                 selected,
             } => {
-                self.render_file_picker(
+                Self::render_file_picker(
                     frame,
                     modal_area,
                     title,
@@ -465,8 +482,12 @@ impl Modal {
                 info_message,
                 source_label,
                 source_focused,
+                focused_preview,
+                preview_scroll,
+                preview_content_height,
+                preview_visible_height,
             } => {
-                self.render_annotations(
+                Self::render_annotations(
                     frame,
                     modal_area,
                     title,
@@ -479,12 +500,16 @@ impl Modal {
                     info_message.as_deref(),
                     source_label,
                     *source_focused,
+                    *focused_preview,
+                    preview_scroll,
+                    preview_content_height,
+                    preview_visible_height,
                 );
             }
         }
     }
 
-    fn render_info(&self, frame: &mut Frame, area: Rect, title: &str, message: &str) {
+    fn render_info(frame: &mut Frame, area: Rect, title: &str, message: &str) {
         let t = theme::get();
         let block = Block::default()
             .title(format!(" {} ", title))
@@ -506,7 +531,6 @@ impl Modal {
     }
 
     fn render_select(
-        &self,
         frame: &mut Frame,
         area: Rect,
         title: &str,
@@ -542,7 +566,6 @@ impl Modal {
     }
 
     fn render_keybindings(
-        &self,
         frame: &mut Frame,
         area: Rect,
         title: &str,
@@ -641,7 +664,6 @@ impl Modal {
     }
 
     fn render_pr_description(
-        &self,
         frame: &mut Frame,
         area: Rect,
         title: &str,
@@ -770,7 +792,6 @@ impl Modal {
 
     #[allow(clippy::too_many_arguments)]
     fn render_file_picker(
-        &self,
         frame: &mut Frame,
         area: Rect,
         title: &str,
@@ -863,7 +884,6 @@ impl Modal {
 
     #[allow(clippy::too_many_arguments)]
     fn render_annotations(
-        &self,
         frame: &mut Frame,
         area: Rect,
         title: &str,
@@ -876,8 +896,28 @@ impl Modal {
         info_message: Option<&str>,
         source_label: &str,
         source_focused: bool,
+        focused_preview: bool,
+        preview_scroll: &mut u16,
+        preview_content_height: &mut u16,
+        preview_visible_height: &mut u16,
     ) {
         let t = theme::get();
+
+        if focused_preview {
+            render_annotations_focused(
+                frame,
+                area,
+                title,
+                annotations,
+                snippets,
+                selected,
+                preview_scroll,
+                preview_content_height,
+                preview_visible_height,
+                t,
+            );
+            return;
+        }
 
         let title_line = Line::from(vec![
             Span::styled(" ", Style::default()),
@@ -1096,6 +1136,17 @@ impl Modal {
                     calculate_pr_description_visible_height(terminal_height, *content_height);
                 (scroll, *content_height, visible)
             }
+            ModalContent::Annotations {
+                focused_preview,
+                preview_scroll,
+                preview_content_height,
+                preview_visible_height,
+                ..
+            } if *focused_preview => (
+                preview_scroll,
+                *preview_content_height,
+                (*preview_visible_height).max(1),
+            ),
             _ => return false,
         };
 
@@ -1305,8 +1356,60 @@ impl Modal {
                 export_input,
                 error_message,
                 source_focused,
+                focused_preview,
+                preview_scroll,
+                preview_content_height,
+                preview_visible_height,
                 ..
             } => {
+                // Focused-preview mode: list is hidden, only the thread is
+                // shown, scrollable. Most action keys are disabled — `h`
+                // returns to the list view, scroll keys move within the
+                // thread, and esc/q close the modal.
+                if *focused_preview {
+                    let content_height = *preview_content_height;
+                    let visible_height = (*preview_visible_height).max(1);
+                    let max_scroll = content_height.saturating_sub(visible_height);
+                    return match key.code {
+                        KeyCode::Esc | KeyCode::Char('q') => Some(ModalResult::Dismissed),
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            Some(ModalResult::Dismissed)
+                        }
+                        KeyCode::Char('h') | KeyCode::Left => {
+                            *focused_preview = false;
+                            *preview_scroll = 0;
+                            None
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            *preview_scroll = (preview_scroll.saturating_add(1)).min(max_scroll);
+                            None
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            *preview_scroll = preview_scroll.saturating_sub(1);
+                            None
+                        }
+                        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            *preview_scroll = preview_scroll
+                                .saturating_add(visible_height / 2)
+                                .min(max_scroll);
+                            None
+                        }
+                        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            *preview_scroll = preview_scroll.saturating_sub(visible_height / 2);
+                            None
+                        }
+                        KeyCode::Char('g') => {
+                            *preview_scroll = 0;
+                            None
+                        }
+                        KeyCode::Char('G') => {
+                            *preview_scroll = max_scroll;
+                            None
+                        }
+                        _ => None,
+                    };
+                }
+
                 // Export input mode
                 if let Some(ref mut input) = export_input {
                     match key.code {
@@ -1423,6 +1526,18 @@ impl Modal {
                         }
                         KeyCode::Char('o') if !*source_focused => {
                             *export_input = Some(String::from("annotations.txt"));
+                            None
+                        }
+                        // `l` / Right enters the focused (full-modal,
+                        // scrollable) preview of the currently selected
+                        // thread. Disabled when the source-picker row is
+                        // focused or the list is empty — otherwise nothing
+                        // would be shown.
+                        KeyCode::Char('l') | KeyCode::Right
+                            if !*source_focused && !annotations.is_empty() =>
+                        {
+                            *focused_preview = true;
+                            *preview_scroll = 0;
                             None
                         }
                         _ => None,
@@ -1863,8 +1978,6 @@ fn render_annotation_preview(
     snippet: &[(usize, String)],
     t: &theme::Theme,
 ) {
-    use crate::command::diff::state::AnnotationTarget;
-
     let Some(ann) = annotation else {
         // Center "no annotations" vertically as well — feels less stark
         // than pinning it to the top of an empty pane.
@@ -1879,7 +1992,32 @@ fn render_annotation_preview(
         return;
     };
 
-    let mut lines: Vec<Line> = Vec::new();
+    let lines = build_annotation_preview_lines(ann, snippet, area.width, t);
+
+    // Clamp to the area height so we don't overflow.
+    let visible: Vec<Line> = lines.into_iter().take(area.height as usize).collect();
+    let para = Paragraph::new(visible);
+    let inset = Rect::new(
+        area.x + 1,
+        area.y,
+        area.width.saturating_sub(1),
+        area.height,
+    );
+    frame.render_widget(para, inset);
+}
+
+/// Build the line list used by both the right-pane preview and the
+/// focused (full-modal) preview. Lifetime is `'static` because every span
+/// owns its content via clone/format/string conversion.
+fn build_annotation_preview_lines(
+    ann: &Annotation,
+    snippet: &[(usize, String)],
+    area_width: u16,
+    t: &theme::Theme,
+) -> Vec<Line<'static>> {
+    use crate::command::diff::state::AnnotationTarget;
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
 
     // Header row: accent bar + location + badges.
     let location = match &ann.target {
@@ -1919,7 +2057,7 @@ fn render_annotation_preview(
     }
     lines.push(Line::from(header_spans));
     // Thin separator under the header.
-    let sep_width = (area.width.saturating_sub(2) as usize).max(4);
+    let sep_width = (area_width.saturating_sub(2) as usize).max(4);
     let separator = || -> Line<'static> {
         Line::from(Span::styled(
             "─".repeat(sep_width),
@@ -1963,7 +2101,7 @@ fn render_annotation_preview(
         // `area.width - 1` columns to play with; subtract the row prefix to
         // get how many visual columns the code itself can occupy.
         let prefix_w = 1 + 1 + gutter_w + 3; // marker + sp + gutter + ' │ '
-        let inset_width = (area.width as usize).saturating_sub(1);
+        let inset_width = (area_width as usize).saturating_sub(1);
         let content_w = inset_width.saturating_sub(prefix_w).max(8);
         const TAB_WIDTH: usize = 4;
 
@@ -2043,7 +2181,7 @@ fn render_annotation_preview(
                     Span::styled("│ ", Style::default().fg(t.ui.border_unfocused)),
                     Span::styled("  ", Style::default()),
                 ],
-                (area.width.saturating_sub(8) as usize).max(10),
+                (area_width.saturating_sub(8) as usize).max(10),
             )
         } else {
             (
@@ -2052,7 +2190,7 @@ fn render_annotation_preview(
                     Style::default().fg(t.ui.highlight).bold(),
                 )],
                 vec![Span::styled("  ", Style::default())],
-                (area.width.saturating_sub(4) as usize).max(10),
+                (area_width.saturating_sub(4) as usize).max(10),
             )
         };
 
@@ -2091,16 +2229,128 @@ fn render_annotation_preview(
         }
     }
 
-    // Clamp to the area height so we don't overflow.
-    let visible: Vec<Line> = lines.into_iter().take(area.height as usize).collect();
-    let para = Paragraph::new(visible);
-    let inset = Rect::new(
-        area.x + 1,
-        area.y,
-        area.width.saturating_sub(1),
-        area.height,
-    );
-    frame.render_widget(para, inset);
+    lines
+}
+
+/// Render the focused (full-modal) preview of a single annotation thread.
+/// Layout mirrors the right-pane preview but takes the full inner area and
+/// supports scrolling. `preview_scroll` is clamped against the freshly
+/// computed visible/content heights so resizes never leave the view stuck
+/// past the last line.
+#[allow(clippy::too_many_arguments)]
+fn render_annotations_focused(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    annotations: &[Annotation],
+    snippets: &[Vec<(usize, String)>],
+    selected: usize,
+    preview_scroll: &mut u16,
+    preview_content_height: &mut u16,
+    preview_visible_height: &mut u16,
+    t: &theme::Theme,
+) {
+    let annotation = annotations.get(selected);
+    let title_line = Line::from(vec![
+        Span::styled(" ", Style::default()),
+        Span::styled(title, Style::default().fg(t.ui.text_primary).bold()),
+        Span::styled("  ", Style::default()),
+        Span::styled(
+            format!("{}/{}", selected + 1, annotations.len().max(1)),
+            Style::default().fg(t.ui.highlight).bold(),
+        ),
+        Span::styled(" thread ", Style::default().fg(t.ui.text_muted)),
+    ]);
+
+    let block = Block::default()
+        .title(title_line)
+        .borders(Borders::ALL)
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(Style::default().fg(t.ui.border_focused));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    use ratatui::layout::{Constraint, Direction, Layout};
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+    let body_area = chunks[0];
+    let footer_area = chunks[1];
+
+    if let Some(ann) = annotation {
+        let snippet = snippets.get(selected).map(|s| s.as_slice()).unwrap_or(&[]);
+        // Reserve a 1-col gutter on the right for the scrollbar and a 1-col
+        // inset on the left so text doesn't kiss the border.
+        let content_width = body_area.width.saturating_sub(2);
+        let lines = build_annotation_preview_lines(ann, snippet, content_width, t);
+
+        let content_height = lines.len() as u16;
+        let visible_height = body_area.height;
+        let max_scroll = content_height.saturating_sub(visible_height);
+        if *preview_scroll > max_scroll {
+            *preview_scroll = max_scroll;
+        }
+
+        let inset = Rect::new(
+            body_area.x + 1,
+            body_area.y,
+            body_area.width.saturating_sub(2),
+            body_area.height,
+        );
+        let para = Paragraph::new(lines).scroll((*preview_scroll, 0));
+        frame.render_widget(para, inset);
+
+        if content_height > visible_height {
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_symbol(Some("│"))
+                .thumb_symbol("█");
+
+            let mut scrollbar_state =
+                ScrollbarState::new((content_height.saturating_sub(visible_height)) as usize)
+                    .position(*preview_scroll as usize);
+
+            frame.render_stateful_widget(scrollbar, body_area, &mut scrollbar_state);
+        }
+
+        *preview_content_height = content_height;
+        *preview_visible_height = visible_height;
+    } else {
+        let mid_y = body_area.y + body_area.height / 2;
+        let row = Rect::new(body_area.x, mid_y, body_area.width, 1);
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "— no annotations —",
+            Style::default().fg(t.ui.text_muted).italic(),
+        )))
+        .alignment(ratatui::prelude::Alignment::Center);
+        frame.render_widget(empty, row);
+        *preview_content_height = 0;
+        *preview_visible_height = body_area.height;
+    }
+
+    // Footer with key hints for the focused view.
+    let key_style = Style::default().fg(t.ui.highlight).bold();
+    let desc_style = Style::default().fg(t.ui.text_muted);
+    let sep_style = Style::default().fg(t.ui.border_unfocused);
+    let footer_spans = vec![
+        Span::styled("h", key_style),
+        Span::styled(" back  ", desc_style),
+        Span::styled("·  ", sep_style),
+        Span::styled("j/k", key_style),
+        Span::styled(" scroll  ", desc_style),
+        Span::styled("·  ", sep_style),
+        Span::styled("g/G", key_style),
+        Span::styled(" top/bottom  ", desc_style),
+        Span::styled("·  ", sep_style),
+        Span::styled("esc", key_style),
+        Span::styled(" close", desc_style),
+    ];
+    let footer =
+        Paragraph::new(Line::from(footer_spans)).alignment(ratatui::prelude::Alignment::Center);
+    frame.render_widget(footer, footer_area);
 }
 
 fn format_comment_time(t: std::time::SystemTime) -> String {

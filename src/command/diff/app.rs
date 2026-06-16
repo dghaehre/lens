@@ -763,14 +763,22 @@ fn build_annotation_list(
 /// have shifted out from under an open modal — external DB writes, source
 /// switches, reply/edit/resolve actions.
 fn rebuild_annotations_modal(state: &AppState, current: Option<&Modal>) -> Modal {
-    let (prev_selected, prev_source_focused) = match current.map(|m| &m.content) {
-        Some(ModalContent::Annotations {
-            selected,
-            source_focused,
-            ..
-        }) => (*selected, *source_focused),
-        _ => (0, false),
-    };
+    let (prev_selected, prev_source_focused, prev_focused_preview, prev_preview_scroll) =
+        match current.map(|m| &m.content) {
+            Some(ModalContent::Annotations {
+                selected,
+                source_focused,
+                focused_preview,
+                preview_scroll,
+                ..
+            }) => (
+                *selected,
+                *source_focused,
+                *focused_preview,
+                *preview_scroll,
+            ),
+            _ => (0, false, false, 0),
+        };
     let (items, annotations, snippets) = build_annotation_list(state);
     let mut modal = Modal::annotations(
         "Annotations",
@@ -782,12 +790,16 @@ fn rebuild_annotations_modal(state: &AppState, current: Option<&Modal>) -> Modal
     if let ModalContent::Annotations {
         selected,
         source_focused,
+        focused_preview,
+        preview_scroll,
         items,
         ..
     } = &mut modal.content
     {
         *selected = prev_selected.min(items.len().saturating_sub(1));
         *source_focused = prev_source_focused;
+        *focused_preview = prev_focused_preview && !items.is_empty();
+        *preview_scroll = prev_preview_scroll;
     }
     modal
 }
@@ -963,7 +975,7 @@ fn run_app_internal(
         if state.file_diffs.is_empty() {
             terminal.draw(|frame| {
                 render_empty_state(frame, options.watch, &state.ref_input);
-                if let Some(ref modal) = active_modal {
+                if let Some(ref mut modal) = active_modal {
                     modal.render(frame);
                 }
             })?;
@@ -1144,7 +1156,7 @@ fn run_app_internal(
                 if let Some(ref editor) = pr_comment_editor {
                     editor.render(frame);
                 }
-                if let Some(ref modal) = active_modal {
+                if let Some(ref mut modal) = active_modal {
                     modal.render(frame);
                 }
             })?;
