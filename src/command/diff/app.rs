@@ -1635,33 +1635,13 @@ fn run_app_internal(
                                     if let Some(resolved) = new_state {
                                         state.set_annotation_resolved(&annotation_id, resolved);
                                     }
-                                    // Rebuild the modal contents but keep the
-                                    // selection on the same row — the list count
-                                    // hasn't changed, only the row's badge.
-                                    let prev_selected = match &active_modal {
-                                        Some(m) => match &m.content {
-                                            ModalContent::Annotations { selected, .. } => *selected,
-                                            _ => 0,
-                                        },
-                                        None => 0,
-                                    };
-                                    let (items, annotations, snippets) =
-                                        build_annotation_list(&state);
-                                    let mut modal = Modal::annotations(
-                                        "Annotations",
-                                        items,
-                                        annotations,
-                                        snippets,
-                                        source_label(&state),
-                                    );
-                                    if let ModalContent::Annotations {
-                                        selected, items, ..
-                                    } = &mut modal.content
-                                    {
-                                        *selected =
-                                            prev_selected.min(items.len().saturating_sub(1));
-                                    }
-                                    active_modal = Some(modal);
+                                    // Rebuild preserves the row, focused-preview
+                                    // mode, and scroll position — only the row's
+                                    // resolved badge changes.
+                                    active_modal = Some(rebuild_annotations_modal(
+                                        &state,
+                                        active_modal.as_ref(),
+                                    ));
                                 }
                                 ModalResult::AnnotationSourceSwitch => {
                                     // Defer the (blocking) switch by one

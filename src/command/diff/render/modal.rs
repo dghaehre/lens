@@ -1433,6 +1433,23 @@ impl Modal {
                             }
                             None
                         }
+                        // Toggle resolved state on the currently displayed
+                        // annotation. App rebuilds the modal so the
+                        // resolved badge updates in place.
+                        KeyCode::Char('x') => annotations.get(*selected).map(|ann| {
+                            ModalResult::AnnotationToggleResolved {
+                                annotation_id: ann.id.clone(),
+                            }
+                        }),
+                        // Jump to the annotation in the diff — same primary
+                        // action as `enter` in the list view.
+                        KeyCode::Enter => {
+                            annotations
+                                .get(*selected)
+                                .map(|ann| ModalResult::AnnotationJump {
+                                    annotation_id: ann.id.clone(),
+                                })
+                        }
                         KeyCode::Down | KeyCode::Char('j') => {
                             *preview_scroll = (preview_scroll.saturating_add(1)).min(max_scroll);
                             None
@@ -2444,8 +2461,11 @@ fn render_annotations_focused(
             Span::styled("r", key_style),
             Span::styled(" reply  ", desc_style),
             Span::styled("·  ", sep_style),
-            Span::styled("g/G", key_style),
-            Span::styled(" top/bottom  ", desc_style),
+            Span::styled("↵", key_style),
+            Span::styled(" jump  ", desc_style),
+            Span::styled("·  ", sep_style),
+            Span::styled("x", key_style),
+            Span::styled(" resolve  ", desc_style),
             Span::styled("·  ", sep_style),
             Span::styled("esc", key_style),
             Span::styled(" close", desc_style),
