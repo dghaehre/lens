@@ -17,10 +17,10 @@ use ratatui::prelude::*;
 
 use super::annotation::{AnnotationEditor, AnnotationEditorResult};
 use super::annotation_store::{AnnotationStore, InMemoryStore, SqliteStore};
-use super::pr_comment_editor::{PrCommentEditor, PrCommentEditorResult, PrCommentIntent};
 use super::coordinates::{extract_selected_text, PanelLayout};
 use super::highlight;
 use super::loader::{get_current_branch, load_file_diffs, load_single_commit_diffs};
+use super::pr_comment_editor::{PrCommentEditor, PrCommentEditorResult, PrCommentIntent};
 use super::render::{
     render_diff, render_empty_state, truncate_path, FilePickerItem, KeyBind, KeyBindSection, Modal,
     ModalContent, ModalFileStatus, ModalResult,
@@ -299,11 +299,7 @@ fn jump_to_annotation(
 ) {
     let filename = ann.filename.clone();
     let target = ann.target.clone();
-    let Some(file_index) = state
-        .file_diffs
-        .iter()
-        .position(|f| f.filename == filename)
-    else {
+    let Some(file_index) = state.file_diffs.iter().position(|f| f.filename == filename) else {
         return;
     };
     if state.current_file != file_index {
@@ -316,8 +312,7 @@ fn jump_to_annotation(
         state.ensure_cache();
         let sbs = state.side_by_side_ref();
         if let Some(sbs_idx) = find_sbs_index_for_line(sbs, *panel, *start_line) {
-            state.scroll =
-                adjust_scroll_to_line(sbs_idx, state.scroll, visible_height, max_scroll);
+            state.scroll = adjust_scroll_to_line(sbs_idx, state.scroll, visible_height, max_scroll);
             state.sub_scroll = 0;
         }
     }
@@ -338,8 +333,7 @@ fn allowed_in_annotation_select_mode(key: &KeyEvent) -> bool {
             | KeyCode::Char('R')
             | KeyCode::Char('X')
             | KeyCode::Char('q')
-    ) || (matches!(key.code, KeyCode::Char('c'))
-        && key.modifiers.contains(KeyModifiers::CONTROL))
+    ) || (matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL))
 }
 
 /// Annotations sorted by `(file_index, start_line)`. Orphaned (file
@@ -361,7 +355,9 @@ fn sorted_annotations(state: &AppState) -> Vec<((usize, usize), &super::state::A
 fn key_distance(a: (usize, usize), b: (usize, usize)) -> u64 {
     let file_diff = if a.0 >= b.0 { a.0 - b.0 } else { b.0 - a.0 } as u64;
     let line_diff = if a.1 >= b.1 { a.1 - b.1 } else { b.1 - a.1 } as u64;
-    file_diff.saturating_mul(1_000_000).saturating_add(line_diff)
+    file_diff
+        .saturating_mul(1_000_000)
+        .saturating_add(line_diff)
 }
 
 /// Annotation whose sort key is closest to `from`. Used to pick the
@@ -494,10 +490,7 @@ fn build_pr_status_header(
     if !state_label.is_empty() {
         first.push(Span::styled(
             format!(" {} ", state_label),
-            Style::default()
-                .fg(t.ui.selection_fg)
-                .bg(state_fg)
-                .bold(),
+            Style::default().fg(t.ui.selection_fg).bg(state_fg).bold(),
         ));
     }
 
@@ -575,11 +568,11 @@ fn build_pr_status_header(
         let mut spans: Vec<Span<'static>> = vec![Span::styled("checks: ", muted)];
         let mut first_seg = true;
         let push_seg = |spans: &mut Vec<Span<'static>>,
-                            count: usize,
-                            symbol: &str,
-                            label: &str,
-                            color: Color,
-                            first_seg: &mut bool| {
+                        count: usize,
+                        symbol: &str,
+                        label: &str,
+                        color: Color,
+                        first_seg: &mut bool| {
             if count == 0 {
                 return;
             }
@@ -719,9 +712,7 @@ fn build_annotation_list(
         state
             .sidebar_items
             .iter()
-            .position(|item| {
-                matches!(item, SidebarItem::File { path, .. } if path == filename)
-            })
+            .position(|item| matches!(item, SidebarItem::File { path, .. } if path == filename))
             .unwrap_or(usize::MAX)
     };
     let anchor_line = |ann: &super::state::Annotation| -> usize {
@@ -745,13 +736,8 @@ fn build_annotation_list(
         .iter()
         .map(|a| format_annotation_preview(a, false))
         .collect();
-    items.extend(
-        orphaned
-            .iter()
-            .map(|a| format_annotation_preview(a, true)),
-    );
-    let mut annotations: Vec<super::state::Annotation> =
-        active.into_iter().cloned().collect();
+    items.extend(orphaned.iter().map(|a| format_annotation_preview(a, true)));
+    let mut annotations: Vec<super::state::Annotation> = active.into_iter().cloned().collect();
     annotations.extend(orphaned.into_iter().cloned());
 
     // Snippets are parallel to `annotations`. Orphaned annotations whose
@@ -875,9 +861,7 @@ enum AppEvent {
 /// must be stopped (flag set, then joined) before handing the tty off to a
 /// child process such as `$EDITOR`; otherwise both readers race for stdin
 /// and the child appears to lose keystrokes / hang.
-fn spawn_input_thread(
-    tx: std::sync::mpsc::Sender<AppEvent>,
-) -> (Arc<AtomicBool>, JoinHandle<()>) {
+fn spawn_input_thread(tx: std::sync::mpsc::Sender<AppEvent>) -> (Arc<AtomicBool>, JoinHandle<()>) {
     let running = Arc::new(AtomicBool::new(true));
     let running_clone = running.clone();
     let handle = std::thread::spawn(move || {
@@ -1250,14 +1234,12 @@ fn run_app_internal(
                             if let Ok(pr) = state.refresh_pr_info() {
                                 let title = format!("{} · {}", pr.slug(), pr.title);
                                 let body_md = build_pr_body_markdown(pr);
-                                let inline_threads =
-                                    crate::vcs::github::count_review_threads(
-                                        &crate::vcs::github::RealGhClient,
-                                        pr,
-                                    )
-                                    .ok();
-                                let status_lines =
-                                    build_pr_status_header(pr, inline_threads);
+                                let inline_threads = crate::vcs::github::count_review_threads(
+                                    &crate::vcs::github::RealGhClient,
+                                    pr,
+                                )
+                                .ok();
+                                let status_lines = build_pr_status_header(pr, inline_threads);
                                 let term_width = terminal.size()?.width;
                                 active_modal = Some(Modal::pr_description(
                                     title,
@@ -1370,9 +1352,7 @@ fn run_app_internal(
             };
 
             match current_event {
-                Event::Key(key)
-                    if key.kind == KeyEventKind::Press && state.ref_input.active =>
-                {
+                Event::Key(key) if key.kind == KeyEventKind::Press && state.ref_input.active => {
                     match key.code {
                         KeyCode::Esc => {
                             state.ref_input.cancel();
@@ -1558,9 +1538,8 @@ fn run_app_internal(
                                     active_modal = None;
                                 }
                                 ModalResult::AnnotationJump { annotation_id } => {
-                                    if let Some(ann) = state
-                                        .get_annotation_by_id(&annotation_id)
-                                        .cloned()
+                                    if let Some(ann) =
+                                        state.get_annotation_by_id(&annotation_id).cloned()
                                     {
                                         jump_to_annotation(
                                             &mut state,
@@ -1617,7 +1596,8 @@ fn run_app_internal(
                                 }
                                 ModalResult::AnnotationDelete { annotation_id } => {
                                     state.remove_annotation(&annotation_id);
-                                    let (items, annotations, snippets) = build_annotation_list(&state);
+                                    let (items, annotations, snippets) =
+                                        build_annotation_list(&state);
                                     active_modal = Some(Modal::annotations(
                                         "Annotations",
                                         items,
@@ -1631,24 +1611,20 @@ fn run_app_internal(
                                         .get_annotation_by_id(&annotation_id)
                                         .map(|a| !a.resolved);
                                     if let Some(resolved) = new_state {
-                                        state.set_annotation_resolved(
-                                            &annotation_id,
-                                            resolved,
-                                        );
+                                        state.set_annotation_resolved(&annotation_id, resolved);
                                     }
                                     // Rebuild the modal contents but keep the
                                     // selection on the same row — the list count
                                     // hasn't changed, only the row's badge.
                                     let prev_selected = match &active_modal {
                                         Some(m) => match &m.content {
-                                            ModalContent::Annotations { selected, .. } => {
-                                                *selected
-                                            }
+                                            ModalContent::Annotations { selected, .. } => *selected,
                                             _ => 0,
                                         },
                                         None => 0,
                                     };
-                                    let (items, annotations, snippets) = build_annotation_list(&state);
+                                    let (items, annotations, snippets) =
+                                        build_annotation_list(&state);
                                     let mut modal = Modal::annotations(
                                         "Annotations",
                                         items,
@@ -1660,7 +1636,8 @@ fn run_app_internal(
                                         selected, items, ..
                                     } = &mut modal.content
                                     {
-                                        *selected = prev_selected.min(items.len().saturating_sub(1));
+                                        *selected =
+                                            prev_selected.min(items.len().saturating_sub(1));
                                     }
                                     active_modal = Some(modal);
                                 }
@@ -1733,10 +1710,8 @@ fn run_app_internal(
                                         .as_ref()
                                         .map(|p| p.slug())
                                         .unwrap_or_else(|| "?".to_string());
-                                    pr_comment_editor = Some(PrCommentEditor::new(
-                                        PrCommentIntent::Comment,
-                                        slug,
-                                    ));
+                                    pr_comment_editor =
+                                        Some(PrCommentEditor::new(PrCommentIntent::Comment, slug));
                                     active_modal = None;
                                 }
                                 ModalResult::PrApprove => {
@@ -1745,10 +1720,8 @@ fn run_app_internal(
                                         .as_ref()
                                         .map(|p| p.slug())
                                         .unwrap_or_else(|| "?".to_string());
-                                    pr_comment_editor = Some(PrCommentEditor::new(
-                                        PrCommentIntent::Approve,
-                                        slug,
-                                    ));
+                                    pr_comment_editor =
+                                        Some(PrCommentEditor::new(PrCommentIntent::Approve, slug));
                                     active_modal = None;
                                 }
                                 ModalResult::Dismissed | ModalResult::Selected(_, _) => {
@@ -2098,8 +2071,7 @@ fn run_app_internal(
                         state.pending_key = PendingKey::None;
                     }
                     state.show_selection_tooltip = false;
-                    if state.annotation_select.is_some()
-                        && !allowed_in_annotation_select_mode(&key)
+                    if state.annotation_select.is_some() && !allowed_in_annotation_select_mode(&key)
                     {
                         // Stay in annotation-select mode; swallow the key.
                         continue;
@@ -2277,9 +2249,7 @@ fn run_app_internal(
                             state.diff_fullscreen = DiffFullscreen::None;
                             state.mark_search_dirty();
                         }
-                        KeyCode::Down | KeyCode::Char('j')
-                            if state.annotation_select.is_some() =>
-                        {
+                        KeyCode::Down | KeyCode::Char('j') if state.annotation_select.is_some() => {
                             if let Some(from) = state
                                 .annotation_select
                                 .as_ref()
@@ -2297,9 +2267,7 @@ fn run_app_internal(
                                 }
                             }
                         }
-                        KeyCode::Up | KeyCode::Char('k')
-                            if state.annotation_select.is_some() =>
-                        {
+                        KeyCode::Up | KeyCode::Char('k') if state.annotation_select.is_some() => {
                             if let Some(from) = state
                                 .annotation_select
                                 .as_ref()
@@ -2820,8 +2788,7 @@ fn run_app_internal(
                             // runs. The drainer below the draw block does
                             // the refresh + thread count and opens the
                             // modal.
-                            state.loading_message =
-                                Some("fetching PR from github…".to_string());
+                            state.loading_message = Some("fetching PR from github…".to_string());
                             state.pending_gh_action = Some(PendingGhAction::ShowPrDescription);
                         }
                         KeyCode::Char('R') if state.annotation_select.is_some() => {
@@ -2831,11 +2798,9 @@ fn run_app_internal(
                                 .and_then(|id| state.get_annotation_by_id(id))
                                 .cloned()
                             {
-                                let editor = AnnotationEditor::new(
-                                    ann.filename.clone(),
-                                    ann.target.clone(),
-                                )
-                                .with_reply(ann.id.clone());
+                                let editor =
+                                    AnnotationEditor::new(ann.filename.clone(), ann.target.clone())
+                                        .with_reply(ann.id.clone());
                                 annotation_editor = Some(editor);
                             }
                         }

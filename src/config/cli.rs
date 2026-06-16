@@ -246,15 +246,9 @@ mod tests {
 
     #[test]
     fn test_annotation_resolve_unresolve_flag() {
-        let cli = Cli::try_parse_from([
-            "lens",
-            "annotation",
-            "resolve",
-            "--id",
-            "7",
-            "--unresolve",
-        ])
-        .unwrap();
+        let cli =
+            Cli::try_parse_from(["lens", "annotation", "resolve", "--id", "7", "--unresolve"])
+                .unwrap();
         match cli.command {
             Some(Command::Annotation(AnnotationCommand::Resolve(args))) => {
                 assert_eq!(args.id, 7);
@@ -266,15 +260,8 @@ mod tests {
 
     #[test]
     fn test_annotation_reply_parses() {
-        let cli = Cli::try_parse_from([
-            "lens",
-            "annotation",
-            "reply",
-            "--id",
-            "42",
-            "ack",
-        ])
-        .unwrap();
+        let cli =
+            Cli::try_parse_from(["lens", "annotation", "reply", "--id", "42", "ack"]).unwrap();
         match cli.command {
             Some(Command::Annotation(AnnotationCommand::Reply(args))) => {
                 assert_eq!(args.id, 42);

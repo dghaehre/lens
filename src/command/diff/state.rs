@@ -66,7 +66,10 @@ pub enum PendingGhAction {
     /// Submit a PR-level comment or approving review, then refresh the
     /// PR-description modal so the user sees the new entry. Triggered when
     /// the PR-comment editor saves.
-    SubmitPrComment { intent: PrCommentIntent, body: String },
+    SubmitPrComment {
+        intent: PrCommentIntent,
+        body: String,
+    },
 }
 
 /// Input state for the "change diff reference" prompt. When `active`, the
@@ -462,10 +465,7 @@ impl AppState {
         self.ensure_pr_info_with(Box::new(RealGhClient))
     }
 
-    pub fn ensure_pr_info_with(
-        &mut self,
-        gh: Box<dyn GhClient>,
-    ) -> Result<&PrInfo, String> {
+    pub fn ensure_pr_info_with(&mut self, gh: Box<dyn GhClient>) -> Result<&PrInfo, String> {
         if self.pr_info.is_none() {
             match resolve_pr_for_current_branch(&*gh) {
                 Ok(pr) => self.pr_info = Some(pr),
@@ -514,10 +514,7 @@ impl AppState {
                         }
                     }
                 }
-                let pr = self
-                    .pr_info
-                    .clone()
-                    .expect("pr_info populated above");
+                let pr = self.pr_info.clone().expect("pr_info populated above");
                 // Writable only if the local checkout matches the PR head;
                 // otherwise we'd be posting comments anchored to lines
                 // that don't exist on the remote (GitHub rejects with 422).
@@ -529,20 +526,15 @@ impl AppState {
                     Ok(gh_store) => {
                         // Park the local store so we can restore it on
                         // switch-back without re-opening sqlite.
-                        let prev = std::mem::replace(
-                            &mut self.store,
-                            Box::new(InMemoryStore::new()),
-                        );
+                        let prev =
+                            std::mem::replace(&mut self.store, Box::new(InMemoryStore::new()));
                         self.inactive_local_store = Some(prev);
                         self.store = Box::new(gh_store);
                         self.annotation_source = AnnotationSource::Github;
                         self.annotation_source_status = if writable {
                             None
                         } else {
-                            Some(
-                                "checkout drift: local HEAD != PR head — read-only"
-                                    .to_string(),
-                            )
+                            Some("checkout drift: local HEAD != PR head — read-only".to_string())
                         };
                         self.load_annotations_for_current_files();
                         Ok(())
@@ -555,9 +547,10 @@ impl AppState {
                 }
             }
             AnnotationSource::Local => {
-                let restored = self.inactive_local_store.take().ok_or_else(|| {
-                    "internal: no local store to restore".to_string()
-                })?;
+                let restored = self
+                    .inactive_local_store
+                    .take()
+                    .ok_or_else(|| "internal: no local store to restore".to_string())?;
                 // Drop the github store; it's stateless and rebuilds cheaply.
                 self.store = restored;
                 self.annotation_source = AnnotationSource::Local;
@@ -611,8 +604,8 @@ impl AppState {
                     None => false,
                 };
                 if !writable {
-                    let msg = "checkout drift: local HEAD != PR head — cannot push to github"
-                        .to_string();
+                    let msg =
+                        "checkout drift: local HEAD != PR head — cannot push to github".to_string();
                     self.annotation_source_status = Some(msg.clone());
                     return Err(msg);
                 }
@@ -637,9 +630,10 @@ impl AppState {
                 Ok(())
             }
             AnnotationSource::Github => {
-                let local_store = self.inactive_local_store.as_mut().ok_or_else(|| {
-                    "internal: no local store available".to_string()
-                })?;
+                let local_store = self
+                    .inactive_local_store
+                    .as_mut()
+                    .ok_or_else(|| "internal: no local store available".to_string())?;
                 let draft = NewAnnotation {
                     filename: ann.filename.clone(),
                     target: ann.target.clone(),
@@ -662,11 +656,7 @@ impl AppState {
     /// present in the current diff. Errors from the store are swallowed —
     /// the cache simply stays empty if the store can't be read.
     fn load_annotations_for_current_files(&mut self) {
-        let filenames: Vec<String> = self
-            .file_diffs
-            .iter()
-            .map(|f| f.filename.clone())
-            .collect();
+        let filenames: Vec<String> = self.file_diffs.iter().map(|f| f.filename.clone()).collect();
         match self.store.list_for_files(&filenames) {
             Ok(list) => self.annotations = list,
             Err(_) => self.annotations.clear(),
@@ -1345,11 +1335,7 @@ impl AppState {
     /// in the diff. Line-range annotations are orphaned if the file is gone
     /// or if the saved line range falls outside the relevant panel's content.
     pub fn is_annotation_orphaned(&self, ann: &Annotation) -> bool {
-        let Some(file_diff) = self
-            .file_diffs
-            .iter()
-            .find(|f| f.filename == ann.filename)
-        else {
+        let Some(file_diff) = self.file_diffs.iter().find(|f| f.filename == ann.filename) else {
             return true;
         };
         match &ann.target {

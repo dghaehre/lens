@@ -114,27 +114,20 @@ pub fn render_footer(frame: &mut Frame, footer_area: Rect, data: FooterData) {
             ),
             Span::styled("_", Style::default().fg(t.ui.text_muted).bg(bg)),
         ];
-        let hint =
-            " (empty = unstaged, --cached = staged, <ref> = ref..worktree, esc = cancel) ";
+        let hint = " (empty = unstaged, --cached = staged, <ref> = ref..worktree, esc = cancel) ";
         let error_text = data.ref_input.error.as_deref();
         let used = prefix.len() + data.ref_input.query.len() + 1;
         if let Some(err) = error_text {
             let err_label = format!("  error: {} ", err);
             let remaining = footer_width.saturating_sub(used + err_label.len());
-            spans.push(Span::styled(
-                " ".repeat(remaining),
-                Style::default().bg(bg),
-            ));
+            spans.push(Span::styled(" ".repeat(remaining), Style::default().bg(bg)));
             spans.push(Span::styled(
                 err_label,
                 Style::default().fg(t.ui.stats_removed).bg(bg),
             ));
         } else {
             let remaining = footer_width.saturating_sub(used + hint.len());
-            spans.push(Span::styled(
-                " ".repeat(remaining),
-                Style::default().bg(bg),
-            ));
+            spans.push(Span::styled(" ".repeat(remaining), Style::default().bg(bg)));
             spans.push(Span::styled(
                 hint,
                 Style::default().fg(t.ui.text_muted).bg(bg),
