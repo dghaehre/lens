@@ -318,6 +318,7 @@ fn jump_to_annotation(
         if let Some(sbs_idx) = find_sbs_index_for_line(sbs, *panel, *start_line) {
             state.scroll =
                 adjust_scroll_to_line(sbs_idx, state.scroll, visible_height, max_scroll);
+            state.sub_scroll = 0;
         }
     }
 }
@@ -1016,8 +1017,10 @@ fn run_app_internal(
             let row_offset = std::cell::Cell::new(0usize);
             let gaps_cell = std::cell::RefCell::new(Vec::new());
             let total_ann_height = std::cell::Cell::new(0usize);
+            let overlay_heights_cell =
+                std::cell::RefCell::new(std::collections::HashMap::<usize, usize>::new());
             terminal.draw(|frame| {
-                let (offset, gaps, total_ann) = render_diff(
+                let (offset, gaps, total_ann, heights) = render_diff(
                     frame,
                     diff,
                     &state.file_diffs,
@@ -1026,6 +1029,7 @@ fn run_app_internal(
                     &state.collapsed_dirs,
                     state.current_file,
                     state.scroll,
+                    state.sub_scroll,
                     state.h_scroll,
                     options.watch,
                     state.show_sidebar,
@@ -1069,6 +1073,7 @@ fn run_app_internal(
                 );
                 row_offset.set(offset);
                 total_ann_height.set(total_ann);
+                *overlay_heights_cell.borrow_mut() = heights;
 
                 // Selection action tooltip (shown after drag completes)
                 if state.show_selection_tooltip
@@ -1107,9 +1112,11 @@ fn run_app_internal(
                             }
                         }
 
-                        // Position below the selection end
-                        let screen_y =
-                            header_h + 1 + offset as u16 + content_y as u16 + cum_gaps + 1;
+                        // Position below the selection end, accounting for sub_scroll
+                        // shifting the inline area upward.
+                        let screen_y = (header_h + 1 + offset as u16 + content_y as u16
+                            + cum_gaps + 1)
+                            .saturating_sub(state.sub_scroll);
 
                         let (panel_x, panel_w) = match sel.panel {
                             DiffPanelFocus::Old => (layout.old_panel_x, layout.old_panel_width),
@@ -1167,6 +1174,7 @@ fn run_app_internal(
             state.content_row_offset = row_offset.get();
             state.annotation_overlay_gaps = gaps_cell.into_inner();
             state.total_annotation_height = total_ann_height.get();
+            state.overlay_heights = overlay_heights_cell.into_inner();
         }
 
         // Drain a queued blocking `gh` call now — i.e. AFTER the draw above
@@ -1433,6 +1441,7 @@ fn run_app_internal(
                                     .jump_to_first_match(state.scroll as usize)
                                 {
                                     state.scroll = line.saturating_sub(5) as u16;
+                                    state.sub_scroll = 0;
                                 }
                             }
                         }
@@ -1867,7 +1876,11 @@ fn run_app_internal(
                                         if rel_y < state.content_row_offset {
                                             continue;
                                         }
-                                        let content_y = rel_y - state.content_row_offset;
+                                        // The inline area is shifted up by sub_scroll on screen.
+                                        // Add sub_scroll back so adjust_for_overlay_gaps walks the
+                                        // pre-scroll content stream.
+                                        let content_y =
+                                            rel_y - state.content_row_offset + state.sub_scroll as usize;
                                         // Adjust for inline annotation overlay gaps
                                         let adjusted_y =
                                             match state.adjust_for_overlay_gaps(content_y) {
@@ -1922,9 +1935,11 @@ fn run_app_internal(
                                         );
 
                                         let rel_y = (mouse.row - content_start_y) as usize;
-                                        // Account for context lines and file annotations
-                                        let content_y =
-                                            rel_y.saturating_sub(state.content_row_offset);
+                                        // Account for context lines and file annotations,
+                                        // and the sub_scroll offset of the inline area.
+                                        let content_y = rel_y
+                                            .saturating_sub(state.content_row_offset)
+                                            + state.sub_scroll as usize;
                                         // Adjust for inline annotation overlay gaps (clamped for drag)
                                         let adjusted_y =
                                             state.adjust_for_overlay_gaps_clamped(content_y);
@@ -2005,12 +2020,16 @@ fn run_app_internal(
                                         .saturating_sub((-scroll_delta) as usize);
                                 }
                             } else if in_diff {
+                                // Step row-by-row so the mouse wheel walks through inline
+                                // annotation overlays instead of skipping over them.
                                 if scroll_delta > 0 {
-                                    state.scroll =
-                                        (state.scroll + scroll_delta as u16).min(max_scroll as u16);
+                                    for _ in 0..scroll_delta {
+                                        state.scroll_down_one_row(max_scroll as u16);
+                                    }
                                 } else {
-                                    state.scroll =
-                                        state.scroll.saturating_sub((-scroll_delta) as u16);
+                                    for _ in 0..(-scroll_delta) {
+                                        state.scroll_up_one_row();
+                                    }
                                 }
                             }
                         }
@@ -2136,6 +2155,10 @@ fn run_app_internal(
                         }
                         KeyCode::Char('A') => {
                             state.show_annotations = !state.show_annotations;
+                            // Hiding/showing overlays changes the per-line overlay
+                            // heights, so sub_scroll into the now-stale overlay
+                            // is meaningless. Reset to keep rendering consistent.
+                            state.sub_scroll = 0;
                             if !state.show_annotations {
                                 state.annotation_select = None;
                             }
@@ -2196,10 +2219,12 @@ fn run_app_internal(
                         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             let half_screen = (visible_height / 2) as u16;
                             state.scroll = (state.scroll + half_screen).min(max_scroll as u16);
+                            state.sub_scroll = 0;
                         }
                         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             let half_screen = (visible_height / 2) as u16;
                             state.scroll = state.scroll.saturating_sub(half_screen);
+                            state.sub_scroll = 0;
                         }
                         KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             if !state.file_diffs.is_empty() {
@@ -2303,6 +2328,7 @@ fn run_app_internal(
                                     visible_height,
                                     max_scroll,
                                 );
+                                state.sub_scroll = 0;
                             }
                         }
                         KeyCode::Up | KeyCode::Char('k')
@@ -2316,6 +2342,7 @@ fn run_app_internal(
                                     visible_height,
                                     max_scroll,
                                 );
+                                state.sub_scroll = 0;
                             }
                         }
                         KeyCode::Down
@@ -2329,6 +2356,7 @@ fn run_app_internal(
                                     visible_height,
                                     max_scroll,
                                 );
+                                state.sub_scroll = 0;
                             }
                         }
                         KeyCode::Up
@@ -2342,6 +2370,7 @@ fn run_app_internal(
                                     visible_height,
                                     max_scroll,
                                 );
+                                state.sub_scroll = 0;
                             }
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
@@ -2353,7 +2382,7 @@ fn run_app_internal(
                                     terminal.size()?.height.saturating_sub(5) as usize;
                                 ensure_sidebar_visible(&mut state, visible_height);
                             } else {
-                                state.scroll = (state.scroll + 1).min(max_scroll as u16);
+                                state.scroll_down_one_row(max_scroll as u16);
                             }
                         }
                         KeyCode::Up | KeyCode::Char('k') => {
@@ -2364,7 +2393,7 @@ fn run_app_internal(
                                 }
                                 ensure_sidebar_visible(&mut state, usize::MAX);
                             } else {
-                                state.scroll = state.scroll.saturating_sub(1);
+                                state.scroll_up_one_row();
                             }
                         }
                         KeyCode::Char('h') | KeyCode::Left => {
@@ -2529,9 +2558,11 @@ fn run_app_internal(
                         }
                         KeyCode::PageDown => {
                             state.scroll = (state.scroll + 20).min(max_scroll as u16);
+                            state.sub_scroll = 0;
                         }
                         KeyCode::PageUp => {
                             state.scroll = state.scroll.saturating_sub(20);
+                            state.sub_scroll = 0;
                         }
                         KeyCode::Char(']') => {
                             if !state.file_diffs.is_empty() {
@@ -2554,6 +2585,7 @@ fn run_app_internal(
                                         visible_height,
                                         max_scroll,
                                     );
+                                    state.sub_scroll = 0;
                                 }
                             }
                         }
@@ -2578,6 +2610,7 @@ fn run_app_internal(
                                         visible_height,
                                         max_scroll,
                                     );
+                                    state.sub_scroll = 0;
                                 }
                             }
                         }
@@ -2609,6 +2642,7 @@ fn run_app_internal(
                                             visible_height,
                                             max_scroll,
                                         );
+                                        state.sub_scroll = 0;
                                     }
                                 }
                             }
@@ -2640,6 +2674,7 @@ fn run_app_internal(
                                                 visible_height,
                                                 max_scroll,
                                             );
+                                            state.sub_scroll = 0;
                                         }
                                     }
                                 }
@@ -2903,6 +2938,7 @@ fn run_app_internal(
                         KeyCode::Char('g') => {
                             if state.pending_key == PendingKey::G {
                                 state.scroll = 0;
+                                state.sub_scroll = 0;
                                 state.pending_key = PendingKey::None;
                             } else {
                                 state.pending_key = PendingKey::G;
@@ -2910,6 +2946,7 @@ fn run_app_internal(
                         }
                         KeyCode::Char('G') => {
                             state.scroll = max_scroll as u16;
+                            state.sub_scroll = 0;
                         }
                         KeyCode::Char('/') | KeyCode::Char('f')
                             if key.code == KeyCode::Char('/')
@@ -2926,6 +2963,7 @@ fn run_app_internal(
                                     visible_height,
                                     max_scroll,
                                 );
+                                state.sub_scroll = 0;
                             }
                         }
                         KeyCode::Char('N') if state.search_state.has_query() => {
@@ -2936,6 +2974,7 @@ fn run_app_internal(
                                     visible_height,
                                     max_scroll,
                                 );
+                                state.sub_scroll = 0;
                             }
                         }
                         KeyCode::Char('?') => {

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use ratatui::{
     prelude::*,
@@ -1008,6 +1008,37 @@ fn format_clock(t: std::time::SystemTime) -> String {
     format!("{:02}:{:02}", hours, minutes)
 }
 
+/// Per-line overlay heights for line-range annotations, keyed by side_by_side
+/// index (the anchor row where the overlay is drawn — the index whose line
+/// matches the annotation's `end_line` on the configured panel). Used by
+/// scroll handlers to drive sub-row snap scrolling regardless of whether the
+/// overlay is currently in the viewport.
+fn compute_overlay_heights(
+    line_annotations: &[&Annotation],
+    side_by_side: &[DiffLine],
+    old_area: Option<Rect>,
+    new_area: Option<Rect>,
+    main_area: Rect,
+) -> HashMap<usize, usize> {
+    let mut heights: HashMap<usize, usize> = HashMap::new();
+    for ann in line_annotations {
+        if let AnnotationTarget::LineRange {
+            panel, end_line, ..
+        } = &ann.target
+        {
+            let width = overlay_content_width(ann, old_area, new_area, main_area);
+            let h = annotation_overlay_height(ann, width);
+            for (idx, dl) in side_by_side.iter().enumerate() {
+                if dl.line_number(*panel) == Some(*end_line) {
+                    *heights.entry(idx).or_insert(0) += h;
+                    break;
+                }
+            }
+        }
+    }
+    heights
+}
+
 /// Total rendered height of file-level annotation overlays.
 fn file_annotation_height(annotations: &[&Annotation], content_width: u16) -> usize {
     annotations
@@ -1052,9 +1083,17 @@ fn overlay_content_width(
 /// This function renders annotation boxes that can span single or multiple panels.
 /// The `content_x`, `content_start_y`, `content_width`, and `max_area` parameters
 /// allow flexible positioning for both single-panel and side-by-side views.
+// Each `overlays` entry is `(line_pos, annotation, shift)`:
+// - `line_pos` is the paragraph-relative row where the overlay's first row sits at shift=0.
+// - `shift` is the number of rows to scroll this overlay up. The overlay's top is clipped
+//   off `min_y` when `shift > 0`; only the tail starting from row `shift` is drawn. File-level
+//   overlays in the pinned prefix get `shift = 0`; inline (line-range) overlays get `shift = sub_scroll`.
+// `min_y` is the lowest screen Y the overlay is allowed to draw at — for prefix overlays
+// it's the top of the inner content area; for inline overlays it's the top of the inline area
+// (so an overlay scrolled up by sub_scroll gets clipped against the inline boundary, not the box).
 fn render_annotation_overlays(
     frame: &mut Frame,
-    overlays: &[(usize, &Annotation)],
+    overlays: &[(usize, &Annotation, u16)],
     content_x: u16,
     content_start_y: u16,
     content_width: u16,
@@ -1063,8 +1102,10 @@ fn render_annotation_overlays(
     t: &crate::command::diff::theme::Theme,
     suppress_gutter: bool,
     selected_annotation_id: Option<&AnnotationId>,
+    min_y: u16,
 ) {
-    for (line_pos, annotation) in overlays {
+    for (line_pos, annotation, shift) in overlays {
+        let shift = *shift as i32;
         // Selected annotation gets the stronger focus color and bold
         // borders so it stands out from neighbours when several annotations
         // are stacked close together.
@@ -1080,8 +1121,27 @@ fn render_annotation_overlays(
         } else {
             Modifier::empty()
         };
-        let screen_y = content_start_y + *line_pos as u16;
         let content_width_inner = annotation_text_width(content_width);
+        let inner_rows = if annotation.resolved {
+            Vec::new()
+        } else {
+            annotation_inner_rows(annotation, content_width_inner)
+        };
+        let total_height: i32 = if annotation.resolved {
+            1
+        } else {
+            inner_rows.len() as i32 + 2
+        };
+        // Shift the overlay up by `shift` rows. If the result puts the overlay's
+        // top above `min_y`, top-clip: render only the tail starting from row
+        // `top_skip` of the overlay's internal lines.
+        let signed_screen_y = content_start_y as i32 + *line_pos as i32 - shift;
+        // Entirely above viewport?
+        if signed_screen_y + total_height <= min_y as i32 {
+            continue;
+        }
+        let top_skip = (min_y as i32 - signed_screen_y).max(0) as usize;
+        let screen_y = (signed_screen_y.max(min_y as i32)) as u16;
 
         // Check if annotation is visible
         if screen_y >= max_area.y + max_area.height {
@@ -1096,6 +1156,10 @@ fn render_annotation_overlays(
         // Resolved annotations render as a single compact row so they don't
         // crowd the diff. The full thread remains available in the modal.
         if annotation.resolved {
+            // top_skip == 0 always here (total_height = 1), but guard anyway.
+            if top_skip > 0 {
+                continue;
+            }
             let has_gutter = !suppress_gutter
                 && matches!(annotation.target, AnnotationTarget::LineRange { .. });
             let overlay_area = Rect::new(content_x, screen_y, content_width, 1);
@@ -1139,10 +1203,14 @@ fn render_annotation_overlays(
             continue;
         }
 
-        let inner_rows = annotation_inner_rows(annotation, content_width_inner);
         let num_lines = inner_rows.len() + 2; // +2 for top and bottom borders
+        // top_skip rows have already been scrolled off the top of the overlay.
+        let visible_after_skip = num_lines.saturating_sub(top_skip);
 
-        let overlay_height = num_lines.min(available_height) as u16;
+        let overlay_height = visible_after_skip.min(available_height) as u16;
+        if overlay_height == 0 {
+            continue;
+        }
         let overlay_area = Rect::new(content_x, screen_y, content_width, overlay_height);
 
         // Clear the area first
@@ -1175,8 +1243,10 @@ fn render_annotation_overlays(
             )]));
         }
 
-        // Add inner rows (root content, separators, replies)
-        for row in inner_rows.iter().take(available_height.saturating_sub(2)) {
+        // Add inner rows (root content, separators, replies). Build them all;
+        // top_skip / available_height clipping happens below so the bottom
+        // border still renders when the top is scrolled off.
+        for row in inner_rows.iter() {
             let (text_span, is_separator) = match row {
                 OverlayRow::Text(line) => (
                     Span::styled(fit_to_char_width(line, content_width_inner), note_style),
@@ -1216,27 +1286,32 @@ fn render_annotation_overlays(
             ]));
         }
 
-        // Add bottom border with time if there's room
-        if ann_lines.len() < available_height {
-            let time_str = annotation.format_time();
-            let time_with_padding = format!(" {} ", time_str);
-            let time_len = time_with_padding.len();
-            let dashes_before = border_width.saturating_sub(time_len + 1);
-            if has_gutter {
-                ann_lines.push(Line::from(vec![
-                    Span::styled("▍", indicator_style),
-                    Span::styled(format!("└{}", "─".repeat(dashes_before)), border_style_ann),
-                    Span::styled(time_with_padding, Style::default().fg(t.ui.text_muted)),
-                    Span::styled("─┘", border_style_ann),
-                ]));
-            } else {
-                ann_lines.push(Line::from(vec![
-                    Span::styled(format!(" └{}", "─".repeat(dashes_before)), border_style_ann),
-                    Span::styled(time_with_padding, Style::default().fg(t.ui.text_muted)),
-                    Span::styled("─┘", border_style_ann),
-                ]));
-            }
+        // Add bottom border with time
+        let time_str = annotation.format_time();
+        let time_with_padding = format!(" {} ", time_str);
+        let time_len = time_with_padding.len();
+        let dashes_before = border_width.saturating_sub(time_len + 1);
+        if has_gutter {
+            ann_lines.push(Line::from(vec![
+                Span::styled("▍", indicator_style),
+                Span::styled(format!("└{}", "─".repeat(dashes_before)), border_style_ann),
+                Span::styled(time_with_padding, Style::default().fg(t.ui.text_muted)),
+                Span::styled("─┘", border_style_ann),
+            ]));
+        } else {
+            ann_lines.push(Line::from(vec![
+                Span::styled(format!(" └{}", "─".repeat(dashes_before)), border_style_ann),
+                Span::styled(time_with_padding, Style::default().fg(t.ui.text_muted)),
+                Span::styled("─┘", border_style_ann),
+            ]));
         }
+
+        // Drop top_skip rows from the top (already scrolled off above the
+        // viewport), then truncate to what fits in available_height.
+        if top_skip > 0 {
+            ann_lines.drain(..top_skip.min(ann_lines.len()));
+        }
+        ann_lines.truncate(available_height);
 
         let ann_para = Paragraph::new(ann_lines).style(Style::default().bg(bg));
         frame.render_widget(ann_para, overlay_area);
@@ -1244,7 +1319,7 @@ fn render_annotation_overlays(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Returns `(content_row_offset, annotation_overlay_gaps, total_annotation_height)`.
+/// Returns `(content_row_offset, annotation_overlay_gaps, total_annotation_height, overlay_heights)`.
 /// - `content_row_offset`: the number of non-diff rows at the top
 ///   (context lines + file annotation placeholders), used for mouse coordinate mapping.
 /// - `annotation_overlay_gaps`: list of `(content_line_after, gap_height)` pairs describing
@@ -1252,6 +1327,8 @@ fn render_annotation_overlays(
 /// - `total_annotation_height`: combined height of every annotation overlay attached
 ///   to the current file (file-level + inline), used to extend `max_scroll` so the bottom
 ///   of the diff stays reachable even when annotations push rows past the visible window.
+/// - `overlay_heights`: per-line overlay heights, keyed by side_by_side index. Drives
+///   sub-row snap scrolling through tall annotation overlays.
 #[allow(clippy::too_many_arguments)]
 pub fn render_diff(
     frame: &mut Frame,
@@ -1262,6 +1339,7 @@ pub fn render_diff(
     collapsed_dirs: &HashSet<String>,
     current_file: usize,
     scroll: u16,
+    sub_scroll: u16,
     h_scroll: u16,
     watching: bool,
     show_sidebar: bool,
@@ -1294,7 +1372,7 @@ pub fn render_diff(
     annotation_source_error: Option<&str>,
     selected_annotation_id: Option<&AnnotationId>,
     loading_message: Option<&str>,
-) -> (usize, Vec<(usize, usize)>, usize) {
+) -> (usize, Vec<(usize, usize)>, usize, HashMap<usize, usize>) {
     let area = frame.area();
     let t = theme::get();
     let bg = t.ui.bg;
@@ -1402,7 +1480,7 @@ pub fn render_diff(
                 loading_message,
             },
         );
-        return (0, Vec::new(), 0);
+        return (0, Vec::new(), 0, HashMap::new());
     }
 
     // side_by_side is now passed as a parameter (pre-computed and cached)
@@ -1418,6 +1496,9 @@ pub fn render_diff(
     // Total rows consumed by every annotation overlay on this file (file + inline).
     // Returned so the input loop can extend `max_scroll` past the naive line count.
     let total_annotation_height: usize;
+    // Per-line overlay heights, returned so the scroll handlers can drive
+    // sub-row snap scrolling through tall overlays.
+    let overlay_heights: HashMap<usize, usize>;
 
     let border_style = Style::default().fg(t.ui.border_unfocused);
     let title_style = if focused_panel == FocusedPanel::DiffView {
@@ -1461,14 +1542,22 @@ pub fn render_diff(
             .sum();
         total_annotation_height = annotation_height + line_annotation_total;
         content_row_offset = context_count + annotation_height;
+        overlay_heights = compute_overlay_heights(
+            &line_annotations,
+            side_by_side,
+            None,
+            Some(main_area),
+            main_area,
+        );
 
         let base_content_height = visible_height.saturating_sub(context_count);
         let content_height = base_content_height.saturating_sub(annotation_height);
 
+        // Take sub_scroll extra diff lines so Paragraph.scroll can slide them in.
         let visible_lines: Vec<&DiffLine> = side_by_side
             .iter()
             .skip(scroll_usize)
-            .take(content_height)
+            .take(content_height + sub_scroll as usize)
             .collect();
 
         let mut new_lines: Vec<Line> = Vec::new();
@@ -1578,21 +1667,69 @@ pub fn render_diff(
             }
         }
 
-        let new_para = Paragraph::new(new_lines).scroll((0, h_scroll)).block(
-            Block::default()
-                .title(Line::styled(" [2] New File ", title_style))
-                .borders(Borders::ALL)
-                .border_style(border_style),
-        );
-        frame.render_widget(new_para, main_area);
+        // Split the paragraph into a pinned prefix (context + file annotations)
+        // and a scrollable inline portion (diff lines + line-range overlays),
+        // so sub_scroll moves only the inline portion. Borders are drawn once
+        // around the whole area.
+        let new_block = Block::default()
+            .title(Line::styled(" [2] New File ", title_style))
+            .borders(Borders::ALL)
+            .border_style(border_style);
+        frame.render_widget(new_block, main_area);
+        let inner_x = main_area.x + 1;
+        let inner_y = main_area.y + 1;
+        let inner_width = main_area.width.saturating_sub(2);
+        let inner_height = main_area.height.saturating_sub(2);
+        let prefix_rows = (context_count + annotation_height) as u16;
+        let prefix_height = prefix_rows.min(inner_height);
+        let inline_y = inner_y + prefix_height;
+        let inline_height = inner_height.saturating_sub(prefix_height);
 
-        // Render annotation overlays
+        let prefix_lines: Vec<Line> = new_lines
+            .iter()
+            .take(prefix_rows as usize)
+            .cloned()
+            .collect();
+        let inline_lines: Vec<Line> = new_lines
+            .iter()
+            .skip(prefix_rows as usize)
+            .cloned()
+            .collect();
+
+        if prefix_height > 0 {
+            let prefix_area = Rect::new(inner_x, inner_y, inner_width, prefix_height);
+            let prefix_para = Paragraph::new(prefix_lines)
+                .style(Style::default().bg(bg))
+                .scroll((0, h_scroll));
+            frame.render_widget(prefix_para, prefix_area);
+        }
+        if inline_height > 0 {
+            let inline_area = Rect::new(inner_x, inline_y, inner_width, inline_height);
+            let inline_para = Paragraph::new(inline_lines)
+                .style(Style::default().bg(bg))
+                .scroll((sub_scroll, h_scroll));
+            frame.render_widget(inline_para, inline_area);
+        }
+
+        // Split overlays into prefix (file-level, unshifted, clamped at inner_y) and
+        // inline (line-range, shifted by sub_scroll, clamped at inline_y).
+        let prefix_rows_usize = prefix_rows as usize;
+        let prefix_overlays: Vec<(usize, &Annotation, u16)> = annotation_overlays
+            .iter()
+            .filter(|&&(pos, _)| pos < prefix_rows_usize)
+            .map(|&(pos, ann)| (pos, ann, 0u16))
+            .collect();
+        let inline_overlays: Vec<(usize, &Annotation, u16)> = annotation_overlays
+            .iter()
+            .filter(|&&(pos, _)| pos >= prefix_rows_usize)
+            .map(|&(pos, ann)| (pos, ann, sub_scroll))
+            .collect();
         let content_x = main_area.x + 1;
         let content_start_y = main_area.y + 1;
         let content_width = main_area.width.saturating_sub(2);
         render_annotation_overlays(
             frame,
-            &annotation_overlays,
+            &prefix_overlays,
             content_x,
             content_start_y,
             content_width,
@@ -1601,6 +1738,20 @@ pub fn render_diff(
             t,
             false,
             selected_annotation_id,
+            inner_y,
+        );
+        render_annotation_overlays(
+            frame,
+            &inline_overlays,
+            content_x,
+            content_start_y,
+            content_width,
+            main_area,
+            bg,
+            t,
+            false,
+            selected_annotation_id,
+            inline_y,
         );
     } else if is_deleted_file {
         let visible_height = main_area.height.saturating_sub(2) as usize;
@@ -1637,6 +1788,13 @@ pub fn render_diff(
             .sum();
         total_annotation_height = annotation_height + line_annotation_total;
         content_row_offset = context_count + annotation_height;
+        overlay_heights = compute_overlay_heights(
+            &line_annotations,
+            side_by_side,
+            Some(main_area),
+            None,
+            main_area,
+        );
 
         let base_content_height = visible_height.saturating_sub(context_count);
         let content_height = base_content_height.saturating_sub(annotation_height);
@@ -1644,7 +1802,7 @@ pub fn render_diff(
         let visible_lines: Vec<&DiffLine> = side_by_side
             .iter()
             .skip(scroll_usize)
-            .take(content_height)
+            .take(content_height + sub_scroll as usize)
             .collect();
 
         let mut old_lines: Vec<Line> = Vec::new();
@@ -1754,21 +1912,64 @@ pub fn render_diff(
             }
         }
 
-        let old_para = Paragraph::new(old_lines).scroll((0, h_scroll)).block(
-            Block::default()
-                .title(Line::styled(" [2] Deleted File ", title_style))
-                .borders(Borders::ALL)
-                .border_style(border_style),
-        );
-        frame.render_widget(old_para, main_area);
+        // Split into pinned prefix + scrollable inline area (see new-file branch).
+        let old_block = Block::default()
+            .title(Line::styled(" [2] Deleted File ", title_style))
+            .borders(Borders::ALL)
+            .border_style(border_style);
+        frame.render_widget(old_block, main_area);
+        let inner_x = main_area.x + 1;
+        let inner_y = main_area.y + 1;
+        let inner_width = main_area.width.saturating_sub(2);
+        let inner_height = main_area.height.saturating_sub(2);
+        let prefix_rows = (context_count + annotation_height) as u16;
+        let prefix_height = prefix_rows.min(inner_height);
+        let inline_y = inner_y + prefix_height;
+        let inline_height = inner_height.saturating_sub(prefix_height);
 
-        // Render annotation overlays
+        let prefix_lines: Vec<Line> = old_lines
+            .iter()
+            .take(prefix_rows as usize)
+            .cloned()
+            .collect();
+        let inline_lines: Vec<Line> = old_lines
+            .iter()
+            .skip(prefix_rows as usize)
+            .cloned()
+            .collect();
+
+        if prefix_height > 0 {
+            let prefix_area = Rect::new(inner_x, inner_y, inner_width, prefix_height);
+            let prefix_para = Paragraph::new(prefix_lines)
+                .style(Style::default().bg(bg))
+                .scroll((0, h_scroll));
+            frame.render_widget(prefix_para, prefix_area);
+        }
+        if inline_height > 0 {
+            let inline_area = Rect::new(inner_x, inline_y, inner_width, inline_height);
+            let inline_para = Paragraph::new(inline_lines)
+                .style(Style::default().bg(bg))
+                .scroll((sub_scroll, h_scroll));
+            frame.render_widget(inline_para, inline_area);
+        }
+
+        let prefix_rows_usize = prefix_rows as usize;
+        let prefix_overlays: Vec<(usize, &Annotation, u16)> = annotation_overlays
+            .iter()
+            .filter(|&&(pos, _)| pos < prefix_rows_usize)
+            .map(|&(pos, ann)| (pos, ann, 0u16))
+            .collect();
+        let inline_overlays: Vec<(usize, &Annotation, u16)> = annotation_overlays
+            .iter()
+            .filter(|&&(pos, _)| pos >= prefix_rows_usize)
+            .map(|&(pos, ann)| (pos, ann, sub_scroll))
+            .collect();
         let content_x = main_area.x + 1;
         let content_start_y = main_area.y + 1;
         let content_width = main_area.width.saturating_sub(2);
         render_annotation_overlays(
             frame,
-            &annotation_overlays,
+            &prefix_overlays,
             content_x,
             content_start_y,
             content_width,
@@ -1777,6 +1978,20 @@ pub fn render_diff(
             t,
             false,
             selected_annotation_id,
+            inner_y,
+        );
+        render_annotation_overlays(
+            frame,
+            &inline_overlays,
+            content_x,
+            content_start_y,
+            content_width,
+            main_area,
+            bg,
+            t,
+            false,
+            selected_annotation_id,
+            inline_y,
         );
     } else {
         let (old_area, new_area) = match diff_fullscreen {
@@ -1845,13 +2060,20 @@ pub fn render_diff(
             .sum();
         total_annotation_height = file_ann_height + line_annotation_total;
         content_row_offset = context_count + file_ann_height;
+        overlay_heights = compute_overlay_heights(
+            &line_annotations,
+            side_by_side,
+            old_area,
+            new_area,
+            main_area,
+        );
 
         let base_content_height = visible_height.saturating_sub(context_count);
         let content_height = base_content_height.saturating_sub(file_ann_height);
         let visible_lines: Vec<&DiffLine> = side_by_side
             .iter()
             .skip(scroll_usize)
-            .take(content_height)
+            .take(content_height + sub_scroll as usize)
             .collect();
 
         let mut old_lines: Vec<Line> = Vec::new();
@@ -2217,17 +2439,46 @@ pub fn render_diff(
             }
         }
 
+        let prefix_rows = (context_count + file_ann_height) as u16;
+        let prefix_rows_usize = prefix_rows as usize;
+
+        // Render each panel as a borderless prefix + scrollable inline paragraph,
+        // with the surrounding Block drawn separately so the borders stay still.
         if let Some(area) = old_area {
-            let old_para = Paragraph::new(old_lines)
-                .style(Style::default().bg(bg))
-                .scroll((0, h_scroll))
-                .block(
-                    Block::default()
-                        .title(Line::styled(" [2] Old ", title_style))
-                        .borders(Borders::ALL)
-                        .border_style(border_style),
+            frame.render_widget(
+                Block::default()
+                    .title(Line::styled(" [2] Old ", title_style))
+                    .borders(Borders::ALL)
+                    .border_style(border_style),
+                area,
+            );
+            let inner_x = area.x + 1;
+            let inner_y = area.y + 1;
+            let inner_width = area.width.saturating_sub(2);
+            let inner_height = area.height.saturating_sub(2);
+            let prefix_h = prefix_rows.min(inner_height);
+            let inline_h = inner_height.saturating_sub(prefix_h);
+
+            let prefix_lines: Vec<Line> =
+                old_lines.iter().take(prefix_rows_usize).cloned().collect();
+            let inline_lines: Vec<Line> =
+                old_lines.iter().skip(prefix_rows_usize).cloned().collect();
+            if prefix_h > 0 {
+                frame.render_widget(
+                    Paragraph::new(prefix_lines)
+                        .style(Style::default().bg(bg))
+                        .scroll((0, h_scroll)),
+                    Rect::new(inner_x, inner_y, inner_width, prefix_h),
                 );
-            frame.render_widget(old_para, area);
+            }
+            if inline_h > 0 {
+                frame.render_widget(
+                    Paragraph::new(inline_lines)
+                        .style(Style::default().bg(bg))
+                        .scroll((sub_scroll, h_scroll)),
+                    Rect::new(inner_x, inner_y + prefix_h, inner_width, inline_h),
+                );
+            }
         }
 
         if let Some(area) = new_area {
@@ -2237,27 +2488,63 @@ pub fn render_diff(
             } else {
                 Borders::ALL
             };
-            let new_para = Paragraph::new(new_lines)
-                .style(Style::default().bg(bg))
-                .scroll((0, h_scroll))
-                .block(
-                    Block::default()
-                        .title(Line::styled(" New ", title_style))
-                        .borders(new_borders)
+            frame.render_widget(
+                Block::default()
+                    .title(Line::styled(" New ", title_style))
+                    .borders(new_borders)
+                    .style(Style::default().bg(bg))
+                    .border_style(border_style),
+                area,
+            );
+            // Inner content area: new panel may not have a left border (shared with old).
+            let inner_x = if old_area.is_some() { area.x } else { area.x + 1 };
+            let inner_y = area.y + 1;
+            let inner_width = if old_area.is_some() {
+                area.width.saturating_sub(1)
+            } else {
+                area.width.saturating_sub(2)
+            };
+            let inner_height = area.height.saturating_sub(2);
+            let prefix_h = prefix_rows.min(inner_height);
+            let inline_h = inner_height.saturating_sub(prefix_h);
+
+            let prefix_lines: Vec<Line> =
+                new_lines.iter().take(prefix_rows_usize).cloned().collect();
+            let inline_lines: Vec<Line> =
+                new_lines.iter().skip(prefix_rows_usize).cloned().collect();
+            if prefix_h > 0 {
+                frame.render_widget(
+                    Paragraph::new(prefix_lines)
                         .style(Style::default().bg(bg))
-                        .border_style(border_style),
+                        .scroll((0, h_scroll)),
+                    Rect::new(inner_x, inner_y, inner_width, prefix_h),
                 );
-            frame.render_widget(new_para, area);
+            }
+            if inline_h > 0 {
+                frame.render_widget(
+                    Paragraph::new(inline_lines)
+                        .style(Style::default().bg(bg))
+                        .scroll((sub_scroll, h_scroll)),
+                    Rect::new(inner_x, inner_y + prefix_h, inner_width, inline_h),
+                );
+            }
         }
 
-        // Render annotation gutter markers on the shared border for new panel annotations
+        // Render annotation gutter markers on the shared border for new panel annotations.
+        // Markers sit in the scrolled inline area, so shift their screen row by sub_scroll
+        // and skip any that have scrolled above it.
         if let (Some(old_a), Some(_)) = (old_area, new_area) {
             let border_x = old_a.x + old_a.width - 1; // Right border of old panel
             let content_start = old_a.y + 1; // After top border of block
+            let sub_scroll_usize = sub_scroll as usize;
             let buf = frame.buffer_mut();
 
             for &para_row in &border_marker_rows {
-                let screen_row = content_start + para_row as u16;
+                if para_row < prefix_rows_usize + sub_scroll_usize {
+                    continue; // scrolled off the top of the inline area
+                }
+                let shifted = para_row - sub_scroll_usize;
+                let screen_row = content_start + shifted as u16;
                 if screen_row < old_a.y + old_a.height - 1 {
                     if let Some(cell) =
                         buf.cell_mut(ratatui::layout::Position::new(border_x, screen_row))
@@ -2270,7 +2557,7 @@ pub fn render_diff(
         }
 
         // Render annotation overlays per-panel for line-range annotations,
-        // spanning both panels for file-level annotations
+        // spanning both panels for file-level annotations.
         let is_side_by_side = old_area.is_some() && new_area.is_some();
         for &(line_pos, annotation) in &annotation_overlays {
             let (overlay_x, overlay_width, overlay_start_y, suppress_gutter) = match &annotation
@@ -2310,9 +2597,20 @@ pub fn render_diff(
                     )
                 }
             };
+            // File-level overlays sit in the pinned prefix; line-range overlays
+            // sit in the scrolled inline area and shift up by sub_scroll.
+            let in_inline = line_pos >= prefix_rows_usize;
+            let shift = if in_inline { sub_scroll } else { 0 };
+            // Top-clip prefix overlays at the inner top; clip inline overlays at
+            // the inline area's top so a sub_scroll>0 overlay can't draw into the prefix.
+            let overlay_min_y = if in_inline {
+                overlay_start_y + (prefix_rows as u16).min(main_area.height.saturating_sub(2))
+            } else {
+                overlay_start_y
+            };
             render_annotation_overlays(
                 frame,
-                &[(line_pos, annotation)],
+                &[(line_pos, annotation, shift)],
                 overlay_x,
                 overlay_start_y,
                 overlay_width,
@@ -2321,13 +2619,17 @@ pub fn render_diff(
                 t,
                 suppress_gutter,
                 selected_annotation_id,
+                overlay_min_y,
             );
         }
 
-        // Extend border markers through new-panel annotation overlay rows on the shared border
+        // Extend border markers through new-panel annotation overlay rows on the shared border.
+        // Markers shift by sub_scroll just like the inline content; rows scrolled above the
+        // inline area's top are skipped.
         if let (Some(old_a), Some(_)) = (old_area, new_area) {
             let border_x = old_a.x + old_a.width - 1;
             let content_start = old_a.y + 1;
+            let sub_scroll_usize = sub_scroll as usize;
             let buf = frame.buffer_mut();
 
             for &(line_pos, annotation) in &annotation_overlays {
@@ -2337,7 +2639,12 @@ pub fn render_diff(
                             overlay_content_width(annotation, old_area, new_area, main_area);
                         let num_rows = annotation_overlay_height(annotation, annotation_width);
                         for row_offset in 0..num_rows {
-                            let screen_row = content_start + line_pos as u16 + row_offset as u16;
+                            let absolute = line_pos + row_offset;
+                            if absolute < prefix_rows_usize + sub_scroll_usize {
+                                continue;
+                            }
+                            let shifted = absolute - sub_scroll_usize;
+                            let screen_row = content_start + shifted as u16;
                             if screen_row < old_a.y + old_a.height - 1 {
                                 if let Some(cell) = buf
                                     .cell_mut(ratatui::layout::Position::new(border_x, screen_row))
@@ -2396,7 +2703,12 @@ pub fn render_diff(
         },
     );
 
-    (content_row_offset, overlay_gaps, total_annotation_height)
+    (
+        content_row_offset,
+        overlay_gaps,
+        total_annotation_height,
+        overlay_heights,
+    )
 }
 
 #[cfg(test)]
