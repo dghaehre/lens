@@ -15,6 +15,9 @@ pub enum VcsError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("not supported by this VCS backend: {0}")]
+    Unsupported(String),
+
     #[error("{0}")]
     Other(String),
 }

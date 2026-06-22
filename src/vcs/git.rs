@@ -866,6 +866,64 @@ impl GitBackend {
     }
 }
 
+impl super::VcsBackend for GitBackend {
+    fn kind(&self) -> super::VcsKind {
+        super::VcsKind::Git
+    }
+
+    fn git_dir(&self) -> &Path {
+        self.git_dir()
+    }
+
+    fn get_current_branch(&self) -> Result<Option<String>, VcsError> {
+        self.get_current_branch()
+    }
+
+    fn resolve_ref(&self, reference: &str) -> Result<String, VcsError> {
+        self.resolve_ref(reference)
+    }
+
+    fn get_parent_ref_or_empty(&self, reference: &str) -> Result<String, VcsError> {
+        self.get_parent_ref_or_empty(reference)
+    }
+
+    fn get_changed_files(&self, reference: &str) -> Result<Vec<String>, VcsError> {
+        self.get_changed_files(reference)
+    }
+
+    fn get_range_changed_files(&self, from: &str, to: &str) -> Result<Vec<String>, VcsError> {
+        self.get_range_changed_files(from, to)
+    }
+
+    fn get_commits_in_range(
+        &self,
+        from: &str,
+        to: &str,
+    ) -> Result<Vec<StackedCommitInfo>, VcsError> {
+        self.get_commits_in_range(from, to)
+    }
+
+    fn get_file_content_at_ref(&self, reference: &str, path: &Path) -> Result<String, VcsError> {
+        self.get_file_content_at_ref(reference, path)
+    }
+
+    fn get_working_tree_changed_files(&self) -> Result<Vec<String>, VcsError> {
+        self.get_working_tree_changed_files()
+    }
+
+    fn get_unstaged_changed_files(&self) -> Result<Vec<String>, VcsError> {
+        self.get_unstaged_changed_files()
+    }
+
+    fn get_staged_changed_files(&self) -> Result<Vec<String>, VcsError> {
+        self.get_staged_changed_files()
+    }
+
+    fn get_file_content_at_index(&self, path: &Path) -> Result<String, VcsError> {
+        self.get_file_content_at_index(path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -19,7 +19,7 @@ use std::io;
 use std::process;
 
 use crate::commit_reference::CommitReference;
-use crate::vcs::GitBackend;
+use crate::vcs::{VcsBackend, VcsKind};
 
 pub struct DiffOptions {
     pub reference: Option<CommitReference>,
@@ -30,7 +30,20 @@ pub struct DiffOptions {
     pub focus: Option<String>,
 }
 
-pub fn run_diff_ui(options: DiffOptions, backend: &GitBackend) -> io::Result<()> {
+pub fn run_diff_ui(options: DiffOptions, backend: &dyn VcsBackend) -> io::Result<()> {
+    // --cached / --staged are git-only; jj has no staging area.
+    if backend.kind() == VcsKind::Jj {
+        if let Some(r) = options.reference.as_ref() {
+            let s = r.as_str();
+            if s == "--cached" || s == "--staged" {
+                eprintln!(
+                    "\x1b[91merror:\x1b[0m jj has no staging area; --cached/--staged are git-only"
+                );
+                process::exit(1);
+            }
+        }
+    }
+
     if options.stacked {
         let from = match options.reference.as_ref() {
             Some(r) => r.as_str().to_string(),

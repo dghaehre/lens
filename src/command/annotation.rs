@@ -21,9 +21,14 @@ use crate::config::cli::{
     AnnotationReplyArgs, AnnotationResolveArgs, AnnotationWatchArgs, PanelArg,
 };
 use crate::error::LensError;
-use crate::vcs::GitBackend;
+use crate::vcs::{VcsBackend, VcsKind};
 
-pub fn run(command: AnnotationCommand, backend: &GitBackend) -> Result<(), LensError> {
+pub fn run(command: AnnotationCommand, backend: &dyn VcsBackend) -> Result<(), LensError> {
+    if backend.kind() == VcsKind::Jj {
+        return Err(LensError::VcsError(crate::vcs::VcsError::Unsupported(
+            "lens annotation is not yet supported on jj repositories".into(),
+        )));
+    }
     let db_path = backend.git_dir().join("lens.db");
     let mut store = open_store(&db_path)?;
     match command {

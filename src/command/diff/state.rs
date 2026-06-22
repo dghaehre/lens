@@ -10,7 +10,7 @@ use crate::command::diff::diff_algo::{
 use crate::command::diff::highlight::FileHighlighter;
 use crate::command::diff::pr_comment_editor::PrCommentIntent;
 use crate::vcs::github::{resolve_pr_for_current_branch, GhClient, PrInfo, RealGhClient};
-use crate::vcs::GitBackend;
+use crate::vcs::VcsBackend;
 
 use crate::command::diff::search::SearchState;
 use crate::command::diff::types::{
@@ -449,7 +449,7 @@ impl AppState {
     pub fn switch_annotation_source(
         &mut self,
         target: AnnotationSource,
-        backend: &GitBackend,
+        backend: &dyn VcsBackend,
     ) -> Result<(), String> {
         let local_head = backend.resolve_ref("HEAD").ok();
         self.switch_annotation_source_inner(target, local_head, Box::new(RealGhClient))
@@ -569,7 +569,7 @@ impl AppState {
     pub fn copy_annotation_to_other_source(
         &mut self,
         id: &AnnotationId,
-        backend: &GitBackend,
+        backend: &dyn VcsBackend,
     ) -> Result<(), String> {
         let local_head = backend.resolve_ref("HEAD").ok();
         self.copy_annotation_to_other_source_inner(id, local_head, Box::new(RealGhClient))

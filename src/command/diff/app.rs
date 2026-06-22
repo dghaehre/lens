@@ -38,7 +38,7 @@ use super::watcher::{setup_watcher, WatchEvent};
 use super::DiffOptions;
 
 use crate::commit_reference::CommitReference;
-use crate::vcs::{GitBackend, StackedCommitInfo};
+use crate::vcs::{StackedCommitInfo, VcsBackend, VcsKind};
 
 /// Navigate to a different commit in stacked mode.
 /// Returns true if navigation was successful.
@@ -46,7 +46,7 @@ fn navigate_stacked_commit(
     state: &mut AppState,
     new_index: usize,
     options: &DiffOptions,
-    backend: &GitBackend,
+    backend: &dyn VcsBackend,
 ) -> bool {
     if new_index >= state.stacked_commits.len() {
         return false;
@@ -844,7 +844,7 @@ fn extract_diff_snippet(
         .collect()
 }
 
-pub fn run_app(options: DiffOptions, backend: &GitBackend) -> io::Result<()> {
+pub fn run_app(options: DiffOptions, backend: &dyn VcsBackend) -> io::Result<()> {
     let file_diffs = load_file_diffs(&options, backend);
     run_app_internal(options, file_diffs, None, backend)
 }
@@ -852,7 +852,7 @@ pub fn run_app(options: DiffOptions, backend: &GitBackend) -> io::Result<()> {
 pub fn run_app_stacked(
     options: DiffOptions,
     commits: Vec<StackedCommitInfo>,
-    backend: &GitBackend,
+    backend: &dyn VcsBackend,
 ) -> io::Result<()> {
     // Load the first commit's diff
     let first_commit = &commits[0];
@@ -901,23 +901,28 @@ fn run_app_internal(
     mut options: DiffOptions,
     file_diffs: Vec<super::types::FileDiff>,
     stacked_commits: Option<Vec<StackedCommitInfo>>,
-    backend: &GitBackend,
+    backend: &dyn VcsBackend,
 ) -> io::Result<()> {
     theme::init(options.theme.as_deref());
     highlight::init();
 
-    // Annotations persist in `<git_dir>/lens.db`; fall back to in-memory if
-    // SQLite open fails so the TUI still works.
+    // Annotations persist in `<git_dir>/lens.db` on git; jj support for
+    // annotations is a follow-up — fall back to in-memory there so the TUI
+    // still works (annotations are session-scoped and lost on exit).
     let db_path = backend.git_dir().join("lens.db");
-    let store: Box<dyn AnnotationStore> = match SqliteStore::open(&db_path) {
-        Ok(s) => Box::new(s),
-        Err(e) => {
-            eprintln!(
-                "\x1b[93mwarning:\x1b[0m could not open annotation DB at {}: {} \u{2014} annotations will not persist this session",
-                db_path.display(),
-                e
-            );
-            Box::new(InMemoryStore::new())
+    let store: Box<dyn AnnotationStore> = if backend.kind() == VcsKind::Jj {
+        Box::new(InMemoryStore::new())
+    } else {
+        match SqliteStore::open(&db_path) {
+            Ok(s) => Box::new(s),
+            Err(e) => {
+                eprintln!(
+                    "\x1b[93mwarning:\x1b[0m could not open annotation DB at {}: {} \u{2014} annotations will not persist this session",
+                    db_path.display(),
+                    e
+                );
+                Box::new(InMemoryStore::new())
+            }
         }
     };
     let mut state = AppState::with_store(file_diffs, options.focus.as_deref(), store);
@@ -938,7 +943,14 @@ fn run_app_internal(
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
     let watch_rx = if options.watch {
-        setup_watcher(Some(&db_path))
+        // On jj we don't open a SQLite annotation DB, so there's nothing
+        // for the watcher to monitor besides the working tree.
+        let db_path_for_watcher = if backend.kind() == VcsKind::Jj {
+            None
+        } else {
+            Some(db_path.as_path())
+        };
+        setup_watcher(db_path_for_watcher)
     } else {
         None
     };

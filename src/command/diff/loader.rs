@@ -3,9 +3,9 @@ use std::path::Path;
 
 use super::types::{is_binary_content, FileDiff, FileStatus};
 use super::DiffOptions;
-use crate::vcs::GitBackend;
+use crate::vcs::VcsBackend;
 
-pub fn get_current_branch(backend: &GitBackend) -> String {
+pub fn get_current_branch(backend: &dyn VcsBackend) -> String {
     backend
         .get_current_branch()
         .ok()
@@ -36,7 +36,7 @@ impl DiffMode {
 }
 
 /// Get the list of files changed for the selected diff mode.
-pub fn get_changed_files(options: &DiffOptions, backend: &GitBackend) -> Vec<String> {
+pub fn get_changed_files(options: &DiffOptions, backend: &dyn VcsBackend) -> Vec<String> {
     let mode = DiffMode::from_options(options);
 
     let files: Vec<String> = match &mode {
@@ -70,7 +70,7 @@ pub fn get_changed_files(options: &DiffOptions, backend: &GitBackend) -> Vec<Str
 }
 
 /// Get content of a file at the "old" side of the diff for the selected mode.
-pub fn get_old_content(filename: &str, mode: &DiffMode, backend: &GitBackend) -> String {
+pub fn get_old_content(filename: &str, mode: &DiffMode, backend: &dyn VcsBackend) -> String {
     let path = Path::new(filename);
     match mode {
         DiffMode::Unstaged => backend.get_file_content_at_index(path).unwrap_or_default(),
@@ -82,7 +82,7 @@ pub fn get_old_content(filename: &str, mode: &DiffMode, backend: &GitBackend) ->
 }
 
 /// Get content of a file at the "new" side of the diff for the selected mode.
-pub fn get_new_content(filename: &str, mode: &DiffMode, backend: &GitBackend) -> String {
+pub fn get_new_content(filename: &str, mode: &DiffMode, backend: &dyn VcsBackend) -> String {
     match mode {
         DiffMode::Staged => backend
             .get_file_content_at_index(Path::new(filename))
@@ -91,7 +91,7 @@ pub fn get_new_content(filename: &str, mode: &DiffMode, backend: &GitBackend) ->
     }
 }
 
-pub fn load_file_diffs(options: &DiffOptions, backend: &GitBackend) -> Vec<FileDiff> {
+pub fn load_file_diffs(options: &DiffOptions, backend: &dyn VcsBackend) -> Vec<FileDiff> {
     let mode = DiffMode::from_options(options);
     get_changed_files(options, backend)
         .into_iter()
@@ -122,7 +122,7 @@ pub fn load_file_diffs(options: &DiffOptions, backend: &GitBackend) -> Vec<FileD
 pub fn load_single_commit_diffs(
     commit_id: &str,
     file_filter: &Option<Vec<String>>,
-    backend: &GitBackend,
+    backend: &dyn VcsBackend,
 ) -> Vec<FileDiff> {
     let files = backend.get_changed_files(commit_id).unwrap_or_default();
 
