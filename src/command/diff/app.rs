@@ -997,10 +997,14 @@ fn run_app_internal(
             state.update_search_matches();
             // Ensure highlighters are cached (only recomputed when file changes)
             state.get_highlighters();
+            // Ensure the tree-sitter context nodes are cached (only reparsed on file change)
+            state.get_context_nodes();
             let diff = &state.file_diffs[state.current_file];
             let side_by_side = state.side_by_side_ref();
             let hunks = state.hunks_ref();
             let (old_hl, new_hl) = state.highlighters_ref().unwrap();
+            let (old_ctx, new_ctx) = state.context_nodes_ref();
+            let line_stats = state.line_stats();
             let hunk_count = hunks.len();
             let empty_viewed_hunks: std::collections::HashSet<usize> =
                 std::collections::HashSet::new();
@@ -1067,6 +1071,9 @@ fn run_app_internal(
                     &state.selection,
                     old_hl,
                     new_hl,
+                    old_ctx,
+                    new_ctx,
+                    line_stats,
                     viewed_hunks_for_file,
                     state.total_added,
                     state.total_removed,

@@ -5,7 +5,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-use crate::command::diff::context::{compute_context_lines, ContextLine};
+use crate::command::diff::context::{context_lines_from_nodes, ContextLine, ContextNode};
 use crate::command::diff::highlight::{highlight_line_spans, FileHighlighter};
 use crate::command::diff::search::{MatchPanel, SearchState};
 use crate::command::diff::state::{Annotation, AnnotationId, AnnotationTarget, RefInputState};
@@ -139,6 +139,7 @@ fn pad_line_bg<'a>(mut spans: Vec<Span<'a>>, target_width: usize, bg: Color) -> 
     spans
 }
 
+#[derive(Clone, Copy)]
 pub struct LineStats {
     pub added: usize,
     pub removed: usize,
@@ -1454,6 +1455,9 @@ pub fn render_diff(
     selection: &Selection,
     old_highlighter: &FileHighlighter,
     new_highlighter: &FileHighlighter,
+    old_context_nodes: &[ContextNode],
+    new_context_nodes: &[ContextNode],
+    line_stats: LineStats,
     viewed_hunks: &HashSet<usize>,
     total_added: usize,
     total_removed: usize,
@@ -1572,9 +1576,6 @@ pub fn render_diff(
         return (0, Vec::new(), 0, HashMap::new());
     }
 
-    // side_by_side is now passed as a parameter (pre-computed and cached)
-    let line_stats = compute_line_stats(side_by_side);
-
     let is_new_file = diff.old_content.is_empty() && !diff.new_content.is_empty();
     let is_deleted_file = !diff.old_content.is_empty() && diff.new_content.is_empty();
 
@@ -1598,13 +1599,8 @@ pub fn render_diff(
 
     if is_new_file {
         let visible_height = main_area.height.saturating_sub(2) as usize;
-        let new_context = compute_context_lines(
-            &diff.new_content,
-            &diff.filename,
-            scroll as usize,
-            &settings.context,
-            settings.tab_width,
-        );
+        let new_context =
+            context_lines_from_nodes(new_context_nodes, scroll as usize, &settings.context);
         let context_count = new_context.len();
         let scroll_usize = scroll as usize;
 
@@ -1843,13 +1839,8 @@ pub fn render_diff(
         );
     } else if is_deleted_file {
         let visible_height = main_area.height.saturating_sub(2) as usize;
-        let old_context = compute_context_lines(
-            &diff.old_content,
-            &diff.filename,
-            scroll as usize,
-            &settings.context,
-            settings.tab_width,
-        );
+        let old_context =
+            context_lines_from_nodes(old_context_nodes, scroll as usize, &settings.context);
         let context_count = old_context.len();
         let scroll_usize = scroll as usize;
 
@@ -2093,20 +2084,10 @@ pub fn render_diff(
             }
         };
 
-        let old_context = compute_context_lines(
-            &diff.old_content,
-            &diff.filename,
-            scroll as usize,
-            &settings.context,
-            settings.tab_width,
-        );
-        let new_context = compute_context_lines(
-            &diff.new_content,
-            &diff.filename,
-            scroll as usize,
-            &settings.context,
-            settings.tab_width,
-        );
+        let old_context =
+            context_lines_from_nodes(old_context_nodes, scroll as usize, &settings.context);
+        let new_context =
+            context_lines_from_nodes(new_context_nodes, scroll as usize, &settings.context);
         let context_count = old_context.len().max(new_context.len());
 
         let reference_area = old_area.or(new_area).unwrap_or(main_area);

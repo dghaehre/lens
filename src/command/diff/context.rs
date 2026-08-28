@@ -1,6 +1,3 @@
-use std::cell::RefCell;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::Path;
 
 use once_cell::sync::Lazy;
@@ -237,37 +234,18 @@ fn get_language_context(filename: &str) -> Option<&'static LanguageContext> {
         .map(|(_, ctx)| ctx)
 }
 
-/// Internal: a context-worthy node collected from the AST. Scroll-position-independent,
-/// so it can be cached and reused across renders.
+/// A context-worthy node collected from the AST. Scroll-position-independent, so
+/// it is cached per-file in `AppState` and reused across renders.
 #[derive(Clone)]
-struct ContextNode {
+pub struct ContextNode {
     start_line: usize,
     end_line: usize,
     content: String,
 }
 
-struct CacheEntry {
-    filename: String,
-    source_len: usize,
-    source_hash: u64,
-    nodes: Vec<ContextNode>,
-}
-
-const CACHE_CAPACITY: usize = 8;
-
-thread_local! {
-    static CONTEXT_CACHE: RefCell<Vec<CacheEntry>> = RefCell::new(Vec::with_capacity(CACHE_CAPACITY));
-}
-
-fn hash_source(s: &str) -> u64 {
-    let mut h = DefaultHasher::new();
-    s.hash(&mut h);
-    h.finish()
-}
-
 /// Parse the source and collect every context-worthy node (sorted by start line, deduplicated).
 /// Does not depend on scroll position — the result is cacheable for the lifetime of the source.
-fn collect_context_nodes(source: &str, filename: &str, tab_width: usize) -> Vec<ContextNode> {
+pub fn collect_context_nodes(source: &str, filename: &str, tab_width: usize) -> Vec<ContextNode> {
     let Some(lang_ctx) = get_language_context(filename) else {
         return Vec::new();
     };
@@ -322,10 +300,25 @@ fn filter_to_lines(
         .collect()
 }
 
-/// Compute context lines for a given scroll position using tree-sitter AST.
-///
-/// Tree-sitter parsing is cached per (filename, source) — only the cheap filter
-/// step runs on each call. This makes scroll-induced re-renders essentially free.
+/// Turn pre-collected context nodes into the context lines visible at
+/// `scroll_position`. Cheap: a filter over an already-parsed node list, so it is
+/// safe to call on every frame. Parsing happens once per file in
+/// `AppState::get_context_nodes`.
+pub fn context_lines_from_nodes(
+    nodes: &[ContextNode],
+    scroll_position: usize,
+    config: &ContextConfig,
+) -> Vec<ContextLine> {
+    if !config.enabled || nodes.is_empty() || scroll_position == 0 {
+        return Vec::new();
+    }
+    filter_to_lines(nodes, scroll_position, config.max_lines)
+}
+
+/// Uncached one-shot: parse `source` and compute the context lines for
+/// `scroll_position`. The render path uses the cached
+/// `collect_context_nodes` + `context_lines_from_nodes` pair instead.
+#[cfg(test)]
 pub fn compute_context_lines(
     source: &str,
     filename: &str,
@@ -337,44 +330,8 @@ pub fn compute_context_lines(
         return Vec::new();
     }
 
-    if get_language_context(filename).is_none() {
-        return Vec::new();
-    }
-
-    let source_len = source.len();
-    let source_hash = hash_source(source);
-
-    let cached = CONTEXT_CACHE.with(|cache| {
-        let cache = cache.borrow();
-        cache
-            .iter()
-            .find(|e| {
-                e.source_len == source_len && e.source_hash == source_hash && e.filename == filename
-            })
-            .map(|e| filter_to_lines(&e.nodes, scroll_position, config.max_lines))
-    });
-
-    if let Some(result) = cached {
-        return result;
-    }
-
     let nodes = collect_context_nodes(source, filename, tab_width);
-    let result = filter_to_lines(&nodes, scroll_position, config.max_lines);
-
-    CONTEXT_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if cache.len() >= CACHE_CAPACITY {
-            cache.remove(0);
-        }
-        cache.push(CacheEntry {
-            filename: filename.to_string(),
-            source_len,
-            source_hash,
-            nodes,
-        });
-    });
-
-    result
+    context_lines_from_nodes(&nodes, scroll_position, config)
 }
 
 #[cfg(test)]

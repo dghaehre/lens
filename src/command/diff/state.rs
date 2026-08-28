@@ -4,11 +4,13 @@ use std::time::SystemTime;
 use crate::command::diff::annotation_store::{
     AnnotationStore, GithubStore, InMemoryStore, NewAnnotation, NewReply,
 };
+use crate::command::diff::context::{collect_context_nodes, ContextNode};
 use crate::command::diff::diff_algo::{
     compute_side_by_side, count_added_removed, find_hunk_starts,
 };
 use crate::command::diff::highlight::FileHighlighter;
 use crate::command::diff::pr_comment_editor::PrCommentIntent;
+use crate::command::diff::render::{compute_line_stats, LineStats};
 use crate::vcs::github::{resolve_pr_for_current_branch, GhClient, PrInfo, RealGhClient};
 use crate::vcs::VcsBackend;
 
@@ -263,8 +265,14 @@ pub struct AppState {
     cached_hunks: Option<(usize, Vec<usize>)>,
     /// Cached total line count for current file (avoids recomputing diff for max_scroll)
     cached_total_lines: Option<(usize, usize)>,
+    /// Cached added/removed counts for the *current file* (footer). Distinct from
+    /// `total_added`/`total_removed`, which are repo-wide totals used by the sidebar.
+    cached_line_stats: Option<(usize, LineStats)>,
     /// Cached syntax highlighters for current file (avoids re-parsing with tree-sitter every frame)
     cached_highlighters: Option<(usize, FileHighlighter, FileHighlighter)>,
+    /// Cached tree-sitter context nodes for the current file, as `(file, old, new)`.
+    /// Scroll-position-independent, so each frame only has to filter them.
+    cached_context_nodes: Option<(usize, Vec<ContextNode>, Vec<ContextNode>)>,
     /// Whether search matches need to be recomputed
     search_dirty: bool,
     /// Number of non-content rows at the top of the rendered diff (context lines + file annotations).
@@ -403,7 +411,9 @@ impl AppState {
             cached_side_by_side: None,
             cached_hunks: None,
             cached_total_lines: None,
+            cached_line_stats: None,
             cached_highlighters: None,
+            cached_context_nodes: None,
             search_dirty: true,
             content_row_offset: 0,
             annotation_overlay_gaps: Vec::new(),
@@ -682,28 +692,8 @@ impl AppState {
         if self.file_diffs.is_empty() {
             return &[];
         }
-
-        let current = self.current_file;
-        let needs_recompute = match &self.cached_side_by_side {
-            Some((cached_file, _)) => *cached_file != current,
-            None => true,
-        };
-
-        if needs_recompute {
-            let diff = &self.file_diffs[current];
-            let side_by_side = compute_side_by_side(
-                &diff.old_content,
-                &diff.new_content,
-                self.settings.tab_width,
-            );
-            let hunks = find_hunk_starts(&side_by_side);
-            let total = side_by_side.len();
-            self.cached_side_by_side = Some((current, side_by_side));
-            self.cached_hunks = Some((current, hunks));
-            self.cached_total_lines = Some((current, total));
-        }
-
-        &self.cached_side_by_side.as_ref().unwrap().1
+        self.ensure_cache();
+        self.side_by_side_ref()
     }
 
     /// Get cached hunk starts for current file
@@ -733,9 +723,11 @@ impl AppState {
             );
             let hnks = find_hunk_starts(&sbs);
             let total = sbs.len();
+            let stats = compute_line_stats(&sbs);
             self.cached_side_by_side = Some((current, sbs));
             self.cached_hunks = Some((current, hnks));
             self.cached_total_lines = Some((current, total));
+            self.cached_line_stats = Some((current, stats));
         }
     }
 
@@ -786,6 +778,18 @@ impl AppState {
             .unwrap_or(0)
     }
 
+    /// Added/removed line counts for the current file (footer).
+    /// Must call `ensure_cache()` first; returns zeroes if the cache is empty.
+    pub fn line_stats(&self) -> LineStats {
+        self.cached_line_stats
+            .as_ref()
+            .map(|(_, stats)| *stats)
+            .unwrap_or(LineStats {
+                added: 0,
+                removed: 0,
+            })
+    }
+
     /// Get cached FileHighlighters for the current file, creating them if needed.
     /// Returns (old_highlighter, new_highlighter).
     pub fn get_highlighters(&mut self) -> (&FileHighlighter, &FileHighlighter) {
@@ -812,12 +816,47 @@ impl AppState {
             .map(|(_, old_hl, new_hl)| (old_hl, new_hl))
     }
 
+    /// Get the cached tree-sitter context nodes for the current file, parsing them
+    /// if needed. Returns `(old_nodes, new_nodes)`. Empty when context lines are
+    /// disabled or there is no file to show.
+    pub fn get_context_nodes(&mut self) -> (&[ContextNode], &[ContextNode]) {
+        if self.file_diffs.is_empty() || !self.settings.context.enabled {
+            return (&[], &[]);
+        }
+        let current = self.current_file;
+        let needs_recompute = match &self.cached_context_nodes {
+            Some((cached_file, _, _)) => *cached_file != current,
+            None => true,
+        };
+        if needs_recompute {
+            let tab_width = self.settings.tab_width;
+            let diff = &self.file_diffs[current];
+            let old_nodes = collect_context_nodes(&diff.old_content, &diff.filename, tab_width);
+            let new_nodes = collect_context_nodes(&diff.new_content, &diff.filename, tab_width);
+            self.cached_context_nodes = Some((current, old_nodes, new_nodes));
+        }
+        let (_, old_nodes, new_nodes) = self.cached_context_nodes.as_ref().unwrap();
+        (old_nodes, new_nodes)
+    }
+
+    /// Get the cached context nodes without triggering a recompute.
+    /// Call `get_context_nodes()` at least once for the current file first;
+    /// returns empty slices otherwise.
+    pub fn context_nodes_ref(&self) -> (&[ContextNode], &[ContextNode]) {
+        match &self.cached_context_nodes {
+            Some((_, old_nodes, new_nodes)) => (old_nodes, new_nodes),
+            None => (&[], &[]),
+        }
+    }
+
     /// Invalidate the cache (call when file changes)
     pub fn invalidate_cache(&mut self) {
         self.cached_side_by_side = None;
         self.cached_hunks = None;
         self.cached_total_lines = None;
+        self.cached_line_stats = None;
         self.cached_highlighters = None;
+        self.cached_context_nodes = None;
         self.search_dirty = true;
         self.content_row_offset = 0;
         self.annotation_overlay_gaps.clear();
