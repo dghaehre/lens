@@ -950,7 +950,7 @@ fn run_app_internal(
         } else {
             Some(db_path.as_path())
         };
-        setup_watcher(db_path_for_watcher)
+        setup_watcher(db_path_for_watcher, backend.git_dir())
     } else {
         None
     };

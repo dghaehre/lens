@@ -5,7 +5,8 @@
 //! diff. See `/Users/dghaehre/.claude/plans/purring-cuddling-planet.md`.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::process::Command;
+use std::sync::{Arc, RwLock};
 
 use futures::StreamExt as _;
 use futures::TryStreamExt as _;
@@ -34,13 +35,14 @@ use super::types::{StackedCommitInfo, VcsError};
 
 const GIT_EMPTY_TREE_SHA: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
-/// jj-lib backed `VcsBackend`. Loaded once at startup; lens is read-only,
-/// so we never reload the repo.
+/// jj-lib backed `VcsBackend`.
 pub struct JjBackend {
     /// `<workspace>/.jj` — siting for `lens.db` and similar per-repo state.
     state_dir: PathBuf,
     workspace: Workspace,
-    repo: Arc<ReadonlyRepo>,
+    /// Most recently snapshotted repository view. Read on the render path and
+    /// replaced only when `refresh()` snapshots the working copy.
+    repo: RwLock<Arc<ReadonlyRepo>>,
     settings: UserSettings,
     /// Re-used by every revset parse; immutable.
     aliases: RevsetAliasesMap,
@@ -77,12 +79,48 @@ impl JjBackend {
         Ok(Self {
             state_dir,
             workspace,
-            repo,
+            repo: RwLock::new(repo),
             settings,
             aliases: RevsetAliasesMap::new(),
             fileset_aliases: FilesetAliasesMap::new(),
             extensions: RevsetExtensions::default(),
         })
+    }
+
+    /// Load the latest repository view after snapshotting the working copy.
+    fn load_latest_repo(&self) -> Result<Arc<ReadonlyRepo>, VcsError> {
+        self.workspace
+            .repo_loader()
+            .load_at_head()
+            .block_on()
+            .map_err(|e| VcsError::Other(format!("jj repo reload: {e}")))
+    }
+
+    /// Return the cached view without re-reading jj metadata on every render.
+    fn repo_snapshot(&self) -> Result<Arc<ReadonlyRepo>, VcsError> {
+        self.repo
+            .read()
+            .map_err(|_| VcsError::Other("jj repository lock poisoned".into()))
+            .map(|repo| Arc::clone(&repo))
+    }
+
+    /// jj keeps working-copy edits on disk until a jj command snapshots them
+    /// into `@`. Use the standard non-interactive command so Lens observes
+    /// the same view as `jj status` and `jj diff`.
+    fn snapshot_working_copy(&self) -> Result<(), VcsError> {
+        let output = Command::new("jj")
+            .arg("status")
+            .current_dir(self.workspace.workspace_root())
+            .output()
+            .map_err(|e| VcsError::Other(format!("failed to snapshot jj working copy: {e}")))?;
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(VcsError::Other(format!(
+            "jj status failed while snapshotting the working copy: {stderr}"
+        )))
     }
 
     /// Reject refs that look like a CLI flag — same defense-in-depth as
@@ -120,6 +158,7 @@ impl JjBackend {
     /// last — jj's default is "children before parents" topo order).
     fn resolve_revset(&self, revset_str: &str) -> Result<Vec<Commit>, VcsError> {
         let translated = Self::translate_ref(revset_str);
+        let repo = self.repo_snapshot()?;
         let cwd = self.workspace.workspace_root().to_path_buf();
         let base = self.workspace.workspace_root().to_path_buf();
         let path_converter = RepoPathUiConverter::Fs { cwd, base };
@@ -142,17 +181,17 @@ impl JjBackend {
         let mut diags = RevsetDiagnostics::new();
         let user_expr = revset::parse(&mut diags, &translated, &ctx)
             .map_err(|e| VcsError::InvalidRef(format!("{}: {e}", revset_str)))?;
-        let resolver = SymbolResolver::new(self.repo.as_ref(), self.extensions.symbol_resolvers());
+        let resolver = SymbolResolver::new(repo.as_ref(), self.extensions.symbol_resolvers());
         let resolved = user_expr
-            .resolve_user_expression(self.repo.as_ref(), &resolver)
+            .resolve_user_expression(repo.as_ref(), &resolver)
             .map_err(|e| VcsError::InvalidRef(format!("{}: {e}", revset_str)))?;
         let revset = resolved
-            .evaluate(self.repo.as_ref())
+            .evaluate(repo.as_ref())
             .map_err(|e| VcsError::Other(format!("evaluate revset {revset_str}: {e}")))?;
 
         revset
             .stream()
-            .commits(self.repo.store())
+            .commits(repo.store())
             .try_collect::<Vec<_>>()
             .block_on()
             .map_err(|e| VcsError::Other(format!("collect revset {revset_str}: {e}")))
@@ -196,6 +235,7 @@ impl JjBackend {
         commit: &Commit,
         path: &Path,
     ) -> Result<String, VcsError> {
+        let repo = self.repo_snapshot()?;
         let internal = path.to_string_lossy().replace('\\', "/");
         let repo_path = RepoPath::from_internal_string(&internal)
             .map_err(|e| VcsError::Other(format!("repo path {internal}: {e}")))?;
@@ -219,8 +259,7 @@ impl JjBackend {
             return Ok(String::new());
         };
 
-        let mut reader = self
-            .repo
+        let mut reader = repo
             .store()
             .read_file(repo_path, &file_id)
             .block_on()
@@ -235,13 +274,13 @@ impl JjBackend {
 
     /// `@` commit — jj's working copy.
     fn working_copy_commit(&self) -> Result<Commit, VcsError> {
-        let wc_id = self
-            .repo
+        let repo = self.repo_snapshot()?;
+        let wc_id = repo
             .view()
             .get_wc_commit_id(self.workspace.workspace_name())
             .ok_or_else(|| VcsError::Other("no working-copy commit for this workspace".into()))?
             .clone();
-        self.repo
+        repo
             .store()
             .get_commit(&wc_id)
             .map_err(|e| VcsError::Other(format!("get @ commit: {e}")))
@@ -249,13 +288,21 @@ impl JjBackend {
 
     /// Parent of `@` (`@-`). Returns the empty-tree sentinel on a root `@`.
     fn working_copy_parent(&self) -> Result<Option<Commit>, VcsError> {
-        let wc = self.working_copy_commit()?;
+        let repo = self.repo_snapshot()?;
+        let wc_id = repo
+            .view()
+            .get_wc_commit_id(self.workspace.workspace_name())
+            .ok_or_else(|| VcsError::Other("no working-copy commit for this workspace".into()))?
+            .clone();
+        let wc = repo
+            .store()
+            .get_commit(&wc_id)
+            .map_err(|e| VcsError::Other(format!("get @ commit: {e}")))?;
         let parent_id = match wc.parent_ids().first() {
             Some(id) => id.clone(),
             None => return Ok(None),
         };
-        let parent = self
-            .repo
+        let parent = repo
             .store()
             .get_commit(&parent_id)
             .map_err(|e| VcsError::Other(format!("get @- commit: {e}")))?;
@@ -264,6 +311,17 @@ impl JjBackend {
 }
 
 impl VcsBackend for JjBackend {
+    fn refresh(&self) -> Result<(), VcsError> {
+        self.snapshot_working_copy()?;
+        let latest_repo = self.load_latest_repo()?;
+        let mut repo = self
+            .repo
+            .write()
+            .map_err(|_| VcsError::Other("jj repository lock poisoned".into()))?;
+        *repo = latest_repo;
+        Ok(())
+    }
+
     fn kind(&self) -> VcsKind {
         VcsKind::Jj
     }
@@ -273,11 +331,14 @@ impl VcsBackend for JjBackend {
     }
 
     fn get_current_branch(&self) -> Result<Option<String>, VcsError> {
-        let wc = self.working_copy_commit()?;
-        let names: Vec<String> = self
-            .repo
+        let repo = self.repo_snapshot()?;
+        let wc_id = repo
             .view()
-            .local_bookmarks_for_commit(wc.id())
+            .get_wc_commit_id(self.workspace.workspace_name())
+            .ok_or_else(|| VcsError::Other("no working-copy commit for this workspace".into()))?;
+        let names: Vec<String> = repo
+            .view()
+            .local_bookmarks_for_commit(wc_id)
             .map(|(name, _target)| name.as_str().to_string())
             .collect();
         if names.is_empty() {
@@ -316,8 +377,8 @@ impl VcsBackend for JjBackend {
             // is computed against it here. Good enough.
             return Ok(Vec::new());
         };
-        let parent = self
-            .repo
+        let repo = self.repo_snapshot()?;
+        let parent = repo
             .store()
             .get_commit(&parent_id)
             .map_err(|e| VcsError::Other(format!("get parent: {e}")))?;
@@ -514,16 +575,15 @@ mod tests {
     }
 
     #[test]
-    fn working_tree_changed_files_lists_edits() {
+    fn refresh_snapshots_working_copy_edits() {
         if !jj_available() {
             return;
         }
         let dir = setup_pure_jj_repo();
-        // jj snapshots the working copy on each `jj` invocation. Force a
-        // snapshot of the unstaged edit before we open the backend (which
-        // reads the repo at HEAD time-of-construction).
-        run_jj(dir.path(), &["status"]);
         let backend = JjBackend::new(dir.path()).unwrap();
+        backend
+            .refresh()
+            .expect("refresh should snapshot the working-copy edit");
         let files = backend.get_working_tree_changed_files().unwrap();
         assert!(
             files.iter().any(|p| p == "a.txt"),

@@ -92,6 +92,11 @@ pub fn get_new_content(filename: &str, mode: &DiffMode, backend: &dyn VcsBackend
 }
 
 pub fn load_file_diffs(options: &DiffOptions, backend: &dyn VcsBackend) -> Vec<FileDiff> {
+    // jj represents uncommitted edits by snapshotting them into `@`. Refresh
+    // before every load so both the initial view and watch-mode reloads see
+    // changes written after Lens started. Git's implementation is a no-op.
+    let _ = backend.refresh();
+
     let mode = DiffMode::from_options(options);
     get_changed_files(options, backend)
         .into_iter()

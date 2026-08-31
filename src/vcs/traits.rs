@@ -21,6 +21,15 @@ pub enum VcsKind {
 /// "unstaged" becomes "`@-` vs `@`") or returns `VcsError::Unsupported`
 /// (the `staged_*` calls — jj has no staging area at all).
 pub trait VcsBackend {
+    /// Synchronize any VCS state that is maintained outside the process.
+    ///
+    /// Git reads the working tree directly, so the default is a no-op. jj
+    /// snapshots its working copy into `@` before it can be diffed, and its
+    /// backend overrides this hook to perform that snapshot before each load.
+    fn refresh(&self) -> Result<(), VcsError> {
+        Ok(())
+    }
+
     /// Which VCS this backend wraps.
     fn kind(&self) -> VcsKind;
 

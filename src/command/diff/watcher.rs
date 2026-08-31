@@ -24,7 +24,10 @@ pub enum WatchEvent {
 /// changes. If `db_path` is supplied, also watches that file (and its
 /// sibling WAL/journal files) so external writes to the annotation DB
 /// surface as `WatchEvent::AnnotationDb`.
-pub fn setup_watcher(db_path: Option<&Path>) -> Option<Receiver<WatchEvent>> {
+pub fn setup_watcher(
+    db_path: Option<&Path>,
+    vcs_state_dir: &Path,
+) -> Option<Receiver<WatchEvent>> {
     let (tx, rx) = mpsc::channel();
 
     // Get current directory for making paths relative
@@ -33,6 +36,7 @@ pub fn setup_watcher(db_path: Option<&Path>) -> Option<Receiver<WatchEvent>> {
     let db_dir: Option<PathBuf> = db_path_owned
         .as_ref()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let vcs_state_dir = vcs_state_dir.to_path_buf();
 
     let mut debouncer = new_debouncer(
         Duration::from_millis(500),
@@ -52,6 +56,15 @@ pub fn setup_watcher(db_path: Option<&Path>) -> Option<Receiver<WatchEvent>> {
                             db_changed = true;
                             continue;
                         }
+                    }
+
+                    // jj snapshots update `.jj/`; treating those metadata
+                    // writes as source edits would trigger another snapshot
+                    // and cause an endless watch/reload loop. The same rule
+                    // also keeps ordinary Git metadata changes out of the
+                    // source-file reload path. lens.db was handled above.
+                    if event.path.starts_with(&vcs_state_dir) {
+                        continue;
                     }
 
                     // Normalize path to be relative from current directory
