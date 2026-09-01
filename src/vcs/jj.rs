@@ -27,13 +27,23 @@ use jj_lib::revset::{
 use jj_lib::settings::UserSettings;
 use jj_lib::workspace::{default_working_copy_factories, Workspace, WorkspaceLoadError};
 
-use pollster::FutureExt as _;
 use futures::AsyncReadExt as _;
+use pollster::FutureExt as _;
 
 use super::traits::{VcsBackend, VcsKind};
-use super::types::{StackedCommitInfo, VcsError};
+use super::types::{RevisionSummary, StackedCommitInfo, VcsError};
 
 const GIT_EMPTY_TREE_SHA: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// Revset backing the `b` revision picker. Builtin revset functions only:
+/// `self.aliases` is an empty `RevsetAliasesMap`, so config-defined aliases
+/// such as `trunk()` would fail to parse here.
+const PICKER_REVSET: &str = "ancestors(@ | bookmarks() | remote_bookmarks(), 20)";
+/// Used when `PICKER_REVSET` fails to evaluate (e.g. a repo shape or parser
+/// change) so the picker degrades to the current stack rather than erroring.
+const PICKER_REVSET_FALLBACK: &str = "ancestors(@, 20)";
+/// Change-id prefix length; matches jj's own `change_id.short()`.
+const CHANGE_ID_PREFIX_LEN: usize = 12;
 
 /// jj-lib backed `VcsBackend`.
 pub struct JjBackend {
@@ -230,11 +240,7 @@ impl JjBackend {
 
     /// Read a file's bytes at a given tree, or empty string if the path
     /// doesn't resolve to a regular file.
-    fn read_file_at_tree(
-        &self,
-        commit: &Commit,
-        path: &Path,
-    ) -> Result<String, VcsError> {
+    fn read_file_at_tree(&self, commit: &Commit, path: &Path) -> Result<String, VcsError> {
         let repo = self.repo_snapshot()?;
         let internal = path.to_string_lossy().replace('\\', "/");
         let repo_path = RepoPath::from_internal_string(&internal)
@@ -242,9 +248,10 @@ impl JjBackend {
 
         let tree = commit.tree();
 
-        let merged = tree.path_value(repo_path).block_on().map_err(|e| {
-            VcsError::Other(format!("path_value {}: {e}", path.display()))
-        })?;
+        let merged = tree
+            .path_value(repo_path)
+            .block_on()
+            .map_err(|e| VcsError::Other(format!("path_value {}: {e}", path.display())))?;
 
         // Take the first resolved file value; ignore conflicts for now
         // (iteration 1 — see plan §"Known follow-ups").
@@ -280,8 +287,7 @@ impl JjBackend {
             .get_wc_commit_id(self.workspace.workspace_name())
             .ok_or_else(|| VcsError::Other("no working-copy commit for this workspace".into()))?
             .clone();
-        repo
-            .store()
+        repo.store()
             .get_commit(&wc_id)
             .map_err(|e| VcsError::Other(format!("get @ commit: {e}")))
     }
@@ -346,6 +352,48 @@ impl VcsBackend for JjBackend {
         } else {
             Ok(Some(names.join(", ")))
         }
+    }
+
+    fn list_revisions(&self, limit: usize) -> Result<Vec<RevisionSummary>, VcsError> {
+        // Stream order is newest-first, which is the order `jj log` shows
+        // and the order the picker wants — no reversing here.
+        let commits = match self.resolve_revset(PICKER_REVSET) {
+            Ok(commits) => commits,
+            Err(_) => self.resolve_revset(PICKER_REVSET_FALLBACK)?,
+        };
+
+        let repo = self.repo_snapshot()?;
+        let view = repo.view();
+        let wc_id = view.get_wc_commit_id(self.workspace.workspace_name());
+
+        Ok(commits
+            .into_iter()
+            .take(limit)
+            .map(|commit| {
+                // The revset symbol resolver decodes change ids from jj's
+                // `z-k` display alphabet, not raw hex — `reverse_hex()` is
+                // what round-trips through `resolve_ref`, `hex()` is not.
+                let change_id = commit.change_id().reverse_hex();
+                let id = change_id[..CHANGE_ID_PREFIX_LEN.min(change_id.len())].to_string();
+                let bookmarks = view
+                    .local_bookmarks_for_commit(commit.id())
+                    .map(|(name, _target)| name.as_str().to_string())
+                    .collect();
+                let summary = commit
+                    .description()
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                RevisionSummary {
+                    id,
+                    bookmarks,
+                    summary,
+                    is_working_copy: wc_id == Some(commit.id()),
+                }
+            })
+            .collect())
     }
 
     fn resolve_ref(&self, reference: &str) -> Result<String, VcsError> {
@@ -413,12 +461,7 @@ impl VcsBackend for JjBackend {
             .map(|c| {
                 let commit_id = c.id().hex();
                 let short_id = commit_id[..7.min(commit_id.len())].to_string();
-                let summary = c
-                    .description()
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .to_string();
+                let summary = c.description().lines().next().unwrap_or("").to_string();
                 StackedCommitInfo {
                     commit_id,
                     short_id,
@@ -512,10 +555,7 @@ mod tests {
     fn setup_pure_jj_repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path();
-        run_jj(
-            path,
-            &["--config", "git.colocate=false", "git", "init"],
-        );
+        run_jj(path, &["--config", "git.colocate=false", "git", "init"]);
         run_jj(path, &["bookmark", "create", "main"]);
         std::fs::write(path.join("a.txt"), "hello\n").unwrap();
         std::fs::write(path.join("b.txt"), "lens\n").unwrap();
@@ -523,6 +563,54 @@ mod tests {
         // After commit, @ is a new empty change. Add an unstaged edit:
         std::fs::write(path.join("a.txt"), "hello\nworld\n").unwrap();
         dir
+    }
+
+    #[test]
+    fn list_revisions_returns_resolvable_working_copy_first() {
+        if !jj_available() {
+            eprintln!("skipping: jj not on PATH");
+            return;
+        }
+        let dir = setup_pure_jj_repo();
+        let backend = JjBackend::new(dir.path()).expect("open jj workspace");
+        backend.refresh().expect("snapshot working copy");
+
+        let revs = backend.list_revisions(50).expect("list revisions");
+        assert!(!revs.is_empty(), "expected at least one revision");
+
+        assert!(
+            revs[0].is_working_copy,
+            "expected @ first, got {:?}",
+            revs[0]
+        );
+        assert_eq!(
+            revs.iter().filter(|r| r.is_working_copy).count(),
+            1,
+            "exactly one row should be the working copy: {revs:?}"
+        );
+
+        assert!(
+            revs.iter().any(|r| r.bookmarks.iter().any(|b| b == "main")),
+            "expected the `main` bookmark on some row: {revs:?}"
+        );
+        assert!(
+            revs.iter().any(|r| r.summary == "first"),
+            "expected the `first` commit summary: {revs:?}"
+        );
+
+        // The picker writes `id` straight into `diff_reference`, so every row
+        // must round-trip. This is what catches `ChangeId::hex()` being used
+        // where the revset resolver wants `reverse_hex()`.
+        for rev in &revs {
+            assert_eq!(
+                rev.id.len(),
+                CHANGE_ID_PREFIX_LEN,
+                "unexpected change-id prefix length: {rev:?}"
+            );
+            backend
+                .resolve_ref(&rev.id)
+                .unwrap_or_else(|e| panic!("id {:?} did not resolve: {e}", rev.id));
+        }
     }
 
     #[test]
@@ -640,7 +728,14 @@ mod tests {
         // Collect change ids via `jj log` so the test is independent of the
         // hash distribution on any particular machine.
         let out = std::process::Command::new("jj")
-            .args(["log", "-r", "all()", "--no-graph", "-T", "change_id.short() ++ \"\\n\""])
+            .args([
+                "log",
+                "-r",
+                "all()",
+                "--no-graph",
+                "-T",
+                "change_id.short() ++ \"\\n\"",
+            ])
             .current_dir(path)
             .output()
             .unwrap();

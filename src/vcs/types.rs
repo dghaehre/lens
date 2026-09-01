@@ -34,6 +34,22 @@ pub struct StackedCommitInfo {
     pub summary: String,
 }
 
+/// One row in the revision picker. `id` is written verbatim into
+/// `diff_reference` when the row is chosen, so it must round-trip through
+/// `resolve_ref`.
+#[derive(Clone, Debug)]
+pub struct RevisionSummary {
+    /// Revset symbol identifying this revision (jj: a 12-char change-id
+    /// prefix in jj's `z-k` display alphabet).
+    pub id: String,
+    /// Local bookmarks pointing at this revision, if any.
+    pub bookmarks: Vec<String>,
+    /// First line of the description; empty when there is none.
+    pub summary: String,
+    /// Whether this is the working-copy revision (`@`).
+    pub is_working_copy: bool,
+}
+
 /// Information about a Git commit.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // Fields populated by GitBackend; consumed by diff UI / future commands

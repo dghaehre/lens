@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use super::types::{StackedCommitInfo, VcsError};
+use super::types::{RevisionSummary, StackedCommitInfo, VcsError};
 
 /// Which VCS backend is in use. Some code paths (annotations, watcher)
 /// are git-only in iteration 1 and need to branch on this.
@@ -40,6 +40,14 @@ pub trait VcsBackend {
     /// Currently checked-out branch name (git) or bookmark(s) at `@` (jj).
     /// Returns `Ok(None)` in detached-HEAD or no-bookmark cases.
     fn get_current_branch(&self) -> Result<Option<String>, VcsError>;
+
+    /// Recent revisions suitable for a "pick a diff base" picker, newest
+    /// first, capped at `limit`. Git has no implementation yet — there `b`
+    /// keeps its typed prompt.
+    fn list_revisions(&self, limit: usize) -> Result<Vec<RevisionSummary>, VcsError> {
+        let _ = limit;
+        Err(VcsError::Unsupported("revision listing is jj-only".into()))
+    }
 
     /// Resolve a user-supplied reference (commit-ish, branch, tag, revset)
     /// to a stable identifier — a 40-char hex SHA for git, a hex commit-id

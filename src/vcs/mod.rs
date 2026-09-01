@@ -11,4 +11,4 @@ mod types;
 pub use git::GitBackend;
 pub use jj::JjBackend;
 pub use traits::{VcsBackend, VcsKind};
-pub use types::{StackedCommitInfo, VcsError};
+pub use types::{RevisionSummary, StackedCommitInfo, VcsError};

@@ -23,7 +23,7 @@ use super::loader::{get_current_branch, load_file_diffs, load_single_commit_diff
 use super::pr_comment_editor::{PrCommentEditor, PrCommentEditorResult, PrCommentIntent};
 use super::render::{
     render_diff, render_empty_state, truncate_path, FilePickerItem, KeyBind, KeyBindSection, Modal,
-    ModalContent, ModalFileStatus, ModalResult,
+    ModalContent, ModalFileStatus, ModalResult, RevsetPickerItem,
 };
 use super::state::{
     adjust_scroll_for_hunk, adjust_scroll_to_line, AnnotationSource, AppState, PendingGhAction,
@@ -38,7 +38,7 @@ use super::watcher::{setup_watcher, WatchEvent};
 use super::DiffOptions;
 
 use crate::commit_reference::CommitReference;
-use crate::vcs::{StackedCommitInfo, VcsBackend, VcsKind};
+use crate::vcs::{RevisionSummary, StackedCommitInfo, VcsBackend, VcsKind};
 
 /// Navigate to a different commit in stacked mode.
 /// Returns true if navigation was successful.
@@ -897,6 +897,73 @@ fn spawn_input_thread(tx: std::sync::mpsc::Sender<AppEvent>) -> (Arc<AtomicBool>
     (running, handle)
 }
 
+/// How many revisions the jj revset picker lists.
+const REVSET_PICKER_LIMIT: usize = 50;
+
+/// Format `list_revisions` output into picker rows, prepending a synthetic
+/// "working copy" row that clears the diff base (the equivalent of submitting
+/// an empty query in the `rev:` prompt).
+fn build_revset_items(revisions: Vec<RevisionSummary>) -> Vec<RevsetPickerItem> {
+    let mut items = vec![RevsetPickerItem {
+        label: "   (working copy — no base ref)".to_string(),
+        revset: None,
+    }];
+
+    items.extend(revisions.into_iter().map(|rev| {
+        let marker = if rev.is_working_copy { "@" } else { " " };
+        let bookmarks = if rev.bookmarks.is_empty() {
+            String::new()
+        } else {
+            format!("  {}", rev.bookmarks.join(" "))
+        };
+        let summary = if rev.summary.is_empty() {
+            "(no description)".to_string()
+        } else {
+            rev.summary.clone()
+        };
+        RevsetPickerItem {
+            label: format!("{} {}{}  {}", marker, rev.id, bookmarks, summary),
+            revset: Some(rev.id),
+        }
+    }));
+
+    items
+}
+
+/// Apply a user-supplied diff base. `None` or an all-whitespace string clears
+/// it (the unstaged view). Returns the message to surface on failure; the
+/// caller decides where to show it.
+///
+/// Shared by the `rev:` footer prompt and the jj revset picker so the two
+/// entry points can never drift on validation or sentinel handling.
+fn apply_diff_reference(
+    raw: Option<&str>,
+    backend: &dyn VcsBackend,
+    options: &mut DiffOptions,
+    state: &mut AppState,
+) -> Result<(), String> {
+    let raw = raw.unwrap_or("").trim().to_string();
+
+    if raw.is_empty() {
+        options.reference = None;
+        state.set_diff_reference(None);
+        state.needs_reload = true;
+        return Ok(());
+    }
+
+    // `git diff --cached` sentinel — bypasses ref resolution.
+    let is_sentinel = raw == "--cached" || raw == "--staged";
+    if !is_sentinel {
+        backend.resolve_ref(&raw).map_err(|e| e.to_string())?;
+    }
+
+    let reference = raw.parse::<CommitReference>().map_err(|e| e.to_string())?;
+    options.reference = Some(reference);
+    state.set_diff_reference(Some(raw));
+    state.needs_reload = true;
+    Ok(())
+}
+
 fn run_app_internal(
     mut options: DiffOptions,
     file_diffs: Vec<super::types::FileDiff>,
@@ -1389,42 +1456,15 @@ fn run_app_internal(
                             state.ref_input.cancel();
                         }
                         KeyCode::Enter => {
-                            let raw = state.ref_input.query.trim().to_string();
-                            if raw.is_empty() {
-                                options.reference = None;
-                                state.set_diff_reference(None);
-                                state.ref_input.cancel();
-                                state.needs_reload = true;
-                            } else if raw == "--cached" || raw == "--staged" {
-                                // `git diff --cached` sentinel — bypass ref resolution.
-                                match raw.parse::<CommitReference>() {
-                                    Ok(reference) => {
-                                        options.reference = Some(reference);
-                                        state.set_diff_reference(Some(raw));
-                                        state.ref_input.cancel();
-                                        state.needs_reload = true;
-                                    }
-                                    Err(e) => {
-                                        state.ref_input.error = Some(e.to_string());
-                                    }
-                                }
-                            } else {
-                                match backend.resolve_ref(&raw) {
-                                    Ok(_) => match raw.parse::<CommitReference>() {
-                                        Ok(reference) => {
-                                            options.reference = Some(reference);
-                                            state.set_diff_reference(Some(raw));
-                                            state.ref_input.cancel();
-                                            state.needs_reload = true;
-                                        }
-                                        Err(e) => {
-                                            state.ref_input.error = Some(e.to_string());
-                                        }
-                                    },
-                                    Err(e) => {
-                                        state.ref_input.error = Some(e.to_string());
-                                    }
-                                }
+                            let raw = state.ref_input.query.clone();
+                            match apply_diff_reference(
+                                Some(&raw),
+                                backend,
+                                &mut options,
+                                &mut state,
+                            ) {
+                                Ok(()) => state.ref_input.cancel(),
+                                Err(e) => state.ref_input.error = Some(e),
                             }
                         }
                         KeyCode::Backspace => {
@@ -1567,6 +1607,23 @@ fn run_app_internal(
                                         ensure_sidebar_visible(&mut state, visible_height);
                                     }
                                     active_modal = None;
+                                }
+                                ModalResult::RevsetSelected(revset) => {
+                                    match apply_diff_reference(
+                                        revset.as_deref(),
+                                        backend,
+                                        &mut options,
+                                        &mut state,
+                                    ) {
+                                        Ok(()) => active_modal = None,
+                                        // Keep the picker open so the typed
+                                        // query survives a bad revset.
+                                        Err(e) => {
+                                            if let Some(modal) = active_modal.as_mut() {
+                                                modal.set_revset_error(e);
+                                            }
+                                        }
+                                    }
                                 }
                                 ModalResult::AnnotationJump { annotation_id } => {
                                     if let Some(ann) =
@@ -2839,8 +2896,32 @@ fn run_app_internal(
                             state.needs_reload = true;
                         }
                         KeyCode::Char('b') => {
-                            let initial = state.diff_reference.clone().unwrap_or_default();
-                            state.ref_input.start(&initial);
+                            // jj gets a picker: change ids aren't memorable, so
+                            // typing one blind is hopeless. Git keeps the prompt.
+                            let revisions = match backend.kind() {
+                                VcsKind::Jj => {
+                                    // Snapshot first so `@` reflects edits made
+                                    // since the last load — same `jj status` call
+                                    // the loader makes on every reload.
+                                    let _ = backend.refresh();
+                                    backend.list_revisions(REVSET_PICKER_LIMIT).ok()
+                                }
+                                VcsKind::Git => None,
+                            };
+                            match revisions {
+                                Some(revisions) => {
+                                    active_modal = Some(Modal::revset_picker(
+                                        "revset",
+                                        build_revset_items(revisions),
+                                    ));
+                                }
+                                // Git, or a jj snapshot/revset failure — fall back
+                                // to the typed prompt rather than leaving `b` dead.
+                                None => {
+                                    let initial = state.diff_reference.clone().unwrap_or_default();
+                                    state.ref_input.start(&initial);
+                                }
+                            }
                         }
                         KeyCode::Char('y') => {
                             if !state.file_diffs.is_empty() {
@@ -3000,7 +3081,14 @@ fn run_app_internal(
                                             },
                                             KeyBind {
                                                 key: "b",
-                                                description: "Change diff base (empty=unstaged, --cached=staged, <ref>)",
+                                                description: match backend.kind() {
+                                                    VcsKind::Jj => {
+                                                        "Pick diff base (revset picker)"
+                                                    }
+                                                    VcsKind::Git => {
+                                                        "Change diff base (empty=unstaged, --cached=staged, <ref>)"
+                                                    }
+                                                },
                                             },
                                             KeyBind {
                                                 key: "y",

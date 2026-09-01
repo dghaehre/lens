@@ -43,6 +43,13 @@ pub struct FilePickerItem {
     pub viewed: bool,
 }
 
+/// One row in the revset picker. `revset` is `None` for the synthetic
+/// "working copy" row, which clears the diff base instead of setting one.
+pub struct RevsetPickerItem {
+    pub label: String,
+    pub revset: Option<String>,
+}
+
 #[derive(Clone, Copy)]
 pub enum FileStatus {
     Added,
@@ -71,6 +78,16 @@ pub enum ModalContent {
         filtered_indices: Vec<usize>,
         query: String,
         selected: usize,
+    },
+    RevsetPicker {
+        title: String,
+        items: Vec<RevsetPickerItem>,
+        filtered_indices: Vec<usize>,
+        query: String,
+        selected: usize,
+        /// Resolution failure from the last `enter`. Keeps the modal open so
+        /// the user can correct the query instead of losing it.
+        error: Option<String>,
     },
     PrDescription {
         /// PR slug + title rendered as the modal title bar.
@@ -146,6 +163,9 @@ pub enum ModalResult {
     #[allow(dead_code)]
     Selected(usize, String),
     FileSelected(usize),
+    /// A diff base was chosen in the revset picker. `None` means the
+    /// synthetic "working copy" row — clear the base.
+    RevsetSelected(Option<String>),
     AnnotationJump {
         annotation_id: AnnotationId,
     },
@@ -278,6 +298,28 @@ impl Modal {
         }
     }
 
+    pub fn revset_picker(title: impl Into<String>, items: Vec<RevsetPickerItem>) -> Self {
+        let filtered_indices: Vec<usize> = (0..items.len()).collect();
+        Self {
+            content: ModalContent::RevsetPicker {
+                title: title.into(),
+                items,
+                filtered_indices,
+                query: String::new(),
+                selected: 0,
+                error: None,
+            },
+        }
+    }
+
+    /// Surface a failed revset resolution without rebuilding the modal, so
+    /// the typed query and selection survive.
+    pub fn set_revset_error(&mut self, msg: impl Into<String>) {
+        if let ModalContent::RevsetPicker { error, .. } = &mut self.content {
+            *error = Some(msg.into());
+        }
+    }
+
     pub fn annotations(
         title: impl Into<String>,
         items: Vec<String>,
@@ -400,6 +442,16 @@ impl Modal {
                 let height = (items_count + 5).min(area.height * 80 / 100).max(8);
                 (width, height)
             }
+            ModalContent::RevsetPicker {
+                filtered_indices, ..
+            } => {
+                // Wider than the file picker: rows carry a change id, a
+                // bookmark column and a description.
+                let width = 90.min(area.width.saturating_sub(4));
+                let items_count = filtered_indices.len().min(15) as u16;
+                let height = (items_count + 5).min(area.height * 80 / 100).max(8);
+                (width, height)
+            }
             ModalContent::Annotations {
                 items,
                 export_input,
@@ -487,6 +539,25 @@ impl Modal {
                     filtered_indices,
                     query,
                     *selected,
+                );
+            }
+            ModalContent::RevsetPicker {
+                title,
+                items,
+                filtered_indices,
+                query,
+                selected,
+                error,
+            } => {
+                Self::render_revset_picker(
+                    frame,
+                    modal_area,
+                    title,
+                    items,
+                    filtered_indices,
+                    query,
+                    *selected,
+                    error.as_deref(),
                 );
             }
             ModalContent::Annotations {
@@ -905,6 +976,90 @@ impl Modal {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn render_revset_picker(
+        frame: &mut Frame,
+        area: Rect,
+        title: &str,
+        items: &[RevsetPickerItem],
+        filtered_indices: &[usize],
+        query: &str,
+        selected: usize,
+        error: Option<&str>,
+    ) {
+        let t = theme::get();
+        let block = Block::default()
+            .title(format!(" {} ", title))
+            .title_style(Style::default().fg(t.ui.border_focused).bold())
+            .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(Style::default().fg(t.ui.border_unfocused));
+
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        use ratatui::layout::{Constraint, Direction, Layout};
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(1),
+            ])
+            .split(inner);
+
+        let input_line = Line::from(vec![
+            Span::styled("> ", Style::default().fg(t.ui.status_added)),
+            Span::styled(query, Style::default().fg(t.ui.text_primary)),
+            Span::styled("_", Style::default().fg(t.ui.text_muted)),
+        ]);
+        frame.render_widget(Paragraph::new(input_line), chunks[0]);
+
+        // Spacer row doubles as the status line: an error when the last
+        // submission failed, otherwise a hint that the query is usable as a
+        // literal revset when nothing matches.
+        let status_line = if let Some(err) = error {
+            Line::from(Span::styled(
+                format!("  {}", err),
+                Style::default().fg(t.ui.stats_removed),
+            ))
+        } else if filtered_indices.is_empty() && !query.is_empty() {
+            Line::from(Span::styled(
+                "  no match — enter uses the query as a revset",
+                Style::default().fg(t.ui.text_muted),
+            ))
+        } else {
+            Line::from("")
+        };
+        frame.render_widget(Paragraph::new(status_line), chunks[1]);
+
+        let visible_count = chunks[2].height as usize;
+        let scroll_offset = if selected >= visible_count {
+            selected - visible_count + 1
+        } else {
+            0
+        };
+
+        let list_items: Vec<ListItem> = filtered_indices
+            .iter()
+            .enumerate()
+            .skip(scroll_offset)
+            .take(visible_count)
+            .map(|(i, &idx)| {
+                let item = &items[idx];
+                let style = if i == selected {
+                    Style::default().fg(t.ui.selection_fg).bg(t.ui.selection_bg)
+                } else {
+                    Style::default().fg(t.ui.text_primary)
+                };
+                ListItem::new(Line::from(Span::styled(format!(" {} ", item.label), style)))
+            })
+            .collect();
+
+        let list = List::new(list_items);
+        frame.render_widget(list, chunks[2]);
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn render_annotations(
         frame: &mut Frame,
         area: Rect,
@@ -1200,10 +1355,12 @@ impl Modal {
     /// Handle keyboard input for the modal.
     /// Returns Some(ModalResult) if the modal should close.
     pub fn handle_input(&mut self, key: KeyEvent, terminal_height: u16) -> Option<ModalResult> {
-        // FilePicker and Annotations handle their own dismiss logic
+        // FilePicker, RevsetPicker and Annotations handle their own dismiss logic
         if !matches!(
             self.content,
-            ModalContent::FilePicker { .. } | ModalContent::Annotations { .. }
+            ModalContent::FilePicker { .. }
+                | ModalContent::RevsetPicker { .. }
+                | ModalContent::Annotations { .. }
         ) {
             // Close on Esc, q, or Ctrl+C
             if key.code == KeyCode::Esc
@@ -1377,6 +1534,61 @@ impl Modal {
                 KeyCode::Char(c) => {
                     query.push(c);
                     Self::update_filtered_indices(items, query, filtered_indices, selected);
+                    None
+                }
+                _ => None,
+            },
+            ModalContent::RevsetPicker {
+                items,
+                filtered_indices,
+                query,
+                selected,
+                error,
+                ..
+            } => match key.code {
+                KeyCode::Esc => Some(ModalResult::Dismissed),
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    Some(ModalResult::Dismissed)
+                }
+                KeyCode::Down => {
+                    if *selected < filtered_indices.len().saturating_sub(1) {
+                        *selected += 1;
+                    }
+                    None
+                }
+                KeyCode::Up => {
+                    *selected = selected.saturating_sub(1);
+                    None
+                }
+                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if *selected < filtered_indices.len().saturating_sub(1) {
+                        *selected += 1;
+                    }
+                    None
+                }
+                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    *selected = selected.saturating_sub(1);
+                    None
+                }
+                KeyCode::Enter => match filtered_indices.get(*selected) {
+                    Some(&idx) => Some(ModalResult::RevsetSelected(items[idx].revset.clone())),
+                    // Nothing matched the filter: treat what was typed as a
+                    // literal revset so `@---` and friends still work.
+                    None if !query.trim().is_empty() => {
+                        Some(ModalResult::RevsetSelected(Some(query.trim().to_string())))
+                    }
+                    None => Some(ModalResult::Dismissed),
+                },
+                KeyCode::Backspace => {
+                    query.pop();
+                    *error = None;
+                    Self::update_revset_filtered_indices(items, query, filtered_indices, selected);
+                    None
+                }
+                KeyCode::Char(c) => {
+                    query.push(c);
+                    *error = None;
+                    Self::update_revset_filtered_indices(items, query, filtered_indices, selected);
                     None
                 }
                 _ => None,
@@ -1645,6 +1857,24 @@ impl Modal {
                     }
                 }
             }
+        }
+    }
+
+    fn update_revset_filtered_indices(
+        items: &[RevsetPickerItem],
+        query: &str,
+        filtered_indices: &mut Vec<usize>,
+        selected: &mut usize,
+    ) {
+        let query_lower = query.to_lowercase();
+        *filtered_indices = items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| fuzzy_match(&item.label.to_lowercase(), &query_lower))
+            .map(|(i, _)| i)
+            .collect();
+        if *selected >= filtered_indices.len() {
+            *selected = filtered_indices.len().saturating_sub(1);
         }
     }
 
