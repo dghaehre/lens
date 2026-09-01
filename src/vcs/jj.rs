@@ -332,7 +332,7 @@ impl VcsBackend for JjBackend {
         VcsKind::Jj
     }
 
-    fn git_dir(&self) -> &Path {
+    fn state_dir(&self) -> &Path {
         &self.state_dir
     }
 
@@ -417,12 +417,9 @@ impl VcsBackend for JjBackend {
         let commit = self.resolve_single_commit(r)?;
         let parent_id = commit.parent_ids().first().cloned();
         let Some(parent_id) = parent_id else {
-            // Root commit — diff against empty tree by listing all files in `to`.
-            // Simplest: diff to itself returns empty; we want all paths.
-            // For iteration 1 just return paths from a self-vs-self diff (empty)
-            // which means root commits show nothing. Same behavior as git when
-            // get_parent_ref_or_empty returns the empty-tree SHA but no diff
-            // is computed against it here. Good enough.
+            // Only jj's root commit has no parent, and its tree is empty —
+            // so "files it changed" really is nothing. Every user commit
+            // parents the root, so this branch is unreachable for them.
             return Ok(Vec::new());
         };
         let repo = self.repo_snapshot()?;
@@ -621,12 +618,124 @@ mod tests {
         }
         let dir = setup_pure_jj_repo();
         let backend = JjBackend::new(dir.path()).expect("open jj backend");
-        assert!(
-            backend.git_dir().ends_with(".jj"),
-            "state dir should be .jj, got {}",
-            backend.git_dir().display(),
+        // `Workspace::load` canonicalizes the root, so canonicalize the
+        // expected side too (macOS resolves /var -> /private/var).
+        assert_eq!(
+            backend.state_dir(),
+            dir.path().canonicalize().unwrap().join(".jj")
         );
+        assert!(backend.state_dir().is_dir());
         assert_eq!(backend.kind(), VcsKind::Jj);
+    }
+
+    /// `lens.db` is sited at `state_dir()`, so that directory has to be a
+    /// real, writable location for a SQLite file — not just a marker path.
+    #[test]
+    fn state_dir_is_writable_for_lens_db() {
+        use crate::command::diff::annotation_store::{
+            AnnotationStore, AnnotationTarget, NewAnnotation, SqliteStore,
+        };
+
+        if !jj_available() {
+            eprintln!("skipping: jj not on PATH");
+            return;
+        }
+        let dir = setup_pure_jj_repo();
+        let backend = JjBackend::new(dir.path()).expect("open jj backend");
+
+        let db_path = backend.state_dir().join("lens.db");
+        let mut store = SqliteStore::open(&db_path).expect("open lens.db under .jj");
+        let created = store
+            .create(NewAnnotation {
+                filename: "a.txt".to_string(),
+                target: AnnotationTarget::File,
+                content: "needs a look".to_string(),
+                origin: "agent".to_string(),
+                created_at: std::time::SystemTime::UNIX_EPOCH,
+            })
+            .expect("create annotation");
+
+        let all = store.list().expect("list annotations");
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, created.id);
+        assert!(
+            dir.path().join(".jj/lens.db").is_file(),
+            "lens.db should land at <workspace>/.jj/lens.db",
+        );
+    }
+
+    /// Regression guard for the watch loop: jj's snapshot walker treats
+    /// `.jj` as a reserved directory and refuses to descend into it, so
+    /// `lens.db` must never show up as a working-copy change. If it did,
+    /// every annotation write would dirty `@`, and watch mode would
+    /// snapshot -> reload -> snapshot forever.
+    #[test]
+    fn lens_db_does_not_dirty_the_jj_working_copy() {
+        use crate::command::diff::annotation_store::SqliteStore;
+
+        if !jj_available() {
+            eprintln!("skipping: jj not on PATH");
+            return;
+        }
+        let dir = setup_pure_jj_repo();
+        let backend = JjBackend::new(dir.path()).expect("open jj backend");
+
+        let db_path = backend.state_dir().join("lens.db");
+        let _store = SqliteStore::open(&db_path).expect("open lens.db under .jj");
+
+        backend.refresh().expect("snapshot working copy");
+        let changed = backend
+            .get_working_tree_changed_files()
+            .expect("working tree changed files");
+        assert!(
+            !changed
+                .iter()
+                .any(|f| f.contains("lens.db") || f.starts_with(".jj")),
+            "lens.db must not appear as a working-copy change, got {:?}",
+            changed,
+        );
+
+        let status = Command::new("jj")
+            .arg("status")
+            .current_dir(dir.path())
+            .env("JJ_USER", "lens test")
+            .env("JJ_EMAIL", "lens@test")
+            .output()
+            .expect("jj status");
+        let stdout = String::from_utf8_lossy(&status.stdout);
+        assert!(
+            !stdout.contains("lens.db"),
+            "jj status should not mention lens.db, got: {}",
+            stdout,
+        );
+    }
+
+    /// `state_dir()` is deliberately per-workspace, not the shared repo
+    /// directory: two workspaces have different `@` commits and different
+    /// file contents, and annotations are anchored by (file, line). Pins
+    /// that decision so a switch to `Workspace::repo_path()` fails loudly.
+    #[test]
+    fn state_dir_in_secondary_workspace() {
+        if !jj_available() {
+            eprintln!("skipping: jj not on PATH");
+            return;
+        }
+        let dir = setup_pure_jj_repo();
+        let primary = JjBackend::new(dir.path()).expect("open primary backend");
+
+        let secondary_root = dir.path().join("ws2");
+        run_jj(dir.path(), &["workspace", "add", "--name", "ws2", "ws2"]);
+        let secondary = JjBackend::new(&secondary_root).expect("open secondary backend");
+
+        assert_eq!(
+            secondary.state_dir(),
+            secondary_root.canonicalize().unwrap().join(".jj")
+        );
+        assert_ne!(secondary.state_dir(), primary.state_dir());
+
+        // A DB written in the secondary workspace is invisible to the primary.
+        std::fs::write(secondary.state_dir().join("lens.db"), b"").unwrap();
+        assert!(!primary.state_dir().join("lens.db").exists());
     }
 
     #[test]

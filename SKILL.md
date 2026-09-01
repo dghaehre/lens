@@ -5,7 +5,7 @@ description: Read, reply to, and continuously watch for human review comments le
 
 # Lens annotations
 
-`lens` is a terminal code-review tool. Humans leave review comments on the working tree (file-level or line-range, on either side of the diff) and persist them in a per-repo SQLite store at `.git/lens.db`. The `lens annotation` subcommand exposes that store to agents over JSON on stdout.
+`lens` is a terminal code-review tool. Humans leave review comments on the working tree (file-level or line-range, on either side of the diff) and persist them in a per-repo SQLite store at `.git/lens.db` (or `.jj/lens.db` in a Jujutsu repo). The `lens annotation` subcommand exposes that store to agents over JSON on stdout.
 
 Treat unresolved annotations the same way you would treat unresolved PR review comments: read them, address the underlying request in code, and reply on the thread so the human knows what you did.
 
@@ -17,7 +17,7 @@ Use it without being asked when any of these are true:
 - You just received a task in a repo that uses lens — list annotations before writing any code so you don't undo recent feedback.
 - You are about to declare a piece of work complete — list annotations again to catch any new ones left while you were working.
 - The user mentions an "annotation", a "comment", a "review note", or "lens" — go straight to `lens annotation list`.
-- You did a `git pull`, switched branches, or rebased — annotations are stored per-repo, so new ones may have appeared.
+- You did a `git pull` / `jj git fetch`, switched branches, or rebased — annotations are stored per-repo, so new ones may have appeared.
 
 Do not bring it up in repos that do not use lens. Check once with `lens annotation list` — if the command fails because lens is not installed, or returns `[]` and the repo shows no other sign of using lens, drop it for the session.
 
@@ -29,7 +29,7 @@ Run as a continuous loop: block on `lens annotation watch`, address whatever it 
 lens annotation watch
 ```
 
-Run it via the Bash tool with `run_in_background: true` and `timeout: 600000`. It uses fs-notify on `.git/lens.db` (no polling), and on exit prints the actionable threads as JSON on stdout in the same shape as `lens annotation list`. The harness notifies you when it returns. Do not poll, sleep, or do other work in the meantime. On a 10-minute timeout, just restart it.
+Run it via the Bash tool with `run_in_background: true` and `timeout: 600000`. It uses fs-notify on the annotation DB (`.git/lens.db`, or `.jj/lens.db` on jj; no polling), and on exit prints the actionable threads as JSON on stdout in the same shape as `lens annotation list`. The harness notifies you when it returns. Do not poll, sleep, or do other work in the meantime. On a 10-minute timeout, just restart it.
 
 If actionable threads already exist when you launch `watch`, it returns immediately with them — so the first iteration handles any backlog from before you started the loop.
 
@@ -40,7 +40,7 @@ If actionable threads already exist when you launch `watch`, it returns immediat
 3. **Loop.** Return to step 1.
 4. **Exit the loop only when the user says so.** When you exit, briefly confirm.
 
-If `lens annotation watch` exits with no JSON (or a parse error / "not a git repo" / lens not installed), drop the loop for the session — there's nothing to watch.
+If `lens annotation watch` exits with no JSON (or a parse error / "not a repository" / lens not installed), drop the loop for the session — there's nothing to watch.
 
 ## Per-annotation workflow
 
@@ -49,7 +49,7 @@ For each actionable annotation:
 1. **Read first.** `lens annotation list --id <id>` — read the whole thread end-to-end before changing code in that area.
 2. **Address in code.** Make the smallest correct change the comment asks for. If you disagree, do not silently ignore — reply explaining your reasoning and ask the user how to proceed.
 3. **Reply on the thread.** Use `lens annotation reply --id <id> "<message>"` with a short, factual note pointing to what you did (a file:line, a one-line summary). One reply per addressed annotation; do not spam. **Do not resolve the thread** — the user reviews your reply and resolves it themselves.
-4. **Do not stage your implementation.** Leave the edits unstaged so the user can review the diff before staging.
+4. **Do not commit your implementation.** Leave the edits uncommitted — on git, unstaged — so the user can review the diff.
 
 ## Commands
 
@@ -130,5 +130,5 @@ Avoid:
 - Do not delete annotations authored by the user (`origin: "ui"`). If a thread feels stale, ask before deleting.
 - Do not mark something "addressed" in a reply unless you actually changed the code (or have a concrete reason for declining).
 - Do not resolve threads in loop mode — the user resolves after reviewing your reply.
-- Do not stage your implementation in loop mode — leave it unstaged for the user to review.
+- Do not commit your implementation in loop mode — leave it uncommitted (on git, unstaged) for the user to review.
 - Do not parse the human-formatted output of the TUI; always go through `lens annotation` subcommands for machine reads.

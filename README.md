@@ -11,7 +11,7 @@ Review your working tree against any ref side-by-side without leaving your termi
 - Side-by-side diff viewer with tree-sitter syntax highlighting
 - Annotate selections, hunks, or whole files
 - Watch mode and stacked-commit review
-- Works with Git repositories
+- Works with Git and Jujutsu (jj) repositories
 
 ## Table of Contents
 - [Getting Started](#getting-started-)
@@ -27,7 +27,7 @@ Review your working tree against any ref side-by-side without leaving your termi
 
 ### Prerequisites
 Before you begin, ensure you have:
-1. `git` installed on your system
+1. `git` installed on your system (or `jj`, if you work in Jujutsu repositories)
 
 ### Installation
 

@@ -973,23 +973,20 @@ fn run_app_internal(
     theme::init(options.theme.as_deref());
     highlight::init();
 
-    // Annotations persist in `<git_dir>/lens.db` on git; jj support for
-    // annotations is a follow-up — fall back to in-memory there so the TUI
-    // still works (annotations are session-scoped and lost on exit).
-    let db_path = backend.git_dir().join("lens.db");
-    let store: Box<dyn AnnotationStore> = if backend.kind() == VcsKind::Jj {
-        Box::new(InMemoryStore::new())
-    } else {
-        match SqliteStore::open(&db_path) {
-            Ok(s) => Box::new(s),
-            Err(e) => {
-                eprintln!(
-                    "\x1b[93mwarning:\x1b[0m could not open annotation DB at {}: {} \u{2014} annotations will not persist this session",
-                    db_path.display(),
-                    e
-                );
-                Box::new(InMemoryStore::new())
-            }
+    // Annotations persist in `<state_dir>/lens.db` — `.git/` on git, `.jj/`
+    // on jj. jj's snapshot walker refuses to descend into `.jj/`, and a
+    // colocated repo's `.jj/.gitignore` is `/*`, so the DB is invisible to
+    // both VCSes and can never dirty the working copy.
+    let db_path = backend.state_dir().join("lens.db");
+    let store: Box<dyn AnnotationStore> = match SqliteStore::open(&db_path) {
+        Ok(s) => Box::new(s),
+        Err(e) => {
+            eprintln!(
+                "\x1b[93mwarning:\x1b[0m could not open annotation DB at {}: {} \u{2014} annotations will not persist this session",
+                db_path.display(),
+                e
+            );
+            Box::new(InMemoryStore::new())
         }
     };
     let mut state = AppState::with_store(file_diffs, options.focus.as_deref(), store);
@@ -1010,14 +1007,7 @@ fn run_app_internal(
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
     let watch_rx = if options.watch {
-        // On jj we don't open a SQLite annotation DB, so there's nothing
-        // for the watcher to monitor besides the working tree.
-        let db_path_for_watcher = if backend.kind() == VcsKind::Jj {
-            None
-        } else {
-            Some(db_path.as_path())
-        };
-        setup_watcher(db_path_for_watcher, backend.git_dir())
+        setup_watcher(Some(db_path.as_path()), backend.state_dir())
     } else {
         None
     };

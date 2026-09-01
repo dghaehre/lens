@@ -6,8 +6,8 @@ use std::path::Path;
 
 use super::types::{RevisionSummary, StackedCommitInfo, VcsError};
 
-/// Which VCS backend is in use. Some code paths (annotations, watcher)
-/// are git-only in iteration 1 and need to branch on this.
+/// Which VCS backend is in use. The staging-area code paths
+/// (`--cached` / `--staged`) are git-only and need to branch on this.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VcsKind {
     Git,
@@ -34,8 +34,10 @@ pub trait VcsBackend {
     fn kind(&self) -> VcsKind;
 
     /// Path to the VCS state directory — `.git/` for git, `.jj/` for jj.
-    /// Used to site per-repo state like `lens.db`.
-    fn git_dir(&self) -> &Path;
+    /// Used to site per-repo state like `lens.db`. Per-worktree on git
+    /// (it is `Repository::path()`) and per-workspace on jj, so two
+    /// worktrees/workspaces of one repo get independent state.
+    fn state_dir(&self) -> &Path;
 
     /// Currently checked-out branch name (git) or bookmark(s) at `@` (jj).
     /// Returns `Ok(None)` in detached-HEAD or no-bookmark cases.

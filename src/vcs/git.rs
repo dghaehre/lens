@@ -871,7 +871,7 @@ impl super::VcsBackend for GitBackend {
         super::VcsKind::Git
     }
 
-    fn git_dir(&self) -> &Path {
+    fn state_dir(&self) -> &Path {
         self.git_dir()
     }
 

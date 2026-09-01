@@ -24,10 +24,7 @@ pub enum WatchEvent {
 /// changes. If `db_path` is supplied, also watches that file (and its
 /// sibling WAL/journal files) so external writes to the annotation DB
 /// surface as `WatchEvent::AnnotationDb`.
-pub fn setup_watcher(
-    db_path: Option<&Path>,
-    vcs_state_dir: &Path,
-) -> Option<Receiver<WatchEvent>> {
+pub fn setup_watcher(db_path: Option<&Path>, vcs_state_dir: &Path) -> Option<Receiver<WatchEvent>> {
     let (tx, rx) = mpsc::channel();
 
     // Get current directory for making paths relative
@@ -131,5 +128,52 @@ fn is_annotation_db_path(path: &Path, db_path: &Path) -> bool {
         matches!(rest, "-journal" | "-wal" | "-shm")
     } else {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The annotation-DB check in the event loop runs *before* the
+    /// `starts_with(vcs_state_dir)` skip. That ordering is load-bearing:
+    /// `lens.db` lives inside the state dir (`.git/` or `.jj/`), so if the
+    /// skip ran first the DB write would be swallowed as VCS metadata and
+    /// external `lens annotation` writes would never reach the TUI.
+    #[test]
+    fn db_under_vcs_state_dir_classified_as_db() {
+        let db = Path::new("/repo/.jj/lens.db");
+        assert!(is_annotation_db_path(Path::new("/repo/.jj/lens.db"), db));
+        assert!(is_annotation_db_path(
+            Path::new("/repo/.jj/lens.db-wal"),
+            db
+        ));
+        assert!(is_annotation_db_path(
+            Path::new("/repo/.jj/lens.db-shm"),
+            db
+        ));
+        assert!(is_annotation_db_path(
+            Path::new("/repo/.jj/lens.db-journal"),
+            db
+        ));
+
+        // Other writes under the state dir are not the DB, and fall through
+        // to the skip.
+        assert!(!is_annotation_db_path(
+            Path::new("/repo/.jj/working_copy/tree_state"),
+            db
+        ));
+    }
+
+    /// `is_annotation_db_path` compares by filename, so notify's event path
+    /// and the configured db path can disagree on symlink resolution
+    /// (macOS reports `/private/var` for a `/var` tempdir) without causing
+    /// a false negative.
+    #[test]
+    fn is_annotation_db_path_matches_across_canonicalization() {
+        assert!(is_annotation_db_path(
+            Path::new("/private/var/t/repo/.jj/lens.db"),
+            Path::new("/var/t/repo/.jj/lens.db"),
+        ));
     }
 }
