@@ -66,6 +66,7 @@ impl AnnotationStore for InMemoryStore {
             id,
             filename: draft.filename,
             target: draft.target,
+            review_context: draft.review_context,
             comments: vec![root],
             resolved: false,
         };

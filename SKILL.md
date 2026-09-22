@@ -5,7 +5,7 @@ description: Read, reply to, and continuously watch for human review comments le
 
 # Lens annotations
 
-`lens` is a terminal code-review tool. Humans leave review comments on the working tree (file-level or line-range, on either side of the diff) and persist them in a per-repo SQLite store at `.git/lens.db` (or `.jj/lens.db` in a Jujutsu repo). The `lens annotation` subcommand exposes that store to agents over JSON on stdout.
+`lens` is a terminal code-review tool. Humans leave review comments on the working tree or an immutable jj commit diff (file-level or line-range, on either side of the diff) and persist them in a per-repo SQLite store at `.git/lens.db` (or `.jj/lens.db` in a Jujutsu repo). The `lens annotation` subcommand exposes that store to agents over JSON on stdout.
 
 Treat unresolved annotations the same way you would treat unresolved PR review comments: read them, address the underlying request in code, and reply on the thread so the human knows what you did.
 
@@ -77,6 +77,10 @@ lens annotation reply --id 42 "Fixed in <commit-sha>: switched to checked arithm
 # is genuinely no existing thread to attach to.
 lens annotation new --file src/main.rs --line 42 --line-end 48 "Consider extracting this branch."
 
+# When creating a new annotation for an immutable jj review, preserve the
+# `review_context` pair returned by `list` so it appears on that exact diff.
+lens annotation new --file src/main.rs --line 42 --old-commit <parent> --new-commit <commit> "Consider extracting this branch."
+
 # Mark a thread as resolved. The loop workflow above does NOT resolve threads —
 # the user does that after reviewing your reply. Only resolve outside the loop
 # when the user has explicitly asked you to.
@@ -98,6 +102,7 @@ lens annotation delete --id 42
   "origin": "ui",
   "filename": "src/main.rs",
   "target": { "kind": "line_range", "panel": "new", "start_line": 42, "end_line": 48 },
+  "review_context": null,
   "resolved": false,
   "created_at": 1716800000,
   "comments": [
@@ -110,6 +115,7 @@ lens annotation delete --id 42
 - `comments[0]` is the original comment; later entries are replies in order.
 - `origin` of `ui` means the human wrote it in the TUI; `agent` / `cli` mean a programmatic caller did. Treat `ui` comments as authoritative requests from the user.
 - `target.kind` is `file` for whole-file notes; otherwise `line_range` with 1-based `start_line` / `end_line` on the `old` or `new` side of the diff.
+- `review_context` is `null` for a live working-copy review. For immutable jj review it is `{ "old_commit": "…", "new_commit": "…" }`; preserve both values when creating a new thread for that view.
 
 ## Reply style
 

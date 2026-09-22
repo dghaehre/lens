@@ -1361,7 +1361,10 @@ fn render_annotation_overlays(
                     let indent_len = indent.chars().count();
                     let inner_budget = content_width_inner.saturating_sub(indent_len);
                     let fitted = fit_to_char_width(line, inner_budget);
-                    vec![Span::raw(indent.to_string()), Span::styled(fitted, body_style)]
+                    vec![
+                        Span::raw(indent.to_string()),
+                        Span::styled(fitted, body_style),
+                    ]
                 }
                 OverlayRow::Spacer => {
                     vec![Span::raw(" ".repeat(content_width_inner))]
@@ -1373,10 +1376,7 @@ fn render_annotation_overlays(
             } else {
                 Span::styled(" ", Style::default())
             };
-            let mut line_spans = vec![
-                left_indicator,
-                Span::styled("│ ", border_style_ann),
-            ];
+            let mut line_spans = vec![left_indicator, Span::styled("│ ", border_style_ann)];
             line_spans.extend(content_spans);
             line_spans.push(Span::styled("│", border_style_ann));
             ann_lines.push(Line::from(line_spans));
@@ -2810,6 +2810,7 @@ mod tests {
             },
             filename: "src/main.rs".to_string(),
             target: AnnotationTarget::File,
+            review_context: None,
             comments,
             resolved: false,
         }

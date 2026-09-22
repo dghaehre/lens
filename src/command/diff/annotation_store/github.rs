@@ -437,6 +437,7 @@ fn thread_to_annotation(t: ThreadJson) -> Option<Annotation> {
         },
         filename: path,
         target,
+        review_context: None,
         comments,
         resolved: t.is_resolved,
     })
@@ -926,6 +927,7 @@ mod tests {
                 start_line: 40,
                 end_line: 42,
             },
+            review_context: None,
             content: "hello".to_string(),
             origin: "ui".to_string(),
             created_at: UNIX_EPOCH,
@@ -936,6 +938,7 @@ mod tests {
         NewAnnotation {
             filename: "README.md".to_string(),
             target: AnnotationTarget::File,
+            review_context: None,
             content: "thoughts".to_string(),
             origin: "ui".to_string(),
             created_at: UNIX_EPOCH,

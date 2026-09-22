@@ -32,6 +32,12 @@ pub struct DiffArgs {
     #[arg(value_parser = clap::value_parser!(CommitReference))]
     pub reference: Option<CommitReference>,
 
+    /// Review every commit selected by this jj revset as an immutable,
+    /// commit-by-commit diff. Unlike the positional base reference, this
+    /// never reads the working-copy files.
+    #[arg(long, value_name = "REVSET", conflicts_with = "reference")]
+    pub revset: Option<String>,
+
     /// Filter to specific files
     #[arg(short, long)]
     pub file: Option<Vec<String>>,
@@ -125,6 +131,14 @@ pub struct AnnotationNewArgs {
     /// Which side of the diff the line refers to.
     #[arg(long, value_enum, default_value_t = PanelArg::New)]
     pub panel: PanelArg,
+    /// Immutable parent commit for a historical review annotation. Requires
+    /// `--new-commit`; omit both for the normal live working-copy view.
+    #[arg(long, requires = "new_commit")]
+    pub old_commit: Option<String>,
+    /// Immutable reviewed commit for a historical review annotation. Requires
+    /// `--old-commit`.
+    #[arg(long, requires = "old_commit")]
+    pub new_commit: Option<String>,
     /// Source tag recorded on the annotation. Defaults to "agent" since this
     /// CLI is meant for programmatic callers; override with --source cli when
     /// invoking manually.
@@ -197,6 +211,13 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parses_jj_revset_review() {
+        let cli = Cli::try_parse_from(["lens", "--revset", "main..@"]).unwrap();
+        assert_eq!(cli.diff.revset.as_deref(), Some("main..@"));
+        assert!(cli.diff.reference.is_none());
+    }
+
+    #[test]
     fn test_annotation_list_parses() {
         let cli = Cli::try_parse_from(["lens", "annotation", "list"]).unwrap();
         match cli.command {
@@ -227,6 +248,32 @@ mod tests {
                 assert_eq!(args.line, Some(10));
                 assert_eq!(args.content, "looks off");
                 assert_eq!(args.source, "agent");
+                assert!(args.old_commit.is_none());
+                assert!(args.new_commit.is_none());
+            }
+            other => panic!("expected annotation new, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_annotation_new_parses_review_context() {
+        let cli = Cli::try_parse_from([
+            "lens",
+            "annotation",
+            "new",
+            "--file",
+            "src/lib.rs",
+            "--old-commit",
+            "parent",
+            "--new-commit",
+            "commit",
+            "looks off",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Annotation(AnnotationCommand::New(args))) => {
+                assert_eq!(args.old_commit.as_deref(), Some("parent"));
+                assert_eq!(args.new_commit.as_deref(), Some("commit"));
             }
             other => panic!("expected annotation new, got {:?}", other),
         }

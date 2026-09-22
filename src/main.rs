@@ -65,6 +65,7 @@ async fn run() -> Result<(), LensError> {
         None => {
             let options = command::diff::DiffOptions {
                 reference: cli.diff.reference,
+                revset: cli.diff.revset,
                 file: cli.diff.file,
                 watch: !cli.diff.no_watch,
                 theme: cli.diff.theme.or(config.theme.clone()),

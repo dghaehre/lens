@@ -16,7 +16,7 @@ use crossterm::{
 use ratatui::prelude::*;
 
 use super::annotation::{AnnotationEditor, AnnotationEditorResult};
-use super::annotation_store::{AnnotationStore, InMemoryStore, SqliteStore};
+use super::annotation_store::{AnnotationStore, InMemoryStore, ReviewContext, SqliteStore};
 use super::coordinates::{extract_selected_text, PanelLayout};
 use super::highlight;
 use super::loader::{get_current_branch, load_file_diffs, load_single_commit_diffs};
@@ -53,14 +53,32 @@ fn navigate_stacked_commit(
     }
     state.save_stacked_viewed_files();
     state.current_commit_index = new_index;
-    if let Some(commit) = state.stacked_commits.get(new_index) {
-        let file_diffs = load_single_commit_diffs(&commit.commit_id, &options.file, backend);
+    if let Some(commit_id) = state
+        .stacked_commits
+        .get(new_index)
+        .map(|commit| commit.commit_id.clone())
+    {
+        state.set_review_context(review_context_for_commit(&commit_id, backend));
+        let file_diffs = load_single_commit_diffs(&commit_id, &options.file, backend);
         state.reload(file_diffs, None);
         state.load_stacked_viewed_files();
         true
     } else {
         false
     }
+}
+
+/// Annotation identity for one immutable, commit-by-commit diff. Use the
+/// resolved commit ids rather than a user-entered revset so aliases and short
+/// change IDs cannot make two views of the same diff look different.
+fn review_context_for_commit(commit_id: &str, backend: &dyn VcsBackend) -> Option<ReviewContext> {
+    backend
+        .get_parent_ref_or_empty(commit_id)
+        .ok()
+        .map(|old_commit| ReviewContext {
+            old_commit,
+            new_commit: commit_id.to_string(),
+        })
 }
 
 /// Adjust sidebar scroll to ensure the selected item is visible.
@@ -846,7 +864,7 @@ fn extract_diff_snippet(
 
 pub fn run_app(options: DiffOptions, backend: &dyn VcsBackend) -> io::Result<()> {
     let file_diffs = load_file_diffs(&options, backend);
-    run_app_internal(options, file_diffs, None, backend)
+    run_app_internal(options, file_diffs, None, None, backend)
 }
 
 pub fn run_app_stacked(
@@ -857,7 +875,8 @@ pub fn run_app_stacked(
     // Load the first commit's diff
     let first_commit = &commits[0];
     let file_diffs = load_single_commit_diffs(&first_commit.commit_id, &options.file, backend);
-    run_app_internal(options, file_diffs, Some(commits), backend)
+    let review_context = review_context_for_commit(&first_commit.commit_id, backend);
+    run_app_internal(options, file_diffs, Some(commits), review_context, backend)
 }
 
 /// Unified event source for the main loop: either a crossterm input event or
@@ -946,6 +965,8 @@ fn apply_diff_reference(
 
     if raw.is_empty() {
         options.reference = None;
+        options.revset = None;
+        state.clear_stacked_mode();
         state.set_diff_reference(None);
         state.needs_reload = true;
         return Ok(());
@@ -959,8 +980,45 @@ fn apply_diff_reference(
 
     let reference = raw.parse::<CommitReference>().map_err(|e| e.to_string())?;
     options.reference = Some(reference);
+    options.revset = None;
+    state.clear_stacked_mode();
     state.set_diff_reference(Some(raw));
     state.needs_reload = true;
+    Ok(())
+}
+
+/// Replace the live diff with immutable, commit-by-commit review of an
+/// arbitrary jj revset. This path deliberately never calls `refresh()` or
+/// reads a file from disk: every side of every diff comes from jj commit
+/// trees.
+fn apply_revset_review(
+    raw: &str,
+    backend: &dyn VcsBackend,
+    options: &mut DiffOptions,
+    state: &mut AppState,
+) -> Result<(), String> {
+    if backend.kind() != VcsKind::Jj {
+        return Err("arbitrary revset review is only available in jj repositories".to_string());
+    }
+
+    let commits = backend
+        .get_commits_for_revset(raw)
+        .map_err(|e| e.to_string())?;
+    let first_commit = commits
+        .first()
+        .ok_or_else(|| format!("revset {raw:?} did not select any commits"))?;
+    let review_context = review_context_for_commit(&first_commit.commit_id, backend)
+        .ok_or_else(|| format!("could not resolve the parent of {}", first_commit.short_id))?;
+    let file_diffs = load_single_commit_diffs(&first_commit.commit_id, &options.file, backend);
+
+    state.clear_stacked_mode();
+    state.init_stacked_mode(commits);
+    state.set_review_context(Some(review_context));
+    state.set_diff_reference(Some(raw.to_string()));
+    options.reference = None;
+    options.revset = Some(raw.to_string());
+    state.reload(file_diffs, None);
+    state.load_stacked_viewed_files();
     Ok(())
 }
 
@@ -968,6 +1026,7 @@ fn run_app_internal(
     mut options: DiffOptions,
     file_diffs: Vec<super::types::FileDiff>,
     stacked_commits: Option<Vec<StackedCommitInfo>>,
+    review_context: Option<ReviewContext>,
     backend: &dyn VcsBackend,
 ) -> io::Result<()> {
     theme::init(options.theme.as_deref());
@@ -991,12 +1050,17 @@ fn run_app_internal(
     };
     let mut state = AppState::with_store(file_diffs, options.focus.as_deref(), store);
 
-    let diff_ref_str = options.reference.as_ref().map(|r| r.as_str().to_string());
+    let diff_ref_str = options
+        .revset
+        .clone()
+        .or_else(|| options.reference.as_ref().map(|r| r.as_str().to_string()));
     state.set_diff_reference(diff_ref_str);
 
     // Initialize stacked mode if commits were provided
     if let Some(commits) = stacked_commits {
         state.init_stacked_mode(commits);
+        state.set_review_context(review_context);
+        state.reload_annotations();
     }
 
     // Now enter TUI mode
@@ -1035,7 +1099,11 @@ fn run_app_internal(
 
     'main: loop {
         if state.needs_reload {
-            let file_diffs = load_file_diffs(&options, backend);
+            let file_diffs = if let Some(commit) = state.current_commit() {
+                load_single_commit_diffs(&commit.commit_id, &options.file, backend)
+            } else {
+                load_file_diffs(&options, backend)
+            };
 
             // Pass changed files to reload so it can unmark them from viewed
             let changed_files = pending_changed_files.take();
@@ -1397,6 +1465,12 @@ fn run_app_internal(
         while let Some(app_event) = pending_events.pop_front() {
             let current_event = match app_event {
                 AppEvent::Watch(WatchEvent::Files { changed_files }) => {
+                    // Commit review is immutable. Ignore source-file changes
+                    // instead of reloading from disk (which would silently
+                    // turn the current stacked commit into a worktree diff).
+                    if state.stacked_mode {
+                        continue;
+                    }
                     state.needs_reload = true;
                     // Merge with any previously-pending set so multiple bursts
                     // don't lose the earlier filenames.
@@ -1598,13 +1672,26 @@ fn run_app_internal(
                                     }
                                     active_modal = None;
                                 }
-                                ModalResult::RevsetSelected(revset) => {
-                                    match apply_diff_reference(
-                                        revset.as_deref(),
-                                        backend,
-                                        &mut options,
-                                        &mut state,
-                                    ) {
+                                ModalResult::RevsetSelected { revset, literal } => {
+                                    let result = if literal {
+                                        match revset.as_deref() {
+                                            Some(raw) => apply_revset_review(
+                                                raw,
+                                                backend,
+                                                &mut options,
+                                                &mut state,
+                                            ),
+                                            None => Ok(()),
+                                        }
+                                    } else {
+                                        apply_diff_reference(
+                                            revset.as_deref(),
+                                            backend,
+                                            &mut options,
+                                            &mut state,
+                                        )
+                                    };
+                                    match result {
                                         Ok(()) => active_modal = None,
                                         // Keep the picker open so the typed
                                         // query survives a bad revset.
@@ -2889,13 +2976,11 @@ fn run_app_internal(
                             // jj gets a picker: change ids aren't memorable, so
                             // typing one blind is hopeless. Git keeps the prompt.
                             let revisions = match backend.kind() {
-                                VcsKind::Jj => {
-                                    // Snapshot first so `@` reflects edits made
-                                    // since the last load — same `jj status` call
-                                    // the loader makes on every reload.
-                                    let _ = backend.refresh();
-                                    backend.list_revisions(REVSET_PICKER_LIMIT).ok()
-                                }
+                                // Do not snapshot here. A literal revset opens
+                                // immutable review and must not consult, or
+                                // mutate, the working copy merely to populate
+                                // its picker.
+                                VcsKind::Jj => backend.list_revisions(REVSET_PICKER_LIMIT).ok(),
                                 VcsKind::Git => None,
                             };
                             match revisions {
@@ -3073,7 +3158,7 @@ fn run_app_internal(
                                                 key: "b",
                                                 description: match backend.kind() {
                                                     VcsKind::Jj => {
-                                                        "Pick diff base (revset picker)"
+                                                        "Pick base; ctrl+enter reviews a typed revset"
                                                     }
                                                     VcsKind::Git => {
                                                         "Change diff base (empty=unstaged, --cached=staged, <ref>)"

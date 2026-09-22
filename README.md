@@ -63,6 +63,10 @@ lens --no-watch
 # Stacked mode - walk commits in <ref>..HEAD one by one
 lens main --stacked
 
+# jj: review exactly the commits selected by a revset, from commit trees
+# (never from the files currently on disk)
+lens --revset 'main..@'
+
 # Jump to a specific file on open
 lens --focus src/main.rs
 ```
@@ -70,6 +74,14 @@ lens --focus src/main.rs
 lens always diffs the working tree against the supplied ref. To review a
 single historical commit, check it out (e.g. `git checkout <sha>`) and
 diff against its parent (`lens HEAD~1`).
+
+In a jj repository, `--revset <REVSET>` instead opens an immutable,
+commit-by-commit review of every selected commit. This is the right mode for
+arbitrary multi-commit revsets such as `main..@`: each commit is compared to
+its own parent, and no diff side is read from the working-copy files. In the
+`b` picker, choosing a listed row still selects a live diff base; type any
+revset and press `ctrl+enter` to enter immutable review mode. A revset with
+no matching picker row enters that mode with regular `enter` as well.
 
 #### Stacked Diff Mode
 

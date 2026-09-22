@@ -6,7 +6,7 @@ use rusqlite::{params, params_from_iter, Connection};
 use super::super::types::DiffPanelFocus;
 use super::{
     is_local_origin, Annotation, AnnotationError, AnnotationId, AnnotationStore, AnnotationTarget,
-    Author, Capabilities, Comment, NewAnnotation, NewReply,
+    Author, Capabilities, Comment, NewAnnotation, NewReply, ReviewContext,
 };
 
 /// Identifier the trait reports for this store. It's deliberately *not* the
@@ -16,9 +16,9 @@ const STORE_ID: &str = "local";
 
 /// Bump when the on-disk schema changes. A DB stamped with a different
 /// version triggers a hard error in `open` — see the version check there.
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 
-const SCHEMA_V2: &str = "
+const SCHEMA_V3: &str = "
 CREATE TABLE IF NOT EXISTS annotations (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     filename    TEXT    NOT NULL,
@@ -27,12 +27,19 @@ CREATE TABLE IF NOT EXISTS annotations (
     start_line  INTEGER,
     end_line    INTEGER,
     resolved    INTEGER NOT NULL DEFAULT 0,
+    old_commit  TEXT,
+    new_commit  TEXT,
     CHECK (
         (target_kind = 'file'       AND panel IS NULL     AND start_line IS NULL AND end_line IS NULL) OR
         (target_kind = 'line_range' AND panel IS NOT NULL AND start_line IS NOT NULL AND end_line IS NOT NULL)
+    ),
+    CHECK (
+        (old_commit IS NULL AND new_commit IS NULL) OR
+        (old_commit IS NOT NULL AND new_commit IS NOT NULL)
     )
 );
 CREATE INDEX IF NOT EXISTS idx_annotations_filename ON annotations(filename);
+CREATE INDEX IF NOT EXISTS idx_annotations_review_context ON annotations(old_commit, new_commit);
 
 CREATE TABLE IF NOT EXISTS comments (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,13 +68,14 @@ impl SqliteStore {
 
         match db_version {
             0 => {
-                conn.execute_batch(SCHEMA_V2).map_err(backend_err)?;
+                conn.execute_batch(SCHEMA_V3).map_err(backend_err)?;
                 conn.execute(&format!("PRAGMA user_version = {}", SCHEMA_VERSION), [])
                     .map_err(backend_err)?;
             }
-            1 => migrate_v1_to_v2(&mut conn)?,
+            1 => migrate_v1_to_v3(&mut conn)?,
+            2 => migrate_v2_to_v3(&mut conn)?,
             v if v == SCHEMA_VERSION => {
-                conn.execute_batch(SCHEMA_V2).map_err(backend_err)?;
+                conn.execute_batch(SCHEMA_V3).map_err(backend_err)?;
             }
             other => {
                 return Err(AnnotationError::Backend(format!(
@@ -86,8 +94,9 @@ impl SqliteStore {
 
 /// In v1 the schema kept content/author/created_at on the `annotations` row.
 /// v2 moves comment data into a separate table so threads can grow replies
-/// and so each comment can record its own origin (ui/cli/agent).
-fn migrate_v1_to_v2(conn: &mut Connection) -> Result<(), AnnotationError> {
+/// and so each comment can record its own origin (ui/cli/agent). v3 adds an
+/// optional immutable parent/commit pair for historical reviews.
+fn migrate_v1_to_v3(conn: &mut Connection) -> Result<(), AnnotationError> {
     let tx = conn.transaction().map_err(backend_err)?;
 
     tx.execute_batch(
@@ -103,12 +112,19 @@ fn migrate_v1_to_v2(conn: &mut Connection) -> Result<(), AnnotationError> {
             start_line  INTEGER,
             end_line    INTEGER,
             resolved    INTEGER NOT NULL DEFAULT 0,
+            old_commit  TEXT,
+            new_commit  TEXT,
             CHECK (
                 (target_kind = 'file'       AND panel IS NULL     AND start_line IS NULL AND end_line IS NULL) OR
                 (target_kind = 'line_range' AND panel IS NOT NULL AND start_line IS NOT NULL AND end_line IS NOT NULL)
+            ),
+            CHECK (
+                (old_commit IS NULL AND new_commit IS NULL) OR
+                (old_commit IS NOT NULL AND new_commit IS NOT NULL)
             )
         );
         CREATE INDEX idx_annotations_filename ON annotations(filename);
+        CREATE INDEX idx_annotations_review_context ON annotations(old_commit, new_commit);
 
         CREATE TABLE comments (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,8 +136,8 @@ fn migrate_v1_to_v2(conn: &mut Connection) -> Result<(), AnnotationError> {
         );
         CREATE INDEX idx_comments_annotation_id ON comments(annotation_id);
 
-        INSERT INTO annotations (id, filename, target_kind, panel, start_line, end_line, resolved)
-        SELECT id, filename, target_kind, panel, start_line, end_line, resolved
+        INSERT INTO annotations (id, filename, target_kind, panel, start_line, end_line, resolved, old_commit, new_commit)
+        SELECT id, filename, target_kind, panel, start_line, end_line, resolved, NULL, NULL
         FROM annotations_v1;
 
         INSERT INTO comments (annotation_id, content, author, origin, created_at)
@@ -139,6 +155,24 @@ fn migrate_v1_to_v2(conn: &mut Connection) -> Result<(), AnnotationError> {
     Ok(())
 }
 
+/// v2 already has threaded comments; v3 only adds the optional immutable
+/// review context. Existing annotations remain live/legacy (`NULL, NULL`).
+fn migrate_v2_to_v3(conn: &mut Connection) -> Result<(), AnnotationError> {
+    let tx = conn.transaction().map_err(backend_err)?;
+    tx.execute_batch(
+        "
+        ALTER TABLE annotations ADD COLUMN old_commit TEXT;
+        ALTER TABLE annotations ADD COLUMN new_commit TEXT;
+        CREATE INDEX IF NOT EXISTS idx_annotations_review_context
+            ON annotations(old_commit, new_commit);
+        ",
+    )
+    .map_err(backend_err)?;
+    tx.execute(&format!("PRAGMA user_version = {}", SCHEMA_VERSION), [])
+        .map_err(backend_err)?;
+    tx.commit().map_err(backend_err)
+}
+
 impl AnnotationStore for SqliteStore {
     fn id(&self) -> &str {
         STORE_ID
@@ -152,7 +186,7 @@ impl AnnotationStore for SqliteStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, filename, target_kind, panel, start_line, end_line, resolved \
+                "SELECT id, filename, target_kind, panel, start_line, end_line, resolved, old_commit, new_commit \
                  FROM annotations ORDER BY id",
             )
             .map_err(backend_err)?;
@@ -173,7 +207,7 @@ impl AnnotationStore for SqliteStore {
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
-            "SELECT id, filename, target_kind, panel, start_line, end_line, resolved \
+            "SELECT id, filename, target_kind, panel, start_line, end_line, resolved, old_commit, new_commit \
              FROM annotations WHERE filename IN ({}) ORDER BY id",
             placeholders
         );
@@ -206,9 +240,17 @@ impl AnnotationStore for SqliteStore {
         let tx = self.conn.transaction().map_err(backend_err)?;
 
         tx.execute(
-            "INSERT INTO annotations (filename, target_kind, panel, start_line, end_line, resolved) \
-             VALUES (?, ?, ?, ?, ?, 0)",
-            params![draft.filename, target_kind, panel, start_line, end_line],
+            "INSERT INTO annotations (filename, target_kind, panel, start_line, end_line, resolved, old_commit, new_commit) \
+             VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
+            params![
+                draft.filename,
+                target_kind,
+                panel,
+                start_line,
+                end_line,
+                draft.review_context.as_ref().map(|context| &context.old_commit),
+                draft.review_context.as_ref().map(|context| &context.new_commit),
+            ],
         )
         .map_err(backend_err)?;
         let annotation_row_id = tx.last_insert_rowid();
@@ -244,6 +286,7 @@ impl AnnotationStore for SqliteStore {
             id,
             filename: draft.filename,
             target: draft.target,
+            review_context: draft.review_context,
             comments: vec![root],
             resolved: false,
         })
@@ -350,6 +393,7 @@ struct AnnotationMeta {
     filename: String,
     target: AnnotationTarget,
     resolved: bool,
+    review_context: Option<ReviewContext>,
 }
 
 fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<AnnotationMeta> {
@@ -360,6 +404,8 @@ fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<AnnotationMeta> {
     let start_line: Option<i64> = row.get(4)?;
     let end_line: Option<i64> = row.get(5)?;
     let resolved: i64 = row.get(6)?;
+    let old_commit: Option<String> = row.get(7)?;
+    let new_commit: Option<String> = row.get(8)?;
 
     let target = match target_kind.as_str() {
         "file" => AnnotationTarget::File,
@@ -385,6 +431,20 @@ fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<AnnotationMeta> {
         filename,
         target,
         resolved: resolved != 0,
+        review_context: match (old_commit, new_commit) {
+            (Some(old_commit), Some(new_commit)) => Some(ReviewContext {
+                old_commit,
+                new_commit,
+            }),
+            (None, None) => None,
+            _ => {
+                return Err(rusqlite::Error::FromSqlConversionFailure(
+                    7,
+                    rusqlite::types::Type::Text,
+                    "annotation review context is incomplete".into(),
+                ));
+            }
+        },
     })
 }
 
@@ -452,6 +512,7 @@ fn load_with_comments(
             },
             filename: meta.filename,
             target: meta.target,
+            review_context: meta.review_context,
             comments,
             resolved: meta.resolved,
         });
@@ -465,7 +526,7 @@ fn get_annotation(
 ) -> Result<Annotation, AnnotationError> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, filename, target_kind, panel, start_line, end_line, resolved \
+            "SELECT id, filename, target_kind, panel, start_line, end_line, resolved, old_commit, new_commit \
              FROM annotations WHERE id = ?",
         )
         .map_err(backend_err)?;
@@ -531,6 +592,7 @@ mod tests {
         NewAnnotation {
             filename: filename.to_string(),
             target: AnnotationTarget::File,
+            review_context: None,
             content: content.to_string(),
             origin: origin.to_string(),
             created_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
@@ -545,6 +607,7 @@ mod tests {
                 start_line: 10,
                 end_line: 12,
             },
+            review_context: None,
             content: content.to_string(),
             origin: origin.to_string(),
             created_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
@@ -742,6 +805,36 @@ mod tests {
     }
 
     #[test]
+    fn historical_review_context_is_persisted_and_scoped() {
+        let (_dir, mut store) = open_temp();
+        let context = ReviewContext {
+            old_commit: "parent-id".to_string(),
+            new_commit: "commit-id".to_string(),
+        };
+        let mut historical = draft_file("a.rs", "historical", "ui");
+        historical.review_context = Some(context.clone());
+
+        store.create(draft_file("a.rs", "live", "ui")).unwrap();
+        store.create(historical).unwrap();
+
+        let historical_annotations = store
+            .list_for_files_in_context(&["a.rs".to_string()], Some(&context))
+            .unwrap();
+        assert_eq!(historical_annotations.len(), 1);
+        assert_eq!(historical_annotations[0].root().content, "historical");
+        assert_eq!(
+            historical_annotations[0].review_context.as_ref(),
+            Some(&context)
+        );
+
+        let live_annotations = store
+            .list_for_files_in_context(&["a.rs".to_string()], None)
+            .unwrap();
+        assert_eq!(live_annotations.len(), 1);
+        assert_eq!(live_annotations[0].root().content, "live");
+    }
+
+    #[test]
     fn persists_across_reopen() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("lens.db");
@@ -771,9 +864,9 @@ mod tests {
     }
 
     /// Simulates an existing v1 DB by writing the v1 schema + a row directly,
-    /// then opens with the v2 code path and asserts the migration ran cleanly.
+    /// then opens with the v3 code path and asserts the migration ran cleanly.
     #[test]
-    fn migrates_v1_database_to_v2() {
+    fn migrates_v1_database_to_v3() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("lens.db");
         {
@@ -808,5 +901,48 @@ mod tests {
         assert_eq!(all[0].root().content, "pre-migration");
         assert_eq!(all[0].root().origin, "ui");
         assert_eq!(all[0].id.origin, "ui");
+        assert!(all[0].review_context.is_none());
+    }
+
+    #[test]
+    fn migrates_v2_database_to_v3() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("lens.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE annotations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    filename TEXT NOT NULL,
+                    target_kind TEXT NOT NULL,
+                    panel TEXT,
+                    start_line INTEGER,
+                    end_line INTEGER,
+                    resolved INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE comments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    annotation_id INTEGER NOT NULL,
+                    content TEXT NOT NULL,
+                    author TEXT NOT NULL,
+                    origin TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                INSERT INTO annotations (filename, target_kind, resolved)
+                VALUES ('old.rs', 'file', 0);
+                INSERT INTO comments (annotation_id, content, author, origin, created_at)
+                VALUES (1, 'from v2', 'you', 'ui', 1700000000);
+                PRAGMA user_version = 2;
+                ",
+            )
+            .unwrap();
+        }
+
+        let store = SqliteStore::open(&path).unwrap();
+        let all = store.list().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].root().content, "from v2");
+        assert!(all[0].review_context.is_none());
     }
 }

@@ -46,6 +46,18 @@ pub struct AnnotationId {
     pub native: String,
 }
 
+/// Immutable pair of trees an annotation was made against.
+///
+/// Historical jj review is commit-by-commit, so a file and line number alone
+/// are not enough to identify what was reviewed: the same location can occur
+/// in several changes. Normal working-copy annotations intentionally keep no
+/// context, preserving their existing live-diff behavior.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewContext {
+    pub old_commit: String,
+    pub new_commit: String,
+}
+
 /// The target of an annotation: either a whole file or a specific line range
 /// on one panel.
 #[derive(Clone, Debug)]
@@ -107,6 +119,8 @@ pub struct Annotation {
     pub id: AnnotationId,
     pub filename: String,
     pub target: AnnotationTarget,
+    /// The exact immutable diff this thread belongs to, when any.
+    pub review_context: Option<ReviewContext>,
     pub comments: Vec<Comment>,
     pub resolved: bool,
 }
@@ -174,6 +188,9 @@ impl Annotation {
 pub struct NewAnnotation {
     pub filename: String,
     pub target: AnnotationTarget,
+    /// Preserve the immutable review identity for annotations created in a
+    /// historical commit view. `None` is the established live-diff behavior.
+    pub review_context: Option<ReviewContext>,
     pub content: String,
     /// Source of this annotation's root comment ("ui", "cli", "agent").
     pub origin: String,
@@ -265,6 +282,22 @@ pub trait AnnotationStore {
             .list()?
             .into_iter()
             .filter(|a| set.contains(a.filename.as_str()))
+            .collect())
+    }
+
+    /// As [`Self::list_for_files`], scoped to one immutable review pair.
+    /// Historical annotations must never leak into a different commit's diff
+    /// merely because it changes the same file and line. `None` selects the
+    /// legacy/live working-copy annotations.
+    fn list_for_files_in_context(
+        &self,
+        filenames: &[String],
+        review_context: Option<&ReviewContext>,
+    ) -> Result<Vec<Annotation>, AnnotationError> {
+        Ok(self
+            .list_for_files(filenames)?
+            .into_iter()
+            .filter(|annotation| annotation.review_context.as_ref() == review_context)
             .collect())
     }
 

@@ -163,9 +163,13 @@ pub enum ModalResult {
     #[allow(dead_code)]
     Selected(usize, String),
     FileSelected(usize),
-    /// A diff base was chosen in the revset picker. `None` means the
-    /// synthetic "working copy" row — clear the base.
-    RevsetSelected(Option<String>),
+    /// A selection from the revset picker. A literal is a revset typed by the
+    /// user that did not match a listed revision; it opens immutable
+    /// commit-by-commit review rather than becoming a live diff base.
+    RevsetSelected {
+        revset: Option<String>,
+        literal: bool,
+    },
     AnnotationJump {
         annotation_id: AnnotationId,
     },
@@ -1015,8 +1019,8 @@ impl Modal {
         frame.render_widget(Paragraph::new(input_line), chunks[0]);
 
         // Spacer row doubles as the status line: an error when the last
-        // submission failed, otherwise a hint that the query is usable as a
-        // literal revset when nothing matches.
+        // submission failed, otherwise a hint that the query can explicitly
+        // be reviewed as an immutable revset even when it matches a row.
         let status_line = if let Some(err) = error {
             Line::from(Span::styled(
                 format!("  {}", err),
@@ -1024,7 +1028,12 @@ impl Modal {
             ))
         } else if filtered_indices.is_empty() && !query.is_empty() {
             Line::from(Span::styled(
-                "  no match — enter uses the query as a revset",
+                "  no match — enter reviews the query as a revset",
+                Style::default().fg(t.ui.text_muted),
+            ))
+        } else if !query.is_empty() {
+            Line::from(Span::styled(
+                "  ctrl+enter reviews the typed revset (not the working copy)",
                 Style::default().fg(t.ui.text_muted),
             ))
         } else {
@@ -1570,13 +1579,26 @@ impl Modal {
                     *selected = selected.saturating_sub(1);
                     None
                 }
+                KeyCode::Enter
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !query.trim().is_empty() =>
+                {
+                    Some(ModalResult::RevsetSelected {
+                        revset: Some(query.trim().to_string()),
+                        literal: true,
+                    })
+                }
                 KeyCode::Enter => match filtered_indices.get(*selected) {
-                    Some(&idx) => Some(ModalResult::RevsetSelected(items[idx].revset.clone())),
+                    Some(&idx) => Some(ModalResult::RevsetSelected {
+                        revset: items[idx].revset.clone(),
+                        literal: false,
+                    }),
                     // Nothing matched the filter: treat what was typed as a
                     // literal revset so `@---` and friends still work.
-                    None if !query.trim().is_empty() => {
-                        Some(ModalResult::RevsetSelected(Some(query.trim().to_string())))
-                    }
+                    None if !query.trim().is_empty() => Some(ModalResult::RevsetSelected {
+                        revset: Some(query.trim().to_string()),
+                        literal: true,
+                    }),
                     None => Some(ModalResult::Dismissed),
                 },
                 KeyCode::Backspace => {

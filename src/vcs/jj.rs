@@ -468,6 +468,28 @@ impl VcsBackend for JjBackend {
             .collect())
     }
 
+    fn get_commits_for_revset(&self, revset: &str) -> Result<Vec<StackedCommitInfo>, VcsError> {
+        Self::validate_ref(revset)?;
+        let mut commits = self.resolve_revset(revset)?;
+        // jj streams children before parents. Showing the oldest selected
+        // commit first makes the review order stable and matches stacked mode.
+        commits.reverse();
+
+        Ok(commits
+            .into_iter()
+            .map(|c| {
+                let commit_id = c.id().hex();
+                let short_id = commit_id[..7.min(commit_id.len())].to_string();
+                let summary = c.description().lines().next().unwrap_or("").to_string();
+                StackedCommitInfo {
+                    commit_id,
+                    short_id,
+                    summary,
+                }
+            })
+            .collect())
+    }
+
     fn get_file_content_at_ref(&self, reference: &str, path: &Path) -> Result<String, VcsError> {
         let commit = self.resolve_single_commit(reference)?;
         self.read_file_at_tree(&commit, path)
@@ -649,6 +671,7 @@ mod tests {
             .create(NewAnnotation {
                 filename: "a.txt".to_string(),
                 target: AnnotationTarget::File,
+                review_context: None,
                 content: "needs a look".to_string(),
                 origin: "agent".to_string(),
                 created_at: std::time::SystemTime::UNIX_EPOCH,
@@ -885,5 +908,26 @@ mod tests {
         assert_eq!(JjBackend::translate_ref("HEAD~3"), "@---");
         assert_eq!(JjBackend::translate_ref("main"), "main");
         assert_eq!(JjBackend::translate_ref("@-"), "@-");
+    }
+
+    #[test]
+    fn arbitrary_revset_returns_each_selected_commit() {
+        if !jj_available() {
+            return;
+        }
+        let dir = setup_pure_jj_repo();
+        let backend = JjBackend::new(dir.path()).unwrap();
+        backend.refresh().unwrap();
+
+        let commits = backend.get_commits_for_revset("main..@").unwrap();
+        assert_eq!(
+            commits.len(),
+            1,
+            "expected the editable @ change: {commits:?}"
+        );
+        assert!(
+            commits[0].commit_id == backend.resolve_ref("@").unwrap(),
+            "the selected commit should be @"
+        );
     }
 }

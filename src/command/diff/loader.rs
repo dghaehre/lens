@@ -183,8 +183,34 @@ pub fn load_single_commit_diffs(
 mod tests {
     use super::*;
     use crate::vcs::test_utils::{git, make_temp_dir, RepoGuard};
-    use crate::vcs::GitBackend;
+    use crate::vcs::{GitBackend, JjBackend, VcsBackend};
     use std::fs;
+    use std::process::Command;
+
+    fn jj_available() -> bool {
+        Command::new("jj")
+            .arg("--version")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+
+    fn run_jj(cwd: &Path, args: &[&str]) {
+        let output = Command::new("jj")
+            .args(args)
+            .current_dir(cwd)
+            .env("JJ_USER", "lens test")
+            .env("JJ_EMAIL", "lens@test")
+            .output()
+            .expect("jj command should spawn");
+        assert!(
+            output.status.success(),
+            "jj {:?} failed: stdout={} stderr={}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
 
     #[test]
     fn test_load_file_diffs_working_tree_untracked_in_new_dir() {
@@ -213,6 +239,7 @@ mod tests {
         let backend = GitBackend::from_cwd().expect("should open repo");
         let options = super::super::DiffOptions {
             reference: None,
+            revset: None,
             file: None,
             watch: false,
             theme: None,
@@ -279,6 +306,7 @@ mod tests {
             reference: Some(crate::commit_reference::CommitReference(
                 "HEAD~1".to_string(),
             )),
+            revset: None,
             file: None,
             watch: false,
             theme: None,
@@ -530,6 +558,7 @@ mod tests {
         let backend = GitBackend::from_cwd().expect("should open repo");
         let options = super::super::DiffOptions {
             reference: None, // unstaged mode
+            revset: None,
             file: None,
             watch: false,
             theme: None,
@@ -569,6 +598,7 @@ mod tests {
             reference: Some(crate::commit_reference::CommitReference(
                 "--cached".to_string(),
             )),
+            revset: None,
             file: None,
             watch: false,
             theme: None,
@@ -600,5 +630,31 @@ mod tests {
 
         let _ = std::env::set_current_dir(&original);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_load_single_jj_commit_diffs_never_read_working_copy_files() {
+        if !jj_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        run_jj(path, &["--config", "git.colocate=false", "git", "init"]);
+
+        fs::write(path.join("tracked.txt"), "committed\n").unwrap();
+        run_jj(path, &["commit", "-m", "committed change"]);
+
+        let backend = JjBackend::new(path).unwrap();
+        let commit_id = backend.resolve_ref("@-").unwrap();
+
+        // Do not refresh: this is intentionally different from the commit
+        // tree and must never become the "new" side of historical review.
+        fs::write(path.join("tracked.txt"), "working copy only\n").unwrap();
+
+        let diffs = load_single_commit_diffs(&commit_id, &None, &backend);
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].filename, "tracked.txt");
+        assert_eq!(diffs[0].new_content, "committed\n");
+        assert_ne!(diffs[0].new_content, "working copy only\n");
     }
 }

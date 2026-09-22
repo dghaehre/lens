@@ -76,6 +76,20 @@ pub trait VcsBackend {
         to: &str,
     ) -> Result<Vec<StackedCommitInfo>, VcsError>;
 
+    /// Commits selected by an arbitrary revset, oldest first.
+    ///
+    /// This intentionally differs from [`Self::get_commits_in_range`]: a jj
+    /// revset can select a non-linear or otherwise disjoint set of commits,
+    /// which has no meaningful single "base" commit. Consumers review the
+    /// returned commits individually instead of diffing them against a live
+    /// working copy. Git does not have an equivalent revset language.
+    fn get_commits_for_revset(&self, revset: &str) -> Result<Vec<StackedCommitInfo>, VcsError> {
+        let _ = revset;
+        Err(VcsError::Unsupported(
+            "arbitrary revset review is jj-only".into(),
+        ))
+    }
+
     /// File contents at a given ref.
     fn get_file_content_at_ref(&self, reference: &str, path: &Path) -> Result<String, VcsError>;
 

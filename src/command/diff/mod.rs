@@ -23,6 +23,10 @@ use crate::vcs::{VcsBackend, VcsKind};
 
 pub struct DiffOptions {
     pub reference: Option<CommitReference>,
+    /// jj-only immutable, commit-by-commit review target. A revset may
+    /// resolve to one or many commits, so it is deliberately separate from
+    /// `reference`, whose established meaning is a base for a live diff.
+    pub revset: Option<String>,
     pub file: Option<Vec<String>>,
     pub watch: bool,
     pub theme: Option<String>,
@@ -42,6 +46,27 @@ pub fn run_diff_ui(options: DiffOptions, backend: &dyn VcsBackend) -> io::Result
                 process::exit(1);
             }
         }
+    }
+
+    if let Some(revset) = options.revset.as_deref() {
+        if backend.kind() != VcsKind::Jj {
+            eprintln!("\x1b[91merror:\x1b[0m --revset is only available in jj repositories");
+            process::exit(1);
+        }
+
+        let commits = match backend.get_commits_for_revset(revset) {
+            Ok(c) if c.is_empty() => {
+                eprintln!("\x1b[91merror:\x1b[0m revset {revset:?} did not select any commits");
+                process::exit(1);
+            }
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("\x1b[91merror:\x1b[0m {e}");
+                process::exit(1);
+            }
+        };
+
+        return app::run_app_stacked(options, commits, backend);
     }
 
     if options.stacked {

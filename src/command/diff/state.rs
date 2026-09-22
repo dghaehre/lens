@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 
 use crate::command::diff::annotation_store::{
-    AnnotationStore, GithubStore, InMemoryStore, NewAnnotation, NewReply,
+    AnnotationStore, GithubStore, InMemoryStore, NewAnnotation, NewReply, ReviewContext,
 };
 use crate::command::diff::context::{collect_context_nodes, ContextNode};
 use crate::command::diff::diff_algo::{
@@ -241,6 +241,9 @@ pub struct AppState {
     stacked_viewed_files: HashMap<String, HashSet<String>>,
     /// The commit reference used to open the diff (e.g., "HEAD~2..HEAD", "main..feature")
     pub diff_reference: Option<String>,
+    /// Exact immutable parent/commit pair under review. `None` is the
+    /// established live working-copy view.
+    review_context: Option<ReviewContext>,
     // Selection state
     /// Which panel has selection focus
     pub diff_panel_focus: DiffPanelFocus,
@@ -402,6 +405,7 @@ impl AppState {
             current_commit_index: 0,
             stacked_viewed_files: HashMap::new(),
             diff_reference: None,
+            review_context: None,
             diff_panel_focus: DiffPanelFocus::default(),
             selection: Selection::default(),
             hunk_line_selection: None,
@@ -510,6 +514,14 @@ impl AppState {
             return Ok(());
         }
 
+        if target == AnnotationSource::Github && self.review_context.is_some() {
+            let msg =
+                "GitHub annotations are unavailable while reviewing an immutable historical revset"
+                    .to_string();
+            self.annotation_source_status = Some(msg.clone());
+            return Err(msg);
+        }
+
         match target {
             AnnotationSource::Github => {
                 // Resolve once and cache; subsequent switches reuse PrInfo
@@ -596,6 +608,12 @@ impl AppState {
             .cloned()
             .ok_or_else(|| "annotation not found".to_string())?;
 
+        if self.annotation_source == AnnotationSource::Local && ann.review_context.is_some() {
+            let msg = "historical-revset annotations cannot be copied to GitHub".to_string();
+            self.annotation_source_status = Some(msg.clone());
+            return Err(msg);
+        }
+
         match self.annotation_source {
             AnnotationSource::Local => {
                 if self.pr_info.is_none() {
@@ -627,6 +645,7 @@ impl AppState {
                 let draft = NewAnnotation {
                     filename: ann.filename.clone(),
                     target: ann.target.clone(),
+                    review_context: ann.review_context.clone(),
                     content: ann.root().content.clone(),
                     origin: "github".to_string(),
                     created_at: SystemTime::now(),
@@ -647,6 +666,7 @@ impl AppState {
                 let draft = NewAnnotation {
                     filename: ann.filename.clone(),
                     target: ann.target.clone(),
+                    review_context: ann.review_context.clone(),
                     content: ann.root().content.clone(),
                     origin: "ui".to_string(),
                     created_at: SystemTime::now(),
@@ -667,7 +687,10 @@ impl AppState {
     /// the cache simply stays empty if the store can't be read.
     fn load_annotations_for_current_files(&mut self) {
         let filenames: Vec<String> = self.file_diffs.iter().map(|f| f.filename.clone()).collect();
-        match self.store.list_for_files(&filenames) {
+        match self
+            .store
+            .list_for_files_in_context(&filenames, self.review_context.as_ref())
+        {
             Ok(list) => self.annotations = list,
             Err(_) => self.annotations.clear(),
         }
@@ -1207,11 +1230,27 @@ impl AppState {
         self.diff_reference = reference;
     }
 
+    /// Set the immutable parent/commit pair for annotation lookup. The caller
+    /// reloads immediately after changing it, which rebuilds the cache under
+    /// the new context.
+    pub fn set_review_context(&mut self, review_context: Option<ReviewContext>) {
+        self.review_context = review_context;
+    }
+
     /// Initialize stacked mode with commits
     pub fn init_stacked_mode(&mut self, commits: Vec<StackedCommitInfo>) {
         self.stacked_mode = true;
         self.stacked_commits = commits;
         self.current_commit_index = 0;
+    }
+
+    /// Leave immutable stacked review and return to the live-diff state.
+    pub fn clear_stacked_mode(&mut self) {
+        self.stacked_mode = false;
+        self.stacked_commits.clear();
+        self.current_commit_index = 0;
+        self.stacked_viewed_files.clear();
+        self.set_review_context(None);
     }
 
     /// Get the current commit info if in stacked mode
@@ -1406,6 +1445,7 @@ impl AppState {
         let draft = NewAnnotation {
             filename,
             target,
+            review_context: self.review_context.clone(),
             content,
             origin: "ui".to_string(),
             created_at,
@@ -1710,5 +1750,42 @@ mod tests {
 
         assert_eq!(state.current_file, 0);
         assert!(state.file_diffs.is_empty());
+    }
+
+    #[test]
+    fn historical_review_annotations_are_isolated_from_live_annotations() {
+        let mut state = AppState::with_store(
+            vec![make_file_diff("src/lib.rs")],
+            None,
+            Box::new(InMemoryStore::new()),
+        );
+        state.add_annotation(
+            "src/lib.rs".to_string(),
+            AnnotationTarget::File,
+            "live note".to_string(),
+            SystemTime::UNIX_EPOCH,
+        );
+        assert_eq!(state.annotations.len(), 1);
+
+        state.set_review_context(Some(ReviewContext {
+            old_commit: "parent".to_string(),
+            new_commit: "commit".to_string(),
+        }));
+        state.reload_annotations();
+        assert!(state.annotations.is_empty());
+
+        state.add_annotation(
+            "src/lib.rs".to_string(),
+            AnnotationTarget::File,
+            "historical note".to_string(),
+            SystemTime::UNIX_EPOCH,
+        );
+        assert_eq!(state.annotations.len(), 1);
+        assert_eq!(state.annotations[0].root().content, "historical note");
+
+        state.set_review_context(None);
+        state.reload_annotations();
+        assert_eq!(state.annotations.len(), 1);
+        assert_eq!(state.annotations[0].root().content, "live note");
     }
 }
