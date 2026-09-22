@@ -131,14 +131,14 @@ pub struct AnnotationNewArgs {
     /// Which side of the diff the line refers to.
     #[arg(long, value_enum, default_value_t = PanelArg::New)]
     pub panel: PanelArg,
-    /// Immutable parent commit for a historical review annotation. Requires
-    /// `--new-commit`; omit both for the normal live working-copy view.
-    #[arg(long, requires = "new_commit")]
-    pub old_commit: Option<String>,
-    /// Immutable reviewed commit for a historical review annotation. Requires
-    /// `--old-commit`.
-    #[arg(long, requires = "old_commit")]
-    pub new_commit: Option<String>,
+    /// Parent change ID for a historical jj review annotation. Requires
+    /// `--new-change-id`; omit both for the normal live working-copy view.
+    #[arg(long, requires = "new_change_id")]
+    pub old_change_id: Option<String>,
+    /// Reviewed change ID for a historical jj annotation. Requires
+    /// `--old-change-id`.
+    #[arg(long, requires = "old_change_id")]
+    pub new_change_id: Option<String>,
     /// Source tag recorded on the annotation. Defaults to "agent" since this
     /// CLI is meant for programmatic callers; override with --source cli when
     /// invoking manually.
@@ -248,8 +248,8 @@ mod tests {
                 assert_eq!(args.line, Some(10));
                 assert_eq!(args.content, "looks off");
                 assert_eq!(args.source, "agent");
-                assert!(args.old_commit.is_none());
-                assert!(args.new_commit.is_none());
+                assert!(args.old_change_id.is_none());
+                assert!(args.new_change_id.is_none());
             }
             other => panic!("expected annotation new, got {:?}", other),
         }
@@ -263,17 +263,17 @@ mod tests {
             "new",
             "--file",
             "src/lib.rs",
-            "--old-commit",
+            "--old-change-id",
             "parent",
-            "--new-commit",
+            "--new-change-id",
             "commit",
             "looks off",
         ])
         .unwrap();
         match cli.command {
             Some(Command::Annotation(AnnotationCommand::New(args))) => {
-                assert_eq!(args.old_commit.as_deref(), Some("parent"));
-                assert_eq!(args.new_commit.as_deref(), Some("commit"));
+                assert_eq!(args.old_change_id.as_deref(), Some("parent"));
+                assert_eq!(args.new_change_id.as_deref(), Some("commit"));
             }
             other => panic!("expected annotation new, got {:?}", other),
         }

@@ -68,17 +68,20 @@ fn navigate_stacked_commit(
     }
 }
 
-/// Annotation identity for one immutable, commit-by-commit diff. Use the
-/// resolved commit ids rather than a user-entered revset so aliases and short
-/// change IDs cannot make two views of the same diff look different.
+/// Annotation identity for one immutable jj diff. Full change IDs, rather
+/// than commit IDs or the user-entered revset, let annotations follow normal
+/// jj rewrites while remaining unambiguous.
 fn review_context_for_commit(commit_id: &str, backend: &dyn VcsBackend) -> Option<ReviewContext> {
-    backend
-        .get_parent_ref_or_empty(commit_id)
-        .ok()
-        .map(|old_commit| ReviewContext {
-            old_commit,
-            new_commit: commit_id.to_string(),
-        })
+    if backend.kind() != VcsKind::Jj {
+        return None;
+    }
+    let old_commit_id = backend.get_parent_ref_or_empty(commit_id).ok()?;
+    let old_change_id = backend.get_change_id(&old_commit_id).ok()?;
+    let new_change_id = backend.get_change_id(commit_id).ok()?;
+    Some(ReviewContext {
+        old_change_id,
+        new_change_id,
+    })
 }
 
 /// Adjust sidebar scroll to ensure the selected item is visible.
@@ -1007,8 +1010,13 @@ fn apply_revset_review(
     let first_commit = commits
         .first()
         .ok_or_else(|| format!("revset {raw:?} did not select any commits"))?;
-    let review_context = review_context_for_commit(&first_commit.commit_id, backend)
-        .ok_or_else(|| format!("could not resolve the parent of {}", first_commit.short_id))?;
+    let review_context =
+        review_context_for_commit(&first_commit.commit_id, backend).ok_or_else(|| {
+            format!(
+                "could not resolve jj change IDs for {}",
+                first_commit.short_id
+            )
+        })?;
     let file_diffs = load_single_commit_diffs(&first_commit.commit_id, &options.file, backend);
 
     state.clear_stacked_mode();

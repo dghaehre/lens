@@ -78,8 +78,9 @@ lens annotation reply --id 42 "Fixed in <commit-sha>: switched to checked arithm
 lens annotation new --file src/main.rs --line 42 --line-end 48 "Consider extracting this branch."
 
 # When creating a new annotation for an immutable jj review, preserve the
-# `review_context` pair returned by `list` so it appears on that exact diff.
-lens annotation new --file src/main.rs --line 42 --old-commit <parent> --new-commit <commit> "Consider extracting this branch."
+# `review_context` change-ID pair returned by `list` so it appears on that
+# exact logical change, including after ordinary jj rewrites.
+lens annotation new --file src/main.rs --line 42 --old-change-id <parent> --new-change-id <change> "Consider extracting this branch."
 
 # Mark a thread as resolved. The loop workflow above does NOT resolve threads —
 # the user does that after reviewing your reply. Only resolve outside the loop
@@ -115,7 +116,7 @@ lens annotation delete --id 42
 - `comments[0]` is the original comment; later entries are replies in order.
 - `origin` of `ui` means the human wrote it in the TUI; `agent` / `cli` mean a programmatic caller did. Treat `ui` comments as authoritative requests from the user.
 - `target.kind` is `file` for whole-file notes; otherwise `line_range` with 1-based `start_line` / `end_line` on the `old` or `new` side of the diff.
-- `review_context` is `null` for a live working-copy review. For immutable jj review it is `{ "old_commit": "…", "new_commit": "…" }`; preserve both values when creating a new thread for that view.
+- `review_context` is `null` for a live working-copy review. For immutable jj review it is `{ "old_change_id": "…", "new_change_id": "…" }`; preserve both values when creating a new thread for that view. Change IDs, unlike commit IDs, survive normal jj rewrites.
 
 ## Reply style
 

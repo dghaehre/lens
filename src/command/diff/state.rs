@@ -1768,8 +1768,8 @@ mod tests {
         assert_eq!(state.annotations.len(), 1);
 
         state.set_review_context(Some(ReviewContext {
-            old_commit: "parent".to_string(),
-            new_commit: "commit".to_string(),
+            old_change_id: "parent-change".to_string(),
+            new_change_id: "change".to_string(),
         }));
         state.reload_annotations();
         assert!(state.annotations.is_empty());

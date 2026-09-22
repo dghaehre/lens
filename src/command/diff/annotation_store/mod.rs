@@ -46,16 +46,18 @@ pub struct AnnotationId {
     pub native: String,
 }
 
-/// Immutable pair of trees an annotation was made against.
+/// Immutable jj change pair an annotation was made against.
 ///
 /// Historical jj review is commit-by-commit, so a file and line number alone
 /// are not enough to identify what was reviewed: the same location can occur
-/// in several changes. Normal working-copy annotations intentionally keep no
-/// context, preserving their existing live-diff behavior.
+/// in several changes. jj change IDs survive normal commit rewrites, which
+/// lets an annotation follow the same logical change. Normal working-copy
+/// annotations intentionally keep no context, preserving their existing
+/// live-diff behavior.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReviewContext {
-    pub old_commit: String,
-    pub new_commit: String,
+    pub old_change_id: String,
+    pub new_change_id: String,
 }
 
 /// The target of an annotation: either a whole file or a specific line range
@@ -188,8 +190,8 @@ impl Annotation {
 pub struct NewAnnotation {
     pub filename: String,
     pub target: AnnotationTarget,
-    /// Preserve the immutable review identity for annotations created in a
-    /// historical commit view. `None` is the established live-diff behavior.
+    /// Preserve the immutable jj change identity for annotations created in a
+    /// historical view. `None` is the established live-diff behavior.
     pub review_context: Option<ReviewContext>,
     pub content: String,
     /// Source of this annotation's root comment ("ui", "cli", "agent").
@@ -286,7 +288,7 @@ pub trait AnnotationStore {
     }
 
     /// As [`Self::list_for_files`], scoped to one immutable review pair.
-    /// Historical annotations must never leak into a different commit's diff
+    /// Historical annotations must never leak into a different jj change diff
     /// merely because it changes the same file and line. `None` selects the
     /// legacy/live working-copy annotations.
     fn list_for_files_in_context(

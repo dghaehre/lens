@@ -56,6 +56,14 @@ pub trait VcsBackend {
     /// for jj.
     fn resolve_ref(&self, reference: &str) -> Result<String, VcsError>;
 
+    /// Stable logical identity for a jj change. A change ID survives normal
+    /// jj rewrites, unlike the commit ID that names one particular version of
+    /// the change. Git has no equivalent and keeps the default unsupported.
+    fn get_change_id(&self, reference: &str) -> Result<String, VcsError> {
+        let _ = reference;
+        Err(VcsError::Unsupported("change IDs are jj-only".into()))
+    }
+
     /// Reference identifying the parent of `reference`, or git's empty-tree
     /// SHA when `reference` has no parent. For git this is typically the
     /// string `"<ref>^"`. For jj it's the resolved commit id of `(<ref>)-`.

@@ -59,15 +59,15 @@ fn list(store: &SqliteStore, args: AnnotationListArgs) -> Result<(), LensError> 
 
 fn new(store: &mut SqliteStore, args: AnnotationNewArgs) -> Result<(), LensError> {
     let target = build_target(args.line, args.line_end, args.panel)?;
-    let review_context = match (args.old_commit, args.new_commit) {
-        (Some(old_commit), Some(new_commit)) => Some(ReviewContext {
-            old_commit,
-            new_commit,
+    let review_context = match (args.old_change_id, args.new_change_id) {
+        (Some(old_change_id), Some(new_change_id)) => Some(ReviewContext {
+            old_change_id,
+            new_change_id,
         }),
         (None, None) => None,
         _ => {
             return Err(LensError::InvalidArguments(
-                "--old-commit and --new-commit must be supplied together".to_string(),
+                "--old-change-id and --new-change-id must be supplied together".to_string(),
             ));
         }
     };
@@ -177,8 +177,8 @@ fn annotation_to_json(annotation: &Annotation) -> Value {
         "filename": annotation.filename,
         "target": target_to_json(&annotation.target),
         "review_context": annotation.review_context.as_ref().map(|context| json!({
-            "old_commit": context.old_commit,
-            "new_commit": context.new_commit,
+            "old_change_id": context.old_change_id,
+            "new_change_id": context.new_change_id,
         })),
         "resolved": annotation.resolved,
         "created_at": secs_since_epoch(annotation.created_at()),

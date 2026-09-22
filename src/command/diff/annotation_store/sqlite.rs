@@ -27,19 +27,19 @@ CREATE TABLE IF NOT EXISTS annotations (
     start_line  INTEGER,
     end_line    INTEGER,
     resolved    INTEGER NOT NULL DEFAULT 0,
-    old_commit  TEXT,
-    new_commit  TEXT,
+    old_change_id  TEXT,
+    new_change_id  TEXT,
     CHECK (
         (target_kind = 'file'       AND panel IS NULL     AND start_line IS NULL AND end_line IS NULL) OR
         (target_kind = 'line_range' AND panel IS NOT NULL AND start_line IS NOT NULL AND end_line IS NOT NULL)
     ),
     CHECK (
-        (old_commit IS NULL AND new_commit IS NULL) OR
-        (old_commit IS NOT NULL AND new_commit IS NOT NULL)
+        (old_change_id IS NULL AND new_change_id IS NULL) OR
+        (old_change_id IS NOT NULL AND new_change_id IS NOT NULL)
     )
 );
 CREATE INDEX IF NOT EXISTS idx_annotations_filename ON annotations(filename);
-CREATE INDEX IF NOT EXISTS idx_annotations_review_context ON annotations(old_commit, new_commit);
+CREATE INDEX IF NOT EXISTS idx_annotations_review_context ON annotations(old_change_id, new_change_id);
 
 CREATE TABLE IF NOT EXISTS comments (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,7 +95,7 @@ impl SqliteStore {
 /// In v1 the schema kept content/author/created_at on the `annotations` row.
 /// v2 moves comment data into a separate table so threads can grow replies
 /// and so each comment can record its own origin (ui/cli/agent). v3 adds an
-/// optional immutable parent/commit pair for historical reviews.
+/// optional immutable parent/change-id pair for historical jj reviews.
 fn migrate_v1_to_v3(conn: &mut Connection) -> Result<(), AnnotationError> {
     let tx = conn.transaction().map_err(backend_err)?;
 
@@ -112,19 +112,19 @@ fn migrate_v1_to_v3(conn: &mut Connection) -> Result<(), AnnotationError> {
             start_line  INTEGER,
             end_line    INTEGER,
             resolved    INTEGER NOT NULL DEFAULT 0,
-            old_commit  TEXT,
-            new_commit  TEXT,
+            old_change_id  TEXT,
+            new_change_id  TEXT,
             CHECK (
                 (target_kind = 'file'       AND panel IS NULL     AND start_line IS NULL AND end_line IS NULL) OR
                 (target_kind = 'line_range' AND panel IS NOT NULL AND start_line IS NOT NULL AND end_line IS NOT NULL)
             ),
             CHECK (
-                (old_commit IS NULL AND new_commit IS NULL) OR
-                (old_commit IS NOT NULL AND new_commit IS NOT NULL)
+                (old_change_id IS NULL AND new_change_id IS NULL) OR
+                (old_change_id IS NOT NULL AND new_change_id IS NOT NULL)
             )
         );
         CREATE INDEX idx_annotations_filename ON annotations(filename);
-        CREATE INDEX idx_annotations_review_context ON annotations(old_commit, new_commit);
+        CREATE INDEX idx_annotations_review_context ON annotations(old_change_id, new_change_id);
 
         CREATE TABLE comments (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,7 +136,7 @@ fn migrate_v1_to_v3(conn: &mut Connection) -> Result<(), AnnotationError> {
         );
         CREATE INDEX idx_comments_annotation_id ON comments(annotation_id);
 
-        INSERT INTO annotations (id, filename, target_kind, panel, start_line, end_line, resolved, old_commit, new_commit)
+        INSERT INTO annotations (id, filename, target_kind, panel, start_line, end_line, resolved, old_change_id, new_change_id)
         SELECT id, filename, target_kind, panel, start_line, end_line, resolved, NULL, NULL
         FROM annotations_v1;
 
@@ -156,15 +156,16 @@ fn migrate_v1_to_v3(conn: &mut Connection) -> Result<(), AnnotationError> {
 }
 
 /// v2 already has threaded comments; v3 only adds the optional immutable
-/// review context. Existing annotations remain live/legacy (`NULL, NULL`).
+/// jj change-ID review context. Existing annotations remain live/legacy
+/// (`NULL, NULL`).
 fn migrate_v2_to_v3(conn: &mut Connection) -> Result<(), AnnotationError> {
     let tx = conn.transaction().map_err(backend_err)?;
     tx.execute_batch(
         "
-        ALTER TABLE annotations ADD COLUMN old_commit TEXT;
-        ALTER TABLE annotations ADD COLUMN new_commit TEXT;
+        ALTER TABLE annotations ADD COLUMN old_change_id TEXT;
+        ALTER TABLE annotations ADD COLUMN new_change_id TEXT;
         CREATE INDEX IF NOT EXISTS idx_annotations_review_context
-            ON annotations(old_commit, new_commit);
+            ON annotations(old_change_id, new_change_id);
         ",
     )
     .map_err(backend_err)?;
@@ -186,7 +187,7 @@ impl AnnotationStore for SqliteStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, filename, target_kind, panel, start_line, end_line, resolved, old_commit, new_commit \
+                "SELECT id, filename, target_kind, panel, start_line, end_line, resolved, old_change_id, new_change_id \
                  FROM annotations ORDER BY id",
             )
             .map_err(backend_err)?;
@@ -207,7 +208,7 @@ impl AnnotationStore for SqliteStore {
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
-            "SELECT id, filename, target_kind, panel, start_line, end_line, resolved, old_commit, new_commit \
+            "SELECT id, filename, target_kind, panel, start_line, end_line, resolved, old_change_id, new_change_id \
              FROM annotations WHERE filename IN ({}) ORDER BY id",
             placeholders
         );
@@ -240,7 +241,7 @@ impl AnnotationStore for SqliteStore {
         let tx = self.conn.transaction().map_err(backend_err)?;
 
         tx.execute(
-            "INSERT INTO annotations (filename, target_kind, panel, start_line, end_line, resolved, old_commit, new_commit) \
+            "INSERT INTO annotations (filename, target_kind, panel, start_line, end_line, resolved, old_change_id, new_change_id) \
              VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
             params![
                 draft.filename,
@@ -248,8 +249,14 @@ impl AnnotationStore for SqliteStore {
                 panel,
                 start_line,
                 end_line,
-                draft.review_context.as_ref().map(|context| &context.old_commit),
-                draft.review_context.as_ref().map(|context| &context.new_commit),
+                draft
+                    .review_context
+                    .as_ref()
+                    .map(|context| &context.old_change_id),
+                draft
+                    .review_context
+                    .as_ref()
+                    .map(|context| &context.new_change_id),
             ],
         )
         .map_err(backend_err)?;
@@ -404,8 +411,8 @@ fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<AnnotationMeta> {
     let start_line: Option<i64> = row.get(4)?;
     let end_line: Option<i64> = row.get(5)?;
     let resolved: i64 = row.get(6)?;
-    let old_commit: Option<String> = row.get(7)?;
-    let new_commit: Option<String> = row.get(8)?;
+    let old_change_id: Option<String> = row.get(7)?;
+    let new_change_id: Option<String> = row.get(8)?;
 
     let target = match target_kind.as_str() {
         "file" => AnnotationTarget::File,
@@ -431,10 +438,10 @@ fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<AnnotationMeta> {
         filename,
         target,
         resolved: resolved != 0,
-        review_context: match (old_commit, new_commit) {
-            (Some(old_commit), Some(new_commit)) => Some(ReviewContext {
-                old_commit,
-                new_commit,
+        review_context: match (old_change_id, new_change_id) {
+            (Some(old_change_id), Some(new_change_id)) => Some(ReviewContext {
+                old_change_id,
+                new_change_id,
             }),
             (None, None) => None,
             _ => {
@@ -526,7 +533,7 @@ fn get_annotation(
 ) -> Result<Annotation, AnnotationError> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, filename, target_kind, panel, start_line, end_line, resolved, old_commit, new_commit \
+            "SELECT id, filename, target_kind, panel, start_line, end_line, resolved, old_change_id, new_change_id \
              FROM annotations WHERE id = ?",
         )
         .map_err(backend_err)?;
@@ -808,8 +815,8 @@ mod tests {
     fn historical_review_context_is_persisted_and_scoped() {
         let (_dir, mut store) = open_temp();
         let context = ReviewContext {
-            old_commit: "parent-id".to_string(),
-            new_commit: "commit-id".to_string(),
+            old_change_id: "parent-change-id".to_string(),
+            new_change_id: "change-id".to_string(),
         };
         let mut historical = draft_file("a.rs", "historical", "ui");
         historical.review_context = Some(context.clone());

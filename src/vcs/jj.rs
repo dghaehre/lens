@@ -401,6 +401,14 @@ impl VcsBackend for JjBackend {
         Ok(commit.id().hex())
     }
 
+    fn get_change_id(&self, reference: &str) -> Result<String, VcsError> {
+        let commit = self.resolve_single_commit(reference)?;
+        // `reverse_hex()` is jj's display/revset alphabet. Store the full
+        // value, rather than a picker-length prefix, so annotation context
+        // remains unambiguous as the repository grows.
+        Ok(commit.change_id().reverse_hex())
+    }
+
     fn get_parent_ref_or_empty(&self, reference: &str) -> Result<String, VcsError> {
         let commit = self.resolve_single_commit(reference)?;
         match commit.parent_ids().first() {
@@ -775,6 +783,29 @@ mod tests {
         assert!(!at_id.is_empty());
         assert_ne!(main_id, at_id, "main and @ should be different commits");
         assert_eq!(at_id, head_id, "HEAD should alias @");
+    }
+
+    #[test]
+    fn change_id_is_stable_logical_identity() {
+        if !jj_available() {
+            return;
+        }
+        let dir = setup_pure_jj_repo();
+        let backend = JjBackend::new(dir.path()).unwrap();
+        let before_change_id = backend.get_change_id("@").unwrap();
+        let before_commit_id = backend.resolve_ref("@").unwrap();
+
+        // `setup_pure_jj_repo` leaves an edit on disk. Snapshotting rewrites
+        // @ to a new commit but must retain the change ID that annotation
+        // context uses.
+        backend.refresh().unwrap();
+        let change_id = backend.get_change_id("@").unwrap();
+        let after_commit_id = backend.resolve_ref("@").unwrap();
+
+        assert!(change_id.len() > CHANGE_ID_PREFIX_LEN);
+        assert!(backend.resolve_ref(&change_id).is_ok());
+        assert_eq!(change_id, before_change_id);
+        assert_ne!(after_commit_id, before_commit_id);
     }
 
     #[test]
