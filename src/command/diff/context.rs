@@ -265,7 +265,7 @@ pub fn collect_context_nodes(source: &str, filename: &str, tab_width: usize) -> 
     let mut nodes: Vec<ContextNode> = Vec::new();
     let mut matches = cursor.matches(&lang_ctx.query, tree.root_node(), source.as_bytes());
     while let Some(m) = matches.next() {
-        for capture in m.captures {
+        for capture in m.captures() {
             let node = capture.node;
             let start_line = node.start_position().row;
             let end_line = node.end_position().row;

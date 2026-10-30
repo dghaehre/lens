@@ -34,7 +34,7 @@ Before you begin, ensure you have:
 #### Using Cargo
 > [!IMPORTANT]
 > `cargo` is a package manager for `rust`,
-> and is installed automatically when you install `rust`.
+> and is installed automatically when you install `rust`. Building Lens requires Rust 1.97.1 or newer.
 > See [installation guide](https://doc.rust-lang.org/cargo/getting-started/installation.html)
 ```bash
 cargo install lens

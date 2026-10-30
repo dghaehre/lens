@@ -541,7 +541,7 @@ impl GitBackend {
             .map_err(|e| VcsError::Other(format!("failed to get HEAD: {}", e)))?;
 
         if head.is_branch() {
-            Ok(head.shorthand().map(|s| s.to_string()))
+            Ok(head.shorthand().ok().map(|s| s.to_string()))
         } else {
             // Detached HEAD state
             Ok(None)
@@ -574,7 +574,7 @@ impl GitBackend {
                 .map_err(|e| VcsError::Other(format!("failed to find commit: {}", e)))?;
 
             let short_id = &oid.to_string()[..7];
-            let summary = commit.summary().unwrap_or("");
+            let summary = commit.summary().ok().flatten().unwrap_or("");
             let time_secs = commit.time().seconds();
             let relative_time = format_relative_time(now - time_secs);
 
@@ -623,7 +623,7 @@ impl GitBackend {
 
         let files: HashSet<String> = statuses
             .iter()
-            .filter_map(|s| s.path().map(String::from))
+            .filter_map(|s| s.path().ok().map(String::from))
             .collect();
 
         Ok(files.into_iter().collect())
@@ -844,7 +844,7 @@ impl GitBackend {
 
             let commit_id = oid.to_string();
             let short_id = commit_id[..7.min(commit_id.len())].to_string();
-            let summary = commit.summary().unwrap_or("").to_string();
+            let summary = commit.summary().ok().flatten().unwrap_or("").to_string();
 
             // Filter commits with no file changes (e.g., merge commits)
             if self

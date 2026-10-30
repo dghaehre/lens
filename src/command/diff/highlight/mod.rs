@@ -46,7 +46,8 @@ fn highlight_code(code: &str, filename: &str) -> Vec<(String, Option<usize>)> {
     };
 
     let mut highlighter = Highlighter::new();
-    let highlights = highlighter.highlight(&lang_config.config, code.as_bytes(), None, |_| None);
+    let highlights =
+        highlighter.highlight(&lang_config.config, code.as_bytes(), None, None, |_| None);
 
     let Ok(highlights) = highlights else {
         return code.lines().map(|l| (l.to_string(), None)).collect();
@@ -90,7 +91,9 @@ impl FileHighlighter {
 
         let mut highlighter = Highlighter::new();
         let highlights =
-            highlighter.highlight(&lang_config.config, content.as_bytes(), None, |_| None);
+            highlighter.highlight(&lang_config.config, content.as_bytes(), None, None, |_| {
+                None
+            });
 
         let Ok(highlights) = highlights else {
             return Self::default();

@@ -1,6 +1,6 @@
 //! jj-lib backed VCS adapter.
 //!
-//! Pin: `jj-lib = "=0.42"`. jj-lib is `0.x` and rearranges types across minor
+//! Pin: `jj-lib = "=0.46.0"`. jj-lib is `0.x` and rearranges types across minor
 //! versions — keep all jj-lib usage in this module so a bump is a one-file
 //! diff. See `/Users/dghaehre/.claude/plans/purring-cuddling-planet.md`.
 
@@ -14,18 +14,22 @@ use futures::TryStreamExt as _;
 use jj_lib::backend::TreeValue;
 use jj_lib::commit::Commit;
 use jj_lib::config::{ConfigLayer, ConfigSource, StackedConfig};
+use jj_lib::default_backend_factories::{
+    default_backend_factories, default_working_copy_factories,
+};
 use jj_lib::fileset::FilesetAliasesMap;
 use jj_lib::matchers::EverythingMatcher;
 use jj_lib::object_id::ObjectId;
 use jj_lib::ref_name::RemoteName;
-use jj_lib::repo::{ReadonlyRepo, Repo, StoreFactories};
-use jj_lib::repo_path::{RepoPath, RepoPathUiConverter};
+use jj_lib::repo::{ReadonlyRepo, Repo};
+use jj_lib::repo_path::RepoPath;
 use jj_lib::revset::{
     self, RevsetAliasesMap, RevsetDiagnostics, RevsetExtensions, RevsetParseContext,
     RevsetStreamExt, RevsetWorkspaceContext, SymbolResolver,
 };
 use jj_lib::settings::UserSettings;
-use jj_lib::workspace::{default_working_copy_factories, Workspace, WorkspaceLoadError};
+use jj_lib::ui_path::RepoPathUiConverter;
+use jj_lib::workspace::{Workspace, WorkspaceLoadError};
 
 use futures::AsyncReadExt as _;
 use pollster::FutureExt as _;
@@ -63,13 +67,13 @@ impl JjBackend {
     /// walks upward to find `.jj/`).
     pub fn new(path: &Path) -> Result<Self, VcsError> {
         let config = StackedConfig::with_defaults();
-        let settings = UserSettings::from_config(config)
+        let settings = UserSettings::from_config_and_home_dir(config, dirs::home_dir())
             .map_err(|e| VcsError::Other(format!("jj settings: {e}")))?;
 
         let workspace = Workspace::load(
             &settings,
             path,
-            &StoreFactories::default(),
+            &default_backend_factories(),
             &default_working_copy_factories(),
         )
         .map_err(|e| match e {
@@ -231,7 +235,6 @@ impl JjBackend {
             date_pattern_context: chrono::Local::now().into(),
             default_ignored_remote: Some(RemoteName::new("git")),
             fileset_aliases_map: &self.fileset_aliases,
-            use_glob_by_default: false,
             extensions: &self.extensions,
             workspace: Some(RevsetWorkspaceContext {
                 path_converter: &path_converter,
@@ -247,7 +250,7 @@ impl JjBackend {
             .resolve_user_expression(repo.as_ref(), &resolver)
             .map_err(|e| VcsError::InvalidRef(format!("{}: {e}", revset_str)))?;
         let revset = resolved
-            .evaluate(repo.as_ref())
+            .evaluate()
             .map_err(|e| VcsError::Other(format!("evaluate revset {revset_str}: {e}")))?;
 
         revset
