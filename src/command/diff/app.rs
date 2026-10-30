@@ -106,7 +106,7 @@ fn max_h_scroll(state: &mut AppState, term_width: u16) -> u16 {
     }
 
     let sidebar_width = if state.show_sidebar {
-        (term_width / 4).clamp(20, 35)
+        super::types::sidebar_width(&state.sidebar_items, term_width)
     } else {
         0
     };
@@ -180,21 +180,12 @@ fn max_sidebar_h_scroll(state: &AppState, term_width: u16) -> u16 {
     if !state.show_sidebar {
         return 0;
     }
-    let sidebar_width = (term_width / 4).clamp(20, 35) as usize;
+    let sidebar_width = super::types::sidebar_width(&state.sidebar_items, term_width) as usize;
     // Sidebar uses Borders::TOP | LEFT | BOTTOM (the right edge is shared
     // with the diff panel's left border), so only the left border eats width.
     let inner_width = sidebar_width.saturating_sub(1);
 
-    let mut max_label = 0usize;
-    for item in &state.sidebar_items {
-        let len = match item {
-            SidebarItem::Directory { name, depth, .. } => {
-                depth * 2 + 2 + 1 + 1 + name.chars().count()
-            }
-            SidebarItem::File { name, depth, .. } => depth * 2 + 2 + 1 + 1 + name.chars().count(),
-        };
-        max_label = max_label.max(len);
-    }
+    let max_label = super::types::sidebar_content_width(&state.sidebar_items) as usize;
     max_label.saturating_sub(inner_width).min(u16::MAX as usize) as u16
 }
 
@@ -1359,7 +1350,7 @@ fn run_app_internal(
                     let term = frame.area();
                     let header_h: u16 = if state.stacked_mode { 1 } else { 0 };
                     let sidebar_w: u16 = if state.show_sidebar {
-                        (term.width / 4).clamp(20, 35)
+                        super::types::sidebar_width(&state.sidebar_items, term.width)
                     } else {
                         0
                     };
@@ -2030,7 +2021,7 @@ fn run_app_internal(
                     let footer_height = 1u16;
                     let header_height = if state.stacked_mode { 1u16 } else { 0u16 };
                     let sidebar_width = if state.show_sidebar {
-                        (term_size.width / 4).clamp(20, 35)
+                        super::types::sidebar_width(&state.sidebar_items, term_size.width)
                     } else {
                         0u16
                     };

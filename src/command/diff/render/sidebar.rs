@@ -179,7 +179,13 @@ pub fn render_sidebar(
 
     let para = Paragraph::new(visible_lines)
         .style(Style::default().bg(bg))
-        .scroll((0, sidebar_h_scroll))
+        .scroll((
+            0,
+            sidebar_h_scroll.min(
+                crate::command::diff::types::sidebar_content_width(sidebar_items)
+                    .saturating_sub(area.width.saturating_sub(1)),
+            ),
+        ))
         .block(
             Block::default()
                 .title(title)

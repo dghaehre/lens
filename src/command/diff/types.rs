@@ -435,3 +435,60 @@ pub fn build_file_tree(file_diffs: &[FileDiff]) -> Vec<SidebarItem> {
 
     items
 }
+
+/// Width of the longest tree row, including indentation and status markers.
+/// Include collapsed rows so expanding a directory does not shift the diff.
+pub fn sidebar_content_width(items: &[SidebarItem]) -> u16 {
+    items
+        .iter()
+        .map(|item| {
+            let (name, depth) = match item {
+                SidebarItem::Directory { name, depth, .. }
+                | SidebarItem::File { name, depth, .. } => (name, depth),
+            };
+            depth
+                .saturating_mul(2)
+                .saturating_add(4)
+                .saturating_add(ratatui::text::Line::raw(name.as_str()).width())
+        })
+        .max()
+        .unwrap_or(0)
+        .min(u16::MAX as usize) as u16
+}
+
+/// Fit tree labels and the left border, reserving space for the diff when
+/// labels cannot fit. Very narrow terminals share the available width.
+pub fn sidebar_width(items: &[SidebarItem], terminal_width: u16) -> u16 {
+    let desired = sidebar_content_width(items)
+        .saturating_add(1)
+        .max((terminal_width / 4).clamp(20, 35));
+    desired.min(terminal_width.saturating_sub(40).max(terminal_width / 2))
+}
+
+#[cfg(test)]
+mod sidebar_width_tests {
+    use super::*;
+    fn directory(name: &str, depth: usize) -> SidebarItem {
+        SidebarItem::Directory {
+            name: name.into(),
+            path: name.into(),
+            depth,
+        }
+    }
+    #[test]
+    fn fits_long_indented_labels_beyond_old_cap() {
+        let items = vec![directory(&"a".repeat(50), 3)];
+        assert_eq!(sidebar_width(&items, 160), 61);
+    }
+    #[test]
+    fn measures_terminal_cells_instead_of_characters() {
+        assert_eq!(sidebar_content_width(&[directory("界界e\u{301}", 1)]), 11);
+    }
+    #[test]
+    fn reserves_diff_space_and_handles_tiny_terminals() {
+        let items = vec![directory(&"a".repeat(200), 0)];
+        assert_eq!(sidebar_width(&items, 100), 60);
+        assert_eq!(sidebar_width(&items, 30), 15);
+        assert_eq!(sidebar_width(&items, 0), 0);
+    }
+}

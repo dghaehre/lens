@@ -1500,7 +1500,7 @@ pub fn render_diff(
     };
 
     let main_area = if show_sidebar {
-        let sidebar_width = (area.width / 4).clamp(20, 35);
+        let sidebar_width = super::super::types::sidebar_width(sidebar_items, area.width);
         let main_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(sidebar_width), Constraint::Min(0)])
