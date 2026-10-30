@@ -13,7 +13,7 @@ use futures::TryStreamExt as _;
 
 use jj_lib::backend::TreeValue;
 use jj_lib::commit::Commit;
-use jj_lib::config::StackedConfig;
+use jj_lib::config::{ConfigLayer, ConfigSource, StackedConfig};
 use jj_lib::fileset::FilesetAliasesMap;
 use jj_lib::matchers::EverythingMatcher;
 use jj_lib::object_id::ObjectId;
@@ -35,9 +35,7 @@ use super::types::{RevisionSummary, StackedCommitInfo, VcsError};
 
 const GIT_EMPTY_TREE_SHA: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
-/// Revset backing the `b` revision picker. Builtin revset functions only:
-/// `self.aliases` is an empty `RevsetAliasesMap`, so config-defined aliases
-/// such as `trunk()` would fail to parse here.
+/// Revset backing the `b` revision picker.
 const PICKER_REVSET: &str = "ancestors(@ | bookmarks() | remote_bookmarks(), 20)";
 /// Used when `PICKER_REVSET` fails to evaluate (e.g. a repo shape or parser
 /// change) so the picker degrades to the current stack rather than erroring.
@@ -85,16 +83,69 @@ impl JjBackend {
             .block_on()
             .map_err(|e| VcsError::Other(format!("jj repo load: {e}")))?;
 
+        let aliases = Self::load_revset_aliases(workspace.workspace_root())?;
         let state_dir = workspace.workspace_root().join(".jj");
         Ok(Self {
             state_dir,
             workspace,
             repo: RwLock::new(repo),
             settings,
-            aliases: RevsetAliasesMap::new(),
+            aliases,
             fileset_aliases: FilesetAliasesMap::new(),
             extensions: RevsetExtensions::default(),
         })
+    }
+
+    /// Delegate configuration discovery/precedence to jj, while parsing and
+    /// evaluating every revset in jj-lib. The explicit template produces TOML
+    /// regardless of the user's config-list template or terminal settings.
+    fn load_revset_aliases(root: &Path) -> Result<RevsetAliasesMap, VcsError> {
+        let output = Command::new("jj")
+            .args([
+                "--ignore-working-copy",
+                "--color",
+                "never",
+                "--no-pager",
+                "config",
+                "list",
+                "--include-defaults",
+                "--template",
+                r#"name ++ " = " ++ value ++ "\n""#,
+                "revset-aliases",
+            ])
+            .current_dir(root)
+            .output()
+            .map_err(|e| {
+                VcsError::Other(format!(
+                    "failed to load jj revset aliases (jj must be on PATH): {e}"
+                ))
+            })?;
+        if !output.status.success() {
+            return Err(VcsError::Other(format!(
+                "jj config list failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let text = String::from_utf8(output.stdout)
+            .map_err(|e| VcsError::Other(format!("jj alias configuration is not UTF-8: {e}")))?;
+        Self::parse_revset_aliases(&text)
+    }
+
+    fn parse_revset_aliases(text: &str) -> Result<RevsetAliasesMap, VcsError> {
+        let layer = ConfigLayer::parse(ConfigSource::User, text)
+            .map_err(|e| VcsError::Other(format!("jj alias configuration: {e}")))?;
+        let mut config = StackedConfig::with_defaults();
+        config.add_layer(layer);
+        let mut aliases = RevsetAliasesMap::new();
+        for name in config.table_keys("revset-aliases") {
+            let value: String = config
+                .get(["revset-aliases", name])
+                .map_err(|e| VcsError::Other(format!("jj revset alias {name}: {e}")))?;
+            aliases
+                .insert(name, value, None)
+                .map_err(|e| VcsError::Other(format!("jj revset alias {name}: {e}")))?;
+        }
+        Ok(aliases)
     }
 
     /// Load the latest repository view after snapshotting the working copy.
@@ -941,6 +992,29 @@ mod tests {
         assert_eq!(JjBackend::translate_ref("HEAD~3"), "@---");
         assert_eq!(JjBackend::translate_ref("main"), "main");
         assert_eq!(JjBackend::translate_ref("@-"), "@-");
+    }
+
+    #[test]
+    fn configured_trunk_alias_resolves_in_library() {
+        if !jj_available() {
+            return;
+        }
+        let dir = setup_pure_jj_repo();
+        let mut backend = JjBackend::new(dir.path()).unwrap();
+        backend.aliases = JjBackend::parse_revset_aliases(
+            "[revset-aliases]\n\"trunk()\" = \"main\"\n\"review()\" = \"trunk()..@\"\n",
+        )
+        .unwrap();
+        let expected = backend.get_commits_for_revset("main..@").unwrap();
+        let actual = backend.get_commits_for_revset("review()").unwrap();
+        assert!(!actual.is_empty());
+        assert_eq!(
+            actual.iter().map(|c| &c.commit_id).collect::<Vec<_>>(),
+            expected.iter().map(|c| &c.commit_id).collect::<Vec<_>>()
+        );
+        assert!(backend
+            .get_commits_for_revset("unknown_lens_alias()")
+            .is_err());
     }
 
     #[test]

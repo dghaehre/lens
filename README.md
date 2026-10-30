@@ -65,7 +65,7 @@ lens main --stacked
 
 # jj: review exactly the commits selected by a revset, from commit trees
 # (never from the files currently on disk)
-lens --revset 'main..@'
+lens --revset 'trunk()..@'
 
 # Jump to a specific file on open
 lens --focus src/main.rs
@@ -78,8 +78,11 @@ diff against its parent (`lens HEAD~1`).
 In a jj repository, `--revset <REVSET>` instead opens an immutable,
 commit-by-commit review of every selected commit. This is the right mode for
 arbitrary multi-commit revsets such as `main..@`: each commit is compared to
-its own parent, and no diff side is read from the working-copy files. In the
-`b` picker shows an ancestry graph with branch and merge connections (`@` marks
+its own parent, and no diff side is read from the working-copy files. Lens loads effective revset aliases (including `trunk()`) using the installed
+`jj config list` at startup, then parses and evaluates revsets with `jj-lib`.
+Restart Lens after changing aliases.
+
+The `b` picker shows an ancestry graph with branch and merge connections (`@` marks
 the working change). Choose a listed change and press `enter` to review its own diff.
 Choose the working-copy row to return to the live diff. Type any
 revset and press `ctrl+enter` to review that expression. A revset with
