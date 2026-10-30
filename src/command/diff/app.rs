@@ -3166,7 +3166,7 @@ fn run_app_internal(
                                                 key: "b",
                                                 description: match backend.kind() {
                                                     VcsKind::Jj => {
-                                                        "Pick base; ctrl+enter reviews a typed revset"
+                                                        "Review change; ctrl+enter reviews a typed revset"
                                                     }
                                                     VcsKind::Git => {
                                                         "Change diff base (empty=unstaged, --cached=staged, <ref>)"

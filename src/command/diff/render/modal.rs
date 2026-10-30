@@ -163,9 +163,9 @@ pub enum ModalResult {
     #[allow(dead_code)]
     Selected(usize, String),
     FileSelected(usize),
-    /// A selection from the revset picker. A literal is a revset typed by the
-    /// user that did not match a listed revision; it opens immutable
-    /// commit-by-commit review rather than becoming a live diff base.
+    /// A selection from the revset picker. `literal` requests immutable
+    /// review, both for listed changes and for typed revsets. The synthetic
+    /// working-copy row restores the live diff.
     RevsetSelected {
         revset: Option<String>,
         literal: bool,
@@ -1033,11 +1033,11 @@ impl Modal {
             ))
         } else if !query.is_empty() {
             Line::from(Span::styled(
-                "  ctrl+enter reviews the typed revset (not the working copy)",
+                "  enter reviews selected change; ctrl+enter reviews typed revset",
                 Style::default().fg(t.ui.text_muted),
             ))
         } else {
-            Line::from("")
+            Line::from("  enter reviews selected change")
         };
         frame.render_widget(Paragraph::new(status_line), chunks[1]);
 
@@ -1591,7 +1591,7 @@ impl Modal {
                 KeyCode::Enter => match filtered_indices.get(*selected) {
                     Some(&idx) => Some(ModalResult::RevsetSelected {
                         revset: items[idx].revset.clone(),
-                        literal: false,
+                        literal: items[idx].revset.is_some(),
                     }),
                     // Nothing matched the filter: treat what was typed as a
                     // literal revset so `@---` and friends still work.
@@ -2818,4 +2818,38 @@ fn wrap_preview_line(line: &str, width: usize) -> Vec<String> {
         out.push(String::new());
     }
     out
+}
+
+#[cfg(test)]
+mod revset_picker_tests {
+    use super::*;
+
+    #[test]
+    fn selecting_a_change_requests_immutable_review() {
+        let mut modal = Modal::revset_picker(
+            "revset",
+            vec![
+                RevsetPickerItem {
+                    label: "working copy".into(),
+                    revset: None,
+                },
+                RevsetPickerItem {
+                    label: "older change".into(),
+                    revset: Some("abc".into()),
+                },
+            ],
+        );
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(
+            modal.handle_input(enter, 40),
+            Some(ModalResult::RevsetSelected {
+                revset: None,
+                literal: false
+            })
+        ));
+        modal.handle_input(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), 40);
+        assert!(
+            matches!(modal.handle_input(enter, 40), Some(ModalResult::RevsetSelected { revset: Some(id), literal: true }) if id == "abc")
+        );
+    }
 }
