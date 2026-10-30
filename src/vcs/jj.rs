@@ -387,6 +387,8 @@ impl VcsBackend for JjBackend {
                     .trim()
                     .to_string();
                 RevisionSummary {
+                    commit_id: commit.id().hex(),
+                    parent_ids: commit.parent_ids().iter().map(|id| id.hex()).collect(),
                     id,
                     bookmarks,
                     summary,

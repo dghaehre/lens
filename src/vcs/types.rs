@@ -39,6 +39,9 @@ pub struct StackedCommitInfo {
 /// `resolve_ref`.
 #[derive(Clone, Debug)]
 pub struct RevisionSummary {
+    /// Commit identity and parent edges for drawing the revision graph.
+    pub commit_id: String,
+    pub parent_ids: Vec<String>,
     /// Revset symbol identifying this revision (jj: a 12-char change-id
     /// prefix in jj's `z-k` display alphabet).
     pub id: String,

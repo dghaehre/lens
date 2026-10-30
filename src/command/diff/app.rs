@@ -931,8 +931,14 @@ fn build_revset_items(revisions: Vec<RevisionSummary>) -> Vec<RevsetPickerItem> 
         revset: None,
     }];
 
+    let mut lanes = Vec::new();
     items.extend(revisions.into_iter().map(|rev| {
-        let marker = if rev.is_working_copy { "@" } else { " " };
+        let marker = revision_graph_row(
+            &mut lanes,
+            &rev.commit_id,
+            &rev.parent_ids,
+            rev.is_working_copy,
+        );
         let bookmarks = if rev.bookmarks.is_empty() {
             String::new()
         } else {
@@ -950,6 +956,125 @@ fn build_revset_items(revisions: Vec<RevisionSummary>) -> Vec<RevsetPickerItem> 
     }));
 
     items
+}
+
+/// Keep columns stable until their pending parent is visited. Multiple columns
+/// targeting the same ancestor join on that ancestor's row.
+fn revision_graph_row(
+    lanes: &mut Vec<Option<String>>,
+    id: &str,
+    parents: &[String],
+    working_copy: bool,
+) -> String {
+    let column = lanes
+        .iter()
+        .position(|lane| lane.as_deref() == Some(id))
+        .unwrap_or_else(|| {
+            let column = lanes
+                .iter()
+                .position(Option::is_none)
+                .unwrap_or(lanes.len());
+            if column == lanes.len() {
+                lanes.push(None);
+            }
+            lanes[column] = Some(id.to_string());
+            column
+        });
+    let mut joined = vec![column];
+    for (index, lane) in lanes.iter_mut().enumerate() {
+        if lane.as_deref() == Some(id) {
+            if index != column {
+                joined.push(index);
+            }
+            *lane = None;
+        }
+    }
+    for (index, parent) in parents.iter().enumerate() {
+        // The first parent continues vertically. Other parents branch into
+        // separate columns, joining existing ancestry when it is visited.
+        let target = if index == 0 {
+            column
+        } else {
+            lanes
+                .iter()
+                .position(Option::is_none)
+                .unwrap_or(lanes.len())
+        };
+        if target == lanes.len() {
+            lanes.push(None);
+        }
+        lanes[target] = Some(parent.clone());
+        joined.push(target);
+    }
+    let left = *joined.iter().min().unwrap();
+    let right = *joined.iter().max().unwrap();
+    let mut graph = String::new();
+    for (index, lane) in lanes.iter().enumerate() {
+        graph.push(if index == column {
+            if working_copy {
+                '@'
+            } else {
+                '○'
+            }
+        } else if joined.contains(&index) {
+            if lane.is_some() {
+                '┬'
+            } else {
+                '┘'
+            }
+        } else if index >= left && index <= right {
+            if lane.is_some() {
+                '┼'
+            } else {
+                '─'
+            }
+        } else if lane.is_some() {
+            '│'
+        } else {
+            ' '
+        });
+        graph.push(if index >= left && index < right {
+            '─'
+        } else {
+            ' '
+        });
+    }
+    while lanes.last() == Some(&None) {
+        lanes.pop();
+    }
+    graph
+}
+
+#[cfg(test)]
+mod revision_graph_tests {
+    use super::revision_graph_row;
+
+    #[test]
+    fn branches_join_at_their_shared_parent() {
+        let mut lanes = Vec::new();
+        assert_eq!(
+            revision_graph_row(&mut lanes, "a", &["p".into()], true),
+            "@ "
+        );
+        assert_eq!(
+            revision_graph_row(&mut lanes, "b", &["p".into()], false),
+            "│ ○ "
+        );
+        assert_eq!(revision_graph_row(&mut lanes, "p", &[], false), "○─┘ ");
+        assert!(lanes.is_empty());
+    }
+
+    #[test]
+    fn merge_has_two_parent_lanes() {
+        let mut lanes = Vec::new();
+        assert_eq!(
+            revision_graph_row(&mut lanes, "m", &["a".into(), "b".into()], false),
+            "○─┬ "
+        );
+        assert_eq!(revision_graph_row(&mut lanes, "a", &[], false), "○ │ ");
+        assert_eq!(revision_graph_row(&mut lanes, "b", &[], false), "  ○ ");
+        assert!(lanes.is_empty());
+    }
 }
 
 /// Apply a user-supplied diff base. `None` or an all-whitespace string clears
