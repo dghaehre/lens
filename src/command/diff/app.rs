@@ -931,29 +931,85 @@ const REVSET_PICKER_LIMIT: usize = 50;
 /// an empty query in the `rev:` prompt).
 fn build_revset_items(revisions: Vec<RevisionSummary>) -> Vec<RevsetPickerItem> {
     let mut items = vec![RevsetPickerItem {
+        lines: None,
         label: "   (working copy — no base ref)".to_string(),
         revset: None,
     }];
 
     let mut lanes = Vec::new();
     items.extend(revisions.into_iter().map(|rev| {
-        let marker = revision_graph_row(
+        let mut marker = revision_graph_row(
             &mut lanes,
             &rev.commit_id,
             &rev.parent_ids,
             rev.is_working_copy,
         );
+        if rev.is_immutable && !rev.is_working_copy {
+            marker = marker.replace('○', "◆");
+        }
+        let continuation: String = lanes
+            .iter()
+            .map(|lane| if lane.is_some() { "│ " } else { "  " })
+            .collect();
         let bookmarks = if rev.bookmarks.is_empty() {
             String::new()
         } else {
             format!("  {}", rev.bookmarks.join(" "))
         };
         let summary = if rev.summary.is_empty() {
-            "(no description)".to_string()
+            "(no description set)".to_string()
         } else {
             rev.summary.clone()
         };
+        let t = theme::get();
+        let prefix = rev.unique_prefix_len.min(rev.id.len());
+        let first = Line::from(vec![
+            Span::styled(
+                format!(" {} ", marker),
+                Style::default().fg(t.ui.status_added),
+            ),
+            Span::styled(
+                rev.id[..prefix].to_string(),
+                Style::default().fg(Color::Magenta).bold(),
+            ),
+            Span::styled(
+                rev.id[prefix..].to_string(),
+                Style::default().fg(t.ui.text_muted),
+            ),
+            Span::styled(
+                format!(" {}", rev.author),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::styled(
+                format!(" {}", rev.timestamp),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(bookmarks.clone(), Style::default().fg(Color::Magenta)),
+            Span::styled(
+                format!(" {}", &rev.commit_id[..8.min(rev.commit_id.len())]),
+                Style::default().fg(t.ui.text_muted),
+            ),
+        ]);
+        let second = Line::from(vec![
+            Span::styled(
+                format!(" {} ", continuation),
+                Style::default().fg(t.ui.text_muted),
+            ),
+            Span::styled(
+                if rev.is_empty { "(empty) " } else { "" },
+                Style::default().fg(t.ui.status_added),
+            ),
+            Span::styled(
+                summary.clone(),
+                Style::default().fg(if rev.summary.is_empty() {
+                    t.ui.status_added
+                } else {
+                    t.ui.text_primary
+                }),
+            ),
+        ]);
         RevsetPickerItem {
+            lines: Some(vec![first, second]),
             label: format!("{} {}{}  {}", marker, rev.id, bookmarks, summary),
             revset: Some(rev.id),
         }
@@ -1817,6 +1873,7 @@ fn run_app_internal(
                                     .first()
                                     .ok_or_else(|| "No matching change".to_string())?;
                                 Ok(RevsetPickerItem {
+                                    lines: None,
                                     label: format!(
                                         "○ {}  {}",
                                         &id[..12.min(id.len())],

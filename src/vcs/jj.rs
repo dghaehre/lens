@@ -457,6 +457,12 @@ impl VcsBackend for JjBackend {
         let view = repo.view();
         let wc_id = view.get_wc_commit_id(self.workspace.workspace_name());
 
+        let immutable: std::collections::HashSet<_> = self
+            .resolve_revset(&format!("immutable() & ({PICKER_REVSET})"))?
+            .into_iter()
+            .map(|commit| commit.id().hex())
+            .collect();
+
         Ok(commits
             .into_iter()
             .take(limit)
@@ -477,7 +483,27 @@ impl VcsBackend for JjBackend {
                     .unwrap_or("")
                     .trim()
                     .to_string();
+                let unique_prefix_len = (1..=id.len())
+                    .find(|&len| {
+                        self.get_change_id(&id[..len])
+                            .is_ok_and(|resolved| resolved == change_id)
+                    })
+                    .unwrap_or(id.len());
+                let timestamp = chrono::DateTime::from_timestamp_millis(
+                    commit.committer().timestamp.timestamp.0,
+                )
+                .map(|date| {
+                    date.with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M:%S")
+                        .to_string()
+                })
+                .unwrap_or_default();
                 RevisionSummary {
+                    author: commit.author().email.clone(),
+                    timestamp,
+                    unique_prefix_len,
+                    is_empty: commit.is_empty(repo.as_ref()).block_on().unwrap_or(false),
+                    is_immutable: immutable.contains(&commit.id().hex()),
                     commit_id: commit.id().hex(),
                     parent_ids: commit.parent_ids().iter().map(|id| id.hex()).collect(),
                     id,

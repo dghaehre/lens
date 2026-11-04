@@ -46,6 +46,7 @@ pub struct FilePickerItem {
 /// One row in the revset picker. `revset` is `None` for the synthetic
 /// "working copy" row, which clears the diff base instead of setting one.
 pub struct RevsetPickerItem {
+    pub lines: Option<Vec<Line<'static>>>,
     pub label: String,
     pub revset: Option<String>,
 }
@@ -492,9 +493,9 @@ impl Modal {
             } => {
                 // Wider than the file picker: rows carry a change id, a
                 // bookmark column and a description.
-                let width = 90.min(area.width.saturating_sub(4));
+                let width = 120.min(area.width.saturating_sub(4));
                 let items_count = filtered_indices.len().min(15) as u16;
-                let height = (items_count + 5).min(area.height * 80 / 100).max(8);
+                let height = (items_count * 2 + 5).min(area.height * 80 / 100).max(8);
                 (width, height)
             }
             ModalContent::Annotations {
@@ -1083,11 +1084,20 @@ impl Modal {
         frame.render_widget(Paragraph::new(status_line), chunks[1]);
 
         let visible_count = chunks[2].height as usize;
-        let scroll_offset = if selected >= visible_count {
-            selected - visible_count + 1
-        } else {
-            0
+        let mut scroll_offset = selected.min(filtered_indices.len().saturating_sub(1));
+        let row_height = |index: usize| {
+            items[filtered_indices[index]]
+                .lines
+                .as_ref()
+                .map_or(1, Vec::len)
         };
+        if !filtered_indices.is_empty() {
+            let mut height = row_height(scroll_offset);
+            while scroll_offset > 0 && height + row_height(scroll_offset - 1) <= visible_count {
+                scroll_offset -= 1;
+                height += row_height(scroll_offset);
+            }
+        }
 
         let list_items: Vec<ListItem> = filtered_indices
             .iter()
@@ -1101,7 +1111,11 @@ impl Modal {
                 } else {
                     Style::default().fg(t.ui.text_primary)
                 };
-                ListItem::new(Line::from(Span::styled(format!(" {} ", item.label), style)))
+                let lines = item
+                    .lines
+                    .clone()
+                    .unwrap_or_else(|| vec![Line::from(format!(" {} ", item.label))]);
+                ListItem::new(lines).style(style)
             })
             .collect();
 
@@ -2883,6 +2897,7 @@ mod revset_picker_tests {
         let mut modal = Modal::revset_picker(
             "revset",
             vec![RevsetPickerItem {
+                lines: None,
                 label: "wip: support trunk()..@".into(),
                 revset: Some("abcdef".into()),
             }],
@@ -2902,10 +2917,12 @@ mod revset_picker_tests {
             "revset",
             vec![
                 RevsetPickerItem {
+                    lines: None,
                     label: "vqpsvyom".into(),
                     revset: Some("vqpsvyom".into()),
                 },
                 RevsetPickerItem {
+                    lines: None,
                     label: "vpsntpyq".into(),
                     revset: Some("vpsntpyq".into()),
                 },
@@ -2917,6 +2934,7 @@ mod revset_picker_tests {
         modal.update_prefix_preview(|query| {
             assert_eq!(query, "vp");
             Ok(RevsetPickerItem {
+                lines: None,
                 label: "resolved".into(),
                 revset: Some("vpsntpyqlqup".into()),
             })
@@ -2930,6 +2948,7 @@ mod revset_picker_tests {
         );
         modal.update_prefix_preview(|_| {
             Ok(RevsetPickerItem {
+                lines: None,
                 label: "outside initial rows".into(),
                 revset: Some("vpxxxxx".into()),
             })
@@ -2946,10 +2965,12 @@ mod revset_picker_tests {
                 "revset",
                 vec![
                     RevsetPickerItem {
+                        lines: None,
                         label: "vqpsvyom current".into(),
                         revset: Some("vqpsvyom".into()),
                     },
                     RevsetPickerItem {
+                        lines: None,
                         label: "vpsntpyq explorer".into(),
                         revset: Some("vpsntpyq".into()),
                     },
@@ -2971,10 +2992,12 @@ mod revset_picker_tests {
             "revset",
             vec![
                 RevsetPickerItem {
+                    lines: None,
                     label: "working copy".into(),
                     revset: None,
                 },
                 RevsetPickerItem {
+                    lines: None,
                     label: "older change".into(),
                     revset: Some("abc".into()),
                 },
