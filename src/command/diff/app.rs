@@ -3214,10 +3214,24 @@ fn run_app_internal(
                             };
                             match revisions {
                                 Some(revisions) => {
-                                    active_modal = Some(Modal::revset_picker(
+                                    let mut modal = Modal::revset_picker(
                                         "revset",
                                         build_revset_items(revisions),
-                                    ));
+                                    );
+                                    if let Some(commit) = state.current_commit() {
+                                        if let Ok(id) = backend.get_change_id(&commit.commit_id) {
+                                            modal.select_revset(RevsetPickerItem {
+                                                lines: None,
+                                                label: format!(
+                                                    "○ {} {}",
+                                                    &id[..12.min(id.len())],
+                                                    commit.summary
+                                                ),
+                                                revset: Some(id),
+                                            });
+                                        }
+                                    }
+                                    active_modal = Some(modal);
                                 }
                                 // Git, or a jj snapshot/revset failure — fall back
                                 // to the typed prompt rather than leaving `b` dead.

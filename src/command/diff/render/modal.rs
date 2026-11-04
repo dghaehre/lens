@@ -317,6 +317,32 @@ impl Modal {
         }
     }
 
+    /// Select the active change without filtering the list. Include it when
+    /// it falls outside the initial revision list.
+    pub fn select_revset(&mut self, item: RevsetPickerItem) {
+        if let ModalContent::RevsetPicker {
+            items,
+            filtered_indices,
+            selected,
+            ..
+        } = &mut self.content
+        {
+            let index = items
+                .iter()
+                .position(|existing| match (&existing.revset, &item.revset) {
+                    (Some(prefix), Some(id)) => id.starts_with(prefix),
+                    (None, None) => true,
+                    _ => false,
+                })
+                .unwrap_or_else(|| {
+                    items.push(item);
+                    items.len() - 1
+                });
+            *filtered_indices = (0..items.len()).collect();
+            *selected = index;
+        }
+    }
+
     /// Surface a failed revset resolution without rebuilding the modal, so
     /// the typed query and selection survive.
     pub fn set_revset_error(&mut self, msg: impl Into<String>) {
@@ -2891,6 +2917,46 @@ fn wrap_preview_line(line: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod revset_picker_tests {
     use super::*;
+
+    #[test]
+    fn reopening_selects_active_change_without_filtering_other_changes() {
+        for (id, expected_index, expected_count) in [("vpsntpyqlqup", 1, 2), ("zzzzzzzzzzzz", 2, 3)]
+        {
+            let mut modal = Modal::revset_picker(
+                "revset",
+                vec![
+                    RevsetPickerItem {
+                        lines: None,
+                        label: "working copy".into(),
+                        revset: None,
+                    },
+                    RevsetPickerItem {
+                        lines: None,
+                        label: "listed change".into(),
+                        revset: Some("vpsntpyq".into()),
+                    },
+                ],
+            );
+            modal.select_revset(RevsetPickerItem {
+                lines: None,
+                label: "active change".into(),
+                revset: Some(id.into()),
+            });
+            assert!(matches!(
+                &modal.content,
+                ModalContent::RevsetPicker { selected, filtered_indices, items, query, .. }
+                    if *selected == expected_index
+                        && filtered_indices.len() == expected_count
+                        && items.len() == expected_count
+                        && query.is_empty()
+            ));
+            assert!(matches!(
+                modal.handle_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 40),
+                Some(ModalResult::RevsetSelected { revset: Some(selected), literal: true })
+                    if id.starts_with(&selected)
+            ));
+        }
+    }
 
     #[test]
     fn range_expression_wins_over_description_match() {
