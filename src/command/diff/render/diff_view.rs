@@ -87,8 +87,8 @@ fn render_stacked_header(
     // Calculate widths for centering
     let center_width: usize =
         nav_indicator.len() + 1 + id_label.len() + 2 + truncated_msg.chars().count();
-    // " ‹ " + " ctrl+h " = 12 chars, same for right side
-    let side_width = 12;
+    // Each navigation area occupies 11 terminal cells.
+    let side_width = 11;
 
     let total_content_width = side_width * 2 + center_width;
     let total_padding = (area.width as usize).saturating_sub(total_content_width);
@@ -98,8 +98,11 @@ fn render_stacked_header(
     // Build final line with centered content
     let mut spans = vec![
         // Left side: arrow and hint
-        Span::styled(" ‹ ", left_style),
-        Span::styled(" ctrl+h ", dimmed_style),
+        Span::styled(if can_go_prev { " ‹ " } else { "   " }, left_style),
+        Span::styled(
+            if can_go_prev { " ctrl+h " } else { "        " },
+            dimmed_style,
+        ),
         // Left padding
         Span::styled(" ".repeat(left_padding), Style::default().bg(bg)),
     ];
@@ -112,8 +115,14 @@ fn render_stacked_header(
         " ".repeat(right_padding),
         Style::default().bg(bg),
     ));
-    spans.push(Span::styled(" ctrl+l ", dimmed_style));
-    spans.push(Span::styled(" › ", right_style));
+    spans.push(Span::styled(
+        if can_go_next { " ctrl+l " } else { "        " },
+        dimmed_style,
+    ));
+    spans.push(Span::styled(
+        if can_go_next { " › " } else { "   " },
+        right_style,
+    ));
 
     let header = Paragraph::new(Line::from(spans)).style(Style::default().bg(bg));
     frame.render_widget(header, area);

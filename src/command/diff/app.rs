@@ -2561,8 +2561,12 @@ fn run_app_internal(
                                 navigate_stacked_commit(&mut state, new_index, &options, backend);
                             }
                         }
-                        // Stacked mode: navigate to previous commit
-                        KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        // Legacy terminals encode Ctrl+H as Backspace. Text-entry
+                        // modes handle it earlier, before this navigation branch.
+                        KeyCode::Char('h') | KeyCode::Backspace
+                            if key.code == KeyCode::Backspace
+                                || key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
                             if state.stacked_mode && state.current_commit_index > 0 {
                                 let new_index = state.current_commit_index - 1;
                                 navigate_stacked_commit(&mut state, new_index, &options, backend);
