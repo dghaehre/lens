@@ -75,8 +75,7 @@ fn review_context_for_commit(commit_id: &str, backend: &dyn VcsBackend) -> Optio
     if backend.kind() != VcsKind::Jj {
         return None;
     }
-    let old_commit_id = backend.get_parent_ref_or_empty(commit_id).ok()?;
-    let old_change_id = backend.get_change_id(&old_commit_id).ok()?;
+    let old_change_id = backend.get_parent_change_identity(commit_id).ok()?;
     let new_change_id = backend.get_change_id(commit_id).ok()?;
     Some(ReviewContext {
         old_change_id,

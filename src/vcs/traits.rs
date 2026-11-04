@@ -69,6 +69,17 @@ pub trait VcsBackend {
     /// string `"<ref>^"`. For jj it's the resolved commit id of `(<ref>)-`.
     fn get_parent_ref_or_empty(&self, reference: &str) -> Result<String, VcsError>;
 
+    /// Content before a change. For jj merges this is the merged parent tree.
+    fn get_parent_file_content(&self, reference: &str, path: &Path) -> Result<String, VcsError> {
+        let parent = self.get_parent_ref_or_empty(reference)?;
+        self.get_file_content_at_ref(&parent, path)
+    }
+
+    /// Logical identity of the comparison base for review annotations.
+    fn get_parent_change_identity(&self, reference: &str) -> Result<String, VcsError> {
+        self.get_change_id(&self.get_parent_ref_or_empty(reference)?)
+    }
+
     /// Files changed by a single commit (vs its parent), or by a `from..to`
     /// range when `reference` contains `..`.
     fn get_changed_files(&self, reference: &str) -> Result<Vec<String>, VcsError>;

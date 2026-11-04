@@ -11,7 +11,6 @@ use std::sync::{Arc, RwLock};
 use futures::StreamExt as _;
 use futures::TryStreamExt as _;
 
-use jj_lib::backend::TreeValue;
 use jj_lib::commit::Commit;
 use jj_lib::config::{ConfigLayer, ConfigSource, StackedConfig};
 use jj_lib::default_backend_factories::{
@@ -31,7 +30,6 @@ use jj_lib::settings::UserSettings;
 use jj_lib::ui_path::RepoPathUiConverter;
 use jj_lib::workspace::{Workspace, WorkspaceLoadError};
 
-use futures::AsyncReadExt as _;
 use pollster::FutureExt as _;
 
 use super::traits::{VcsBackend, VcsKind};
@@ -321,7 +319,14 @@ impl JjBackend {
         let from_tree = from.tree();
         let to_tree = to.tree();
 
-        let mut stream = from_tree.diff_stream(&to_tree, &EverythingMatcher);
+        Self::diff_tree_paths(&from_tree, &to_tree)
+    }
+
+    fn diff_tree_paths(
+        from_tree: &jj_lib::merged_tree::MergedTree,
+        to_tree: &jj_lib::merged_tree::MergedTree,
+    ) -> Result<Vec<String>, VcsError> {
+        let mut stream = from_tree.diff_stream(to_tree, &EverythingMatcher);
         let mut paths = Vec::new();
         while let Some(entry) = stream.next().block_on() {
             paths.push(entry.path.as_internal_file_string().to_string());
@@ -332,41 +337,57 @@ impl JjBackend {
     /// Read a file's bytes at a given tree, or empty string if the path
     /// doesn't resolve to a regular file.
     fn read_file_at_tree(&self, commit: &Commit, path: &Path) -> Result<String, VcsError> {
+        self.read_file_from_tree(&commit.tree(), path)
+    }
+
+    fn read_file_from_tree(
+        &self,
+        tree: &jj_lib::merged_tree::MergedTree,
+        path: &Path,
+    ) -> Result<String, VcsError> {
         let repo = self.repo_snapshot()?;
         let internal = path.to_string_lossy().replace('\\', "/");
         let repo_path = RepoPath::from_internal_string(&internal)
             .map_err(|e| VcsError::Other(format!("repo path {internal}: {e}")))?;
-
-        let tree = commit.tree();
 
         let merged = tree
             .path_value(repo_path)
             .block_on()
             .map_err(|e| VcsError::Other(format!("path_value {}: {e}", path.display())))?;
 
-        // Take the first resolved file value; ignore conflicts for now
-        // (iteration 1 — see plan §"Known follow-ups").
-        let file_id = merged
-            .into_iter()
-            .filter_map(|v| match v {
-                Some(TreeValue::File { id, .. }) => Some(id),
-                _ => None,
-            })
-            .next();
-        let Some(file_id) = file_id else {
-            return Ok(String::new());
+        use jj_lib::conflicts::{
+            materialize_merge_result_to_bytes, materialize_tree_value, ConflictMarkerStyle,
+            ConflictMaterializeOptions, MaterializedTreeValue,
         };
-
-        let mut reader = repo
-            .store()
-            .read_file(repo_path, &file_id)
-            .block_on()
-            .map_err(|e| VcsError::Other(format!("read_file {}: {e}", path.display())))?;
-        let mut bytes = Vec::new();
-        reader
-            .read_to_end(&mut bytes)
-            .block_on()
-            .map_err(|e| VcsError::Io(e))?;
+        let value = materialize_tree_value(
+            repo.store(),
+            repo_path,
+            merged,
+            &jj_lib::conflict_labels::ConflictLabels::unlabeled(),
+        )
+        .block_on()
+        .map_err(|e| VcsError::Other(format!("materialize {}: {e}", path.display())))?;
+        let bytes = match value {
+            MaterializedTreeValue::File(mut file) => file
+                .read_all(repo_path)
+                .block_on()
+                .map_err(|e| VcsError::Other(e.to_string()))?,
+            MaterializedTreeValue::FileConflict(conflict) => {
+                let options = ConflictMaterializeOptions {
+                    marker_style: ConflictMarkerStyle::Diff,
+                    marker_len: None,
+                    merge: jj_lib::tree_merge::MergeOptions::from_settings(&self.settings)
+                        .map_err(|e| VcsError::Other(e.to_string()))?,
+                };
+                materialize_merge_result_to_bytes(&conflict.contents, &conflict.labels, &options)
+                    .to_vec()
+            }
+            MaterializedTreeValue::Symlink { target, .. } => target.into_bytes(),
+            MaterializedTreeValue::AccessDenied(error) => {
+                return Err(VcsError::Other(error.to_string()))
+            }
+            _ => Vec::new(),
+        };
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
@@ -542,19 +563,36 @@ impl VcsBackend for JjBackend {
             return self.get_range_changed_files(from, to);
         }
         let commit = self.resolve_single_commit(r)?;
-        let parent_id = commit.parent_ids().first().cloned();
-        let Some(parent_id) = parent_id else {
-            // Only jj's root commit has no parent, and its tree is empty —
-            // so "files it changed" really is nothing. Every user commit
-            // parents the root, so this branch is unreachable for them.
-            return Ok(Vec::new());
-        };
         let repo = self.repo_snapshot()?;
-        let parent = repo
-            .store()
-            .get_commit(&parent_id)
-            .map_err(|e| VcsError::Other(format!("get parent: {e}")))?;
-        self.diff_paths(&parent, &commit)
+        let parent = commit
+            .parent_tree(repo.as_ref())
+            .block_on()
+            .map_err(|e| VcsError::Other(format!("merge parent trees: {e}")))?;
+        Self::diff_tree_paths(&parent, &commit.tree())
+    }
+
+    fn get_parent_file_content(&self, reference: &str, path: &Path) -> Result<String, VcsError> {
+        let commit = self.resolve_single_commit(reference)?;
+        let repo = self.repo_snapshot()?;
+        let tree = commit
+            .parent_tree(repo.as_ref())
+            .block_on()
+            .map_err(|e| VcsError::Other(format!("merge parent trees: {e}")))?;
+        self.read_file_from_tree(&tree, path)
+    }
+
+    fn get_parent_change_identity(&self, reference: &str) -> Result<String, VcsError> {
+        let commit = self.resolve_single_commit(reference)?;
+        let parents = commit
+            .parents()
+            .block_on()
+            .map_err(|e| VcsError::Other(e.to_string()))?;
+        let mut ids: Vec<_> = parents
+            .iter()
+            .map(|c| c.change_id().reverse_hex())
+            .collect();
+        ids.sort();
+        Ok(ids.join("+"))
     }
 
     fn get_range_changed_files(&self, from: &str, to: &str) -> Result<Vec<String>, VcsError> {

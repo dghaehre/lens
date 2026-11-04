@@ -149,23 +149,14 @@ pub fn load_single_commit_diffs(
         files
     };
 
-    // Get parent ref (handles root commits gracefully)
-    let parent_ref = backend
-        .get_parent_ref_or_empty(commit_id)
-        .unwrap_or_default();
-
     files
         .into_iter()
         .map(|filename| {
             let path = Path::new(&filename);
 
-            let old_content = if parent_ref.is_empty() {
-                String::new()
-            } else {
-                backend
-                    .get_file_content_at_ref(&parent_ref, path)
-                    .unwrap_or_default()
-            };
+            let old_content = backend
+                .get_parent_file_content(commit_id, path)
+                .unwrap_or_default();
 
             let new_content = backend
                 .get_file_content_at_ref(commit_id, path)
@@ -698,6 +689,47 @@ mod tests {
             .any(|d| d.filename == "live.txt"));
         options.reference = Some("base..base".parse().unwrap());
         assert!(load_file_diffs(&options, &backend).is_empty());
+    }
+
+    #[test]
+    fn jj_merge_review_only_shows_changes_against_merged_parents() {
+        if !jj_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        run_jj(path, &["--config", "git.colocate=false", "git", "init"]);
+        run_jj(path, &["bookmark", "create", "base"]);
+        fs::write(path.join("left.txt"), "left\n").unwrap();
+        fs::write(path.join("conflict.txt"), "left side\n").unwrap();
+        run_jj(path, &["commit", "-m", "left"]);
+        run_jj(path, &["bookmark", "create", "left", "-r", "@-"]);
+        run_jj(path, &["new", "root()"]);
+        fs::write(path.join("right.txt"), "right parent\n").unwrap();
+        fs::write(path.join("conflict.txt"), "right side\n").unwrap();
+        run_jj(path, &["commit", "-m", "right"]);
+        run_jj(path, &["bookmark", "create", "right", "-r", "@-"]);
+        run_jj(path, &["new", "left", "right"]);
+        let backend = JjBackend::new(path).unwrap();
+        assert!(load_single_commit_diffs("@", &None, &backend).is_empty());
+        let conflict = backend
+            .get_parent_file_content("@", Path::new("conflict.txt"))
+            .unwrap();
+        assert!(conflict.contains("<<<<<<<"));
+        assert!(conflict.contains("left side"));
+        assert!(conflict.contains("right side"));
+        fs::write(path.join("right.txt"), "merge edit\n").unwrap();
+        backend.refresh().unwrap();
+        let diffs = load_single_commit_diffs("@", &None, &backend);
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].filename, "right.txt");
+        assert_eq!(diffs[0].old_content, "right parent\n");
+        assert_eq!(diffs[0].new_content, "merge edit\n");
+        assert_eq!(diffs[0].status, FileStatus::Modified);
+        assert!(backend
+            .get_parent_change_identity("@")
+            .unwrap()
+            .contains('+'));
     }
 
     #[test]
