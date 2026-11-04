@@ -84,6 +84,18 @@ fn review_context_for_commit(commit_id: &str, backend: &dyn VcsBackend) -> Optio
     })
 }
 
+fn review_context_for_range(
+    options: &DiffOptions,
+    backend: &dyn VcsBackend,
+) -> Option<ReviewContext> {
+    let raw = options.reference.as_ref()?.as_str();
+    let (from, to) = crate::commit_reference::split_endpoint_range(raw)?;
+    Some(ReviewContext {
+        old_change_id: backend.get_change_id(from).ok()?,
+        new_change_id: backend.get_change_id(to).ok()?,
+    })
+}
+
 /// Adjust sidebar scroll to ensure the selected item is visible.
 fn ensure_sidebar_visible(state: &mut AppState, visible_height: usize) {
     if state.sidebar_selected >= state.sidebar_scroll + visible_height {
@@ -858,7 +870,8 @@ fn extract_diff_snippet(
 
 pub fn run_app(options: DiffOptions, backend: &dyn VcsBackend) -> io::Result<()> {
     let file_diffs = load_file_diffs(&options, backend);
-    run_app_internal(options, file_diffs, None, None, backend)
+    let context = review_context_for_range(&options, backend);
+    run_app_internal(options, file_diffs, None, context, backend)
 }
 
 pub fn run_app_stacked(
@@ -1093,7 +1106,9 @@ fn apply_diff_reference(
 
     // `git diff --cached` sentinel — bypasses ref resolution.
     let is_sentinel = raw == "--cached" || raw == "--staged";
-    if !is_sentinel {
+    if crate::commit_reference::split_endpoint_range(&raw).is_some() {
+        super::validate_endpoint_range(&raw, backend)?;
+    } else if !is_sentinel {
         backend.resolve_ref(&raw).map_err(|e| e.to_string())?;
     }
 
@@ -1101,6 +1116,7 @@ fn apply_diff_reference(
     options.reference = Some(reference);
     options.revset = None;
     state.clear_stacked_mode();
+    state.set_review_context(review_context_for_range(options, backend));
     state.set_diff_reference(Some(raw));
     state.needs_reload = true;
     Ok(())
@@ -1118,6 +1134,10 @@ fn apply_revset_review(
 ) -> Result<(), String> {
     if backend.kind() != VcsKind::Jj {
         return Err("arbitrary revset review is only available in jj repositories".to_string());
+    }
+
+    if crate::commit_reference::split_endpoint_range(raw).is_some() {
+        return apply_diff_reference(Some(raw), backend, options, state);
     }
 
     let commits = backend
@@ -1183,9 +1203,9 @@ fn run_app_internal(
     // Initialize stacked mode if commits were provided
     if let Some(commits) = stacked_commits {
         state.init_stacked_mode(commits);
-        state.set_review_context(review_context);
-        state.reload_annotations();
     }
+    state.set_review_context(review_context);
+    state.reload_annotations();
 
     // Now enter TUI mode
     enable_raw_mode()?;
@@ -1229,6 +1249,11 @@ fn run_app_internal(
                 load_file_diffs(&options, backend)
             };
 
+            if options.reference.as_ref().is_some_and(|r| {
+                crate::commit_reference::split_endpoint_range(r.as_str()).is_some()
+            }) {
+                state.set_review_context(review_context_for_range(&options, backend));
+            }
             // Pass changed files to reload so it can unmark them from viewed
             let changed_files = pending_changed_files.take();
             state.reload(file_diffs, changed_files.as_ref());
@@ -1781,7 +1806,27 @@ fn run_app_internal(
                 Event::Key(key) if key.kind == KeyEventKind::Press && active_modal.is_some() => {
                     if let Some(ref mut modal) = active_modal {
                         let term_height = terminal.size()?.height;
-                        if let Some(result) = modal.handle_input(key, term_height) {
+                        let result = modal.handle_input(key, term_height);
+                        if result.is_none() {
+                            modal.update_prefix_preview(|query| {
+                                let id = backend.get_change_id(query).map_err(|e| e.to_string())?;
+                                let commits = backend
+                                    .get_commits_for_revset(query)
+                                    .map_err(|e| e.to_string())?;
+                                let commit = commits
+                                    .first()
+                                    .ok_or_else(|| "No matching change".to_string())?;
+                                Ok(RevsetPickerItem {
+                                    label: format!(
+                                        "○ {}  {}",
+                                        &id[..12.min(id.len())],
+                                        commit.summary
+                                    ),
+                                    revset: Some(id),
+                                })
+                            });
+                        }
+                        if let Some(result) = result {
                             match result {
                                 ModalResult::FileSelected(file_index) => {
                                     state.reveal_file(file_index);

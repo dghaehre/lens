@@ -23,6 +23,7 @@ pub enum DiffMode {
     Unstaged,
     Staged,
     Ref(String),
+    Range(String, String),
 }
 
 impl DiffMode {
@@ -30,7 +31,10 @@ impl DiffMode {
         match options.reference.as_ref().map(|r| r.as_str()) {
             None => DiffMode::Unstaged,
             Some(s) if s == "--cached" || s == "--staged" => DiffMode::Staged,
-            Some(s) => DiffMode::Ref(s.to_string()),
+            Some(s) => match crate::commit_reference::split_endpoint_range(s) {
+                Some((from, to)) => DiffMode::Range(from.into(), to.into()),
+                None => DiffMode::Ref(s.to_string()),
+            },
         }
     }
 }
@@ -40,6 +44,9 @@ pub fn get_changed_files(options: &DiffOptions, backend: &dyn VcsBackend) -> Vec
     let mode = DiffMode::from_options(options);
 
     let files: Vec<String> = match &mode {
+        DiffMode::Range(from, to) => backend
+            .get_range_changed_files(from, to)
+            .unwrap_or_default(),
         DiffMode::Unstaged => backend.get_unstaged_changed_files().unwrap_or_default(),
         DiffMode::Staged => backend.get_staged_changed_files().unwrap_or_default(),
         DiffMode::Ref(r) if r == "HEAD" => {
@@ -77,13 +84,18 @@ pub fn get_old_content(filename: &str, mode: &DiffMode, backend: &dyn VcsBackend
         DiffMode::Staged => backend
             .get_file_content_at_ref("HEAD", path)
             .unwrap_or_default(),
-        DiffMode::Ref(r) => backend.get_file_content_at_ref(r, path).unwrap_or_default(),
+        DiffMode::Ref(r) | DiffMode::Range(r, _) => {
+            backend.get_file_content_at_ref(r, path).unwrap_or_default()
+        }
     }
 }
 
 /// Get content of a file at the "new" side of the diff for the selected mode.
 pub fn get_new_content(filename: &str, mode: &DiffMode, backend: &dyn VcsBackend) -> String {
     match mode {
+        DiffMode::Range(_, to) => backend
+            .get_file_content_at_ref(to, Path::new(filename))
+            .unwrap_or_default(),
         DiffMode::Staged => backend
             .get_file_content_at_index(Path::new(filename))
             .unwrap_or_default(),
@@ -630,6 +642,62 @@ mod tests {
 
         let _ = std::env::set_current_dir(&original);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn jj_endpoint_range_combines_commits_and_working_copy() {
+        if !jj_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        run_jj(path, &["--config", "git.colocate=false", "git", "init"]);
+        fs::write(path.join("reverted.txt"), "original\n").unwrap();
+        fs::write(path.join("deleted.txt"), "old\n").unwrap();
+        run_jj(path, &["commit", "-m", "base"]);
+        run_jj(path, &["bookmark", "create", "base", "-r", "@-"]);
+        fs::write(path.join("first.txt"), "first\n").unwrap();
+        fs::write(path.join("reverted.txt"), "temporary\n").unwrap();
+        run_jj(path, &["commit", "-m", "first"]);
+        fs::write(path.join("second.txt"), "second\n").unwrap();
+        fs::write(path.join("reverted.txt"), "original\n").unwrap();
+        fs::remove_file(path.join("deleted.txt")).unwrap();
+        run_jj(path, &["commit", "-m", "second"]);
+        let backend = JjBackend::new(path).unwrap();
+        fs::write(path.join("live.txt"), "uncommitted\n").unwrap();
+        let mut options = super::super::DiffOptions {
+            reference: Some("base..@".parse().unwrap()),
+            revset: None,
+            file: None,
+            watch: false,
+            theme: None,
+            stacked: false,
+            focus: None,
+        };
+        let diffs = load_file_diffs(&options, &backend);
+        let names: Vec<_> = diffs.iter().map(|d| d.filename.as_str()).collect();
+        assert_eq!(names.len(), 4, "{names:?}");
+        for name in ["first.txt", "second.txt", "live.txt", "deleted.txt"] {
+            assert!(names.contains(&name));
+        }
+        assert!(!names.contains(&"reverted.txt"));
+        assert_eq!(
+            diffs
+                .iter()
+                .find(|d| d.filename == "live.txt")
+                .unwrap()
+                .new_content,
+            "uncommitted\n"
+        );
+        let deleted = diffs.iter().find(|d| d.filename == "deleted.txt").unwrap();
+        assert_eq!(deleted.old_content, "old\n");
+        assert!(deleted.new_content.is_empty());
+        options.reference = Some("base..@-".parse().unwrap());
+        assert!(!load_file_diffs(&options, &backend)
+            .iter()
+            .any(|d| d.filename == "live.txt"));
+        options.reference = Some("base..base".parse().unwrap());
+        assert!(load_file_diffs(&options, &backend).is_empty());
     }
 
     #[test]

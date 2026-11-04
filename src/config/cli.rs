@@ -28,13 +28,13 @@ pub struct DiffArgs {
     /// Base of the diff. With no value, shows unstaged changes
     /// (`git diff`). Use `--cached` for staged-only (`git diff --cached`).
     /// Any other value (`main`, `HEAD`, `HEAD~3`, a SHA) is a ref to diff
-    /// the worktree against.
+    /// the worktree against. In jj repositories, a bounded range (main..@)
+    /// compares the endpoint trees.
     #[arg(value_parser = clap::value_parser!(CommitReference))]
     pub reference: Option<CommitReference>,
 
-    /// Review every commit selected by this jj revset as an immutable,
-    /// commit-by-commit diff. Unlike the positional base reference, this
-    /// never reads the working-copy files.
+    /// Review a jj revset. Bounded ranges (main..@) show the combined
+    /// endpoint diff; other revsets show selected commits individually.
     #[arg(long, value_name = "REVSET", conflicts_with = "reference")]
     pub revset: Option<String>,
 

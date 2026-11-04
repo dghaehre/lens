@@ -324,6 +324,47 @@ impl Modal {
         }
     }
 
+    /// Resolve ID-shaped queries before drawing, using the same backend as
+    /// Enter. A failed/ambiguous prefix must not highlight an unrelated row.
+    pub fn update_prefix_preview(
+        &mut self,
+        resolve: impl FnOnce(&str) -> Result<RevsetPickerItem, String>,
+    ) {
+        let ModalContent::RevsetPicker {
+            items,
+            filtered_indices,
+            query,
+            selected,
+            error,
+            ..
+        } = &mut self.content
+        else {
+            return;
+        };
+        if !is_change_id_prefix(query.trim()) {
+            return;
+        }
+        filtered_indices.clear();
+        *selected = 0;
+        match resolve(query.trim()) {
+            Ok(item) => {
+                let index = items
+                    .iter()
+                    .position(|existing| match (&existing.revset, &item.revset) {
+                        (Some(prefix), Some(id)) => id.starts_with(prefix),
+                        _ => false,
+                    })
+                    .unwrap_or_else(|| {
+                        items.push(item);
+                        items.len() - 1
+                    });
+                filtered_indices.push(index);
+                *error = None;
+            }
+            Err(message) => *error = Some(message),
+        }
+    }
+
     pub fn annotations(
         title: impl Into<String>,
         items: Vec<String>,
@@ -1582,7 +1623,9 @@ impl Modal {
                 KeyCode::Enter
                     if !query.trim().is_empty()
                         && (key.modifiers.contains(KeyModifiers::CONTROL)
-                            || is_change_id_prefix(query.trim())) =>
+                            || is_change_id_prefix(query.trim())
+                            || crate::commit_reference::split_endpoint_range(query.trim())
+                                .is_some()) =>
                 {
                     Some(ModalResult::RevsetSelected {
                         revset: Some(query.trim().to_string()),
@@ -2834,6 +2877,67 @@ fn wrap_preview_line(line: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod revset_picker_tests {
     use super::*;
+
+    #[test]
+    fn range_expression_wins_over_description_match() {
+        let mut modal = Modal::revset_picker(
+            "revset",
+            vec![RevsetPickerItem {
+                label: "wip: support trunk()..@".into(),
+                revset: Some("abcdef".into()),
+            }],
+        );
+        for c in "trunk()..@".chars() {
+            modal.handle_input(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), 40);
+        }
+        assert!(
+            matches!(modal.handle_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 40),
+            Some(ModalResult::RevsetSelected { revset: Some(raw), literal: true }) if raw == "trunk()..@")
+        );
+    }
+
+    #[test]
+    fn prefix_preview_highlights_resolved_change_and_clears_ambiguity() {
+        let mut modal = Modal::revset_picker(
+            "revset",
+            vec![
+                RevsetPickerItem {
+                    label: "vqpsvyom".into(),
+                    revset: Some("vqpsvyom".into()),
+                },
+                RevsetPickerItem {
+                    label: "vpsntpyq".into(),
+                    revset: Some("vpsntpyq".into()),
+                },
+            ],
+        );
+        for c in "vp".chars() {
+            modal.handle_input(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), 40);
+        }
+        modal.update_prefix_preview(|query| {
+            assert_eq!(query, "vp");
+            Ok(RevsetPickerItem {
+                label: "resolved".into(),
+                revset: Some("vpsntpyqlqup".into()),
+            })
+        });
+        assert!(
+            matches!(&modal.content, ModalContent::RevsetPicker { filtered_indices, selected: 0, error: None, .. } if filtered_indices == &[1])
+        );
+        modal.update_prefix_preview(|_| Err("ambiguous prefix".into()));
+        assert!(
+            matches!(&modal.content, ModalContent::RevsetPicker { filtered_indices, error: Some(_), .. } if filtered_indices.is_empty())
+        );
+        modal.update_prefix_preview(|_| {
+            Ok(RevsetPickerItem {
+                label: "outside initial rows".into(),
+                revset: Some("vpxxxxx".into()),
+            })
+        });
+        assert!(
+            matches!(&modal.content, ModalContent::RevsetPicker { filtered_indices, selected: 0, error: None, .. } if filtered_indices == &[2])
+        );
+    }
 
     #[test]
     fn typed_prefix_wins_over_fuzzy_row_match() {

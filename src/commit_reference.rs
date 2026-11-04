@@ -19,7 +19,7 @@ pub enum ReferenceParseError {
     #[error("empty reference string")]
     Empty,
     #[error(
-        "ranges like `a..b`, `a...b`, and `a..-` are no longer supported. \
+        "unsupported range syntax. Use a bounded jj range such as `main..@`. \
          Pass a single ref to diff the working tree against (e.g. `main`)."
     )]
     RangeNotSupported,
@@ -32,10 +32,54 @@ impl FromStr for CommitReference {
         if s.is_empty() {
             return Err(ReferenceParseError::Empty);
         }
-        if s.contains("..") {
+        if s.contains("..") && split_endpoint_range(s).is_none() {
             return Err(ReferenceParseError::RangeNotSupported);
         }
         Ok(CommitReference(s.to_string()))
+    }
+}
+
+/// A top-level, bounded two-dot range. Nested/quoted revsets retain their
+/// normal revset meaning; each endpoint is validated by the backend.
+pub fn split_endpoint_range(raw: &str) -> Option<(&str, &str)> {
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut split = None;
+    let bytes = raw.as_bytes();
+    for (i, c) in raw.char_indices() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => quote = Some(c),
+            '(' => depth += 1,
+            ')' => depth = depth.checked_sub(1)?,
+            '.' if depth == 0 && bytes.get(i + 1) == Some(&b'.') => {
+                if split.is_some() || bytes.get(i + 2) == Some(&b'.') {
+                    return None;
+                }
+                split = Some(i);
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 || quote.is_some() {
+        return None;
+    }
+    let i = split?;
+    let (from, to) = (raw[..i].trim(), raw[i + 2..].trim());
+    if from.is_empty() || to.is_empty() || to == "-" {
+        None
+    } else {
+        Some((from, to))
     }
 }
 
@@ -74,11 +118,10 @@ mod tests {
     }
 
     #[test]
-    fn test_two_dot_range_rejected() {
-        assert!(matches!(
-            "main..feature".parse::<CommitReference>(),
-            Err(ReferenceParseError::RangeNotSupported)
-        ));
+    fn test_two_dot_range_accepted() {
+        assert!("main..feature".parse::<CommitReference>().is_ok());
+        assert_eq!(split_endpoint_range("trunk()..@"), Some(("trunk()", "@")));
+        assert_eq!(split_endpoint_range("main..@..other"), None);
     }
 
     #[test]

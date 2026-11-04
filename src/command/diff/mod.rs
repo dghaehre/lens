@@ -34,7 +34,23 @@ pub struct DiffOptions {
     pub focus: Option<String>,
 }
 
-pub fn run_diff_ui(options: DiffOptions, backend: &dyn VcsBackend) -> io::Result<()> {
+pub fn run_diff_ui(mut options: DiffOptions, backend: &dyn VcsBackend) -> io::Result<()> {
+    let range = options
+        .revset
+        .as_deref()
+        .or_else(|| options.reference.as_ref().map(|r| r.as_str()))
+        .filter(|s| crate::commit_reference::split_endpoint_range(s).is_some())
+        .map(str::to_string);
+    if let Some(raw) = range {
+        validate_endpoint_range(&raw, backend).map_err(io::Error::other)?;
+        if options.stacked {
+            return Err(io::Error::other(
+                "--stacked requires a single base ref; use lens main --stacked",
+            ));
+        }
+        options.reference = Some(CommitReference(raw));
+        options.revset = None;
+    }
     // --cached / --staged are git-only; jj has no staging area.
     if backend.kind() == VcsKind::Jj {
         if let Some(r) = options.reference.as_ref() {
@@ -99,4 +115,16 @@ pub fn run_diff_ui(options: DiffOptions, backend: &dyn VcsBackend) -> io::Result
     }
 
     app::run_app(options, backend)
+}
+
+fn validate_endpoint_range(raw: &str, backend: &dyn VcsBackend) -> Result<(), String> {
+    if backend.kind() != VcsKind::Jj {
+        return Err("endpoint ranges are currently jj-only".into());
+    }
+    let (from, to) = crate::commit_reference::split_endpoint_range(raw)
+        .ok_or_else(|| "expected a bounded range such as main..@".to_string())?;
+    backend.refresh().map_err(|e| e.to_string())?;
+    backend.resolve_ref(from).map_err(|e| e.to_string())?;
+    backend.resolve_ref(to).map_err(|e| e.to_string())?;
+    Ok(())
 }

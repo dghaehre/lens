@@ -63,8 +63,8 @@ lens --no-watch
 # Stacked mode - walk commits in <ref>..HEAD one by one
 lens main --stacked
 
-# jj: review exactly the commits selected by a revset, from commit trees
-# (never from the files currently on disk)
+# jj: review the combined diff across a range
+lens 'main..@'
 lens --revset 'trunk()..@'
 
 # Jump to a specific file on open
@@ -75,10 +75,16 @@ lens always diffs the working tree against the supplied ref. To review a
 single historical commit, check it out (e.g. `git checkout <sha>`) and
 diff against its parent (`lens HEAD~1`).
 
-In a jj repository, `--revset <REVSET>` instead opens an immutable,
-commit-by-commit review of every selected commit. This is the right mode for
-arbitrary multi-commit revsets such as `main..@`: each commit is compared to
-its own parent, and no diff side is read from the working-copy files. Lens loads effective revset aliases (including `trunk()`) using the installed
+In a jj repository, bounded ranges such as `main..@` and `trunk()..@` show
+one combined diff between the endpoint trees. They work as positional CLI
+arguments, with `--revset`, and in the `b` picker with Enter. Current edits
+are snapshotted before loading, so `main..@` includes the working copy;
+a historical right endpoint uses that revision's contents. Edits reverted
+within the range disappear from the combined diff. Each endpoint must resolve
+to one revision. Use `lens main --stacked` for commit-by-commit review.
+Other `--revset` expressions continue to review selected commits individually.
+
+Lens loads effective revset aliases (including `trunk()`) using the installed
 `jj config list` at startup, then parses and evaluates revsets with `jj-lib`.
 Restart Lens after changing aliases.
 
