@@ -58,6 +58,7 @@ pub struct JjBackend {
     settings: UserSettings,
     /// Re-used by every revset parse; immutable.
     aliases: RevsetAliasesMap,
+    short_prefixes: String,
     fileset_aliases: FilesetAliasesMap,
     extensions: RevsetExtensions,
 }
@@ -66,7 +67,11 @@ impl JjBackend {
     /// Open a jj workspace at or above `path` (the underlying `Workspace::load`
     /// walks upward to find `.jj/`).
     pub fn new(path: &Path) -> Result<Self, VcsError> {
-        let config = StackedConfig::with_defaults();
+        let mut config = StackedConfig::with_defaults();
+        config.add_layer(
+            ConfigLayer::parse(ConfigSource::User, &Self::load_jj_config(path, "user")?)
+                .map_err(|e| VcsError::Other(format!("jj user configuration: {e}")))?,
+        );
         let settings = UserSettings::from_config_and_home_dir(config, dirs::home_dir())
             .map_err(|e| VcsError::Other(format!("jj settings: {e}")))?;
 
@@ -87,7 +92,27 @@ impl JjBackend {
             .block_on()
             .map_err(|e| VcsError::Other(format!("jj repo load: {e}")))?;
 
-        let aliases = Self::load_revset_aliases(workspace.workspace_root())?;
+        let aliases = Self::parse_revset_aliases(&Self::load_jj_config(
+            workspace.workspace_root(),
+            "revset-aliases",
+        )?)?;
+        let mut config = StackedConfig::with_defaults();
+        config.add_layer(
+            ConfigLayer::parse(
+                ConfigSource::User,
+                &Self::load_jj_config(workspace.workspace_root(), "revsets")?,
+            )
+            .map_err(|e| VcsError::Other(format!("jj revsets configuration: {e}")))?,
+        );
+        let short_prefixes = if config
+            .table_keys("revsets")
+            .any(|key| key == "short-prefixes")
+        {
+            config.get::<String>("revsets.short-prefixes")
+        } else {
+            config.get::<String>("revsets.log")
+        }
+        .map_err(|e| VcsError::Other(format!("jj short-prefix configuration: {e}")))?;
         let state_dir = workspace.workspace_root().join(".jj");
         Ok(Self {
             state_dir,
@@ -95,6 +120,7 @@ impl JjBackend {
             repo: RwLock::new(repo),
             settings,
             aliases,
+            short_prefixes,
             fileset_aliases: FilesetAliasesMap::new(),
             extensions: RevsetExtensions::default(),
         })
@@ -103,7 +129,7 @@ impl JjBackend {
     /// Delegate configuration discovery/precedence to jj, while parsing and
     /// evaluating every revset in jj-lib. The explicit template produces TOML
     /// regardless of the user's config-list template or terminal settings.
-    fn load_revset_aliases(root: &Path) -> Result<RevsetAliasesMap, VcsError> {
+    fn load_jj_config(root: &Path, prefix: &str) -> Result<String, VcsError> {
         let output = Command::new("jj")
             .args([
                 "--ignore-working-copy",
@@ -115,7 +141,7 @@ impl JjBackend {
                 "--include-defaults",
                 "--template",
                 r#"name ++ " = " ++ value ++ "\n""#,
-                "revset-aliases",
+                prefix,
             ])
             .current_dir(root)
             .output()
@@ -132,7 +158,7 @@ impl JjBackend {
         }
         let text = String::from_utf8(output.stdout)
             .map_err(|e| VcsError::Other(format!("jj alias configuration is not UTF-8: {e}")))?;
-        Self::parse_revset_aliases(&text)
+        Ok(text)
     }
 
     fn parse_revset_aliases(text: &str) -> Result<RevsetAliasesMap, VcsError> {
@@ -245,7 +271,18 @@ impl JjBackend {
         let mut diags = RevsetDiagnostics::new();
         let user_expr = revset::parse(&mut diags, &translated, &ctx)
             .map_err(|e| VcsError::InvalidRef(format!("{}: {e}", revset_str)))?;
-        let resolver = SymbolResolver::new(repo.as_ref(), self.extensions.symbol_resolvers());
+        // Build a fresh index for this repository snapshot, so rewrites and
+        // newly created changes cannot leave prefix resolution stale.
+        let mut prefix_context =
+            jj_lib::id_prefix::IdPrefixContext::new(Arc::new(RevsetExtensions::default()));
+        if !self.short_prefixes.is_empty() {
+            let expression =
+                revset::parse(&mut RevsetDiagnostics::new(), &self.short_prefixes, &ctx)
+                    .map_err(|e| VcsError::InvalidRef(format!("jj short-prefix scope: {e}")))?;
+            prefix_context = prefix_context.disambiguate_within(expression);
+        }
+        let resolver = SymbolResolver::new(repo.as_ref(), self.extensions.symbol_resolvers())
+            .with_id_prefix_context(&prefix_context);
         let resolved = user_expr
             .resolve_user_expression(repo.as_ref(), &resolver)
             .map_err(|e| VcsError::InvalidRef(format!("{}: {e}", revset_str)))?;
@@ -998,12 +1035,42 @@ mod tests {
     }
 
     #[test]
+    fn short_prefix_scope_disambiguates_colliding_changes() {
+        if !jj_available() {
+            return;
+        }
+        let dir = setup_pure_jj_repo();
+        // More changes than reverse-hex digits guarantees a collision.
+        for _ in 0..17 {
+            run_jj(dir.path(), &["new"]);
+        }
+        let mut backend = JjBackend::new(dir.path()).unwrap();
+        backend.short_prefixes = "all()".into();
+        let commits = backend.resolve_revset("all()").unwrap();
+        let mut seen = std::collections::HashMap::new();
+        let (prefix, target) = commits
+            .iter()
+            .find_map(|commit| {
+                let prefix = commit.change_id().reverse_hex()[..1].to_string();
+                seen.insert(prefix.clone(), commit.id().hex())
+                    .map(|id| (prefix, id))
+            })
+            .expect("at least two changes share a prefix");
+        let error = backend.resolve_ref(&prefix).unwrap_err().to_string();
+        assert!(error.contains("ambiguous"), "{error}");
+        backend.short_prefixes = target.clone();
+        assert_eq!(backend.resolve_ref(&prefix).unwrap(), target);
+        assert_eq!(backend.resolve_ref(&prefix.to_uppercase()).unwrap(), target);
+    }
+
+    #[test]
     fn configured_trunk_alias_resolves_in_library() {
         if !jj_available() {
             return;
         }
         let dir = setup_pure_jj_repo();
         let mut backend = JjBackend::new(dir.path()).unwrap();
+        backend.short_prefixes = "all()".into();
         backend.aliases = JjBackend::parse_revset_aliases(
             "[revset-aliases]\n\"trunk()\" = \"main\"\n\"review()\" = \"trunk()..@\"\n",
         )

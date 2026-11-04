@@ -1580,8 +1580,9 @@ impl Modal {
                     None
                 }
                 KeyCode::Enter
-                    if key.modifiers.contains(KeyModifiers::CONTROL)
-                        && !query.trim().is_empty() =>
+                    if !query.trim().is_empty()
+                        && (key.modifiers.contains(KeyModifiers::CONTROL)
+                            || is_change_id_prefix(query.trim())) =>
                 {
                     Some(ModalResult::RevsetSelected {
                         revset: Some(query.trim().to_string()),
@@ -1917,6 +1918,16 @@ impl Modal {
             *selected = filtered_indices.len().saturating_sub(1);
         }
     }
+}
+
+// jj change IDs use the reverse-hex alphabet k-z, case-insensitively.
+// Submit ID-shaped input verbatim so fuzzy matches cannot hijack a prefix,
+// including an ambiguous prefix or a change outside the initial picker rows.
+fn is_change_id_prefix(query: &str) -> bool {
+    !query.is_empty()
+        && query
+            .bytes()
+            .all(|c| (b'k'..=b'z').contains(&c.to_ascii_lowercase()))
 }
 
 fn fuzzy_match(text: &str, pattern: &str) -> bool {
@@ -2823,6 +2834,32 @@ fn wrap_preview_line(line: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod revset_picker_tests {
     use super::*;
+
+    #[test]
+    fn typed_prefix_wins_over_fuzzy_row_match() {
+        for query in ["vp", "VP", "v", "zz"] {
+            let mut modal = Modal::revset_picker(
+                "revset",
+                vec![
+                    RevsetPickerItem {
+                        label: "vqpsvyom current".into(),
+                        revset: Some("vqpsvyom".into()),
+                    },
+                    RevsetPickerItem {
+                        label: "vpsntpyq explorer".into(),
+                        revset: Some("vpsntpyq".into()),
+                    },
+                ],
+            );
+            for c in query.chars() {
+                modal.handle_input(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), 40);
+            }
+            assert!(
+                matches!(modal.handle_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 40),
+                Some(ModalResult::RevsetSelected { revset: Some(id), literal: true }) if id == query)
+            );
+        }
+    }
 
     #[test]
     fn selecting_a_change_requests_immutable_review() {

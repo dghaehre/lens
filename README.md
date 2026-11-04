@@ -84,6 +84,10 @@ Restart Lens after changing aliases.
 
 The `b` picker shows an ancestry graph with branch and merge connections (`@` marks
 the working change). Choose a listed change and press `enter` to review its own diff.
+Type a highlighted change-ID prefix from `jj log` and press `enter` to review
+that change. ID-shaped input takes precedence over fuzzy row matches and uses
+jj’s `revsets.short-prefixes` scope (or `revsets.log` when unset); ambiguous
+prefixes show an error. Use the full description for fuzzy text searches.
 Choose the working-copy row to return to the live diff. Type any
 revset and press `ctrl+enter` to review that expression. A revset with
 no matching picker row enters that mode with regular `enter` as well.
