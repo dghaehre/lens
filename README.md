@@ -98,8 +98,9 @@ Choose the working-copy row to return to the live diff. Type any
 revset and press `ctrl+enter` to review that expression. A revset with
 no matching picker row enters that mode with regular `enter` as well.
 
-Press `r` to refresh jj's repository view and follow reviewed changes to their
-latest versions after edits or rebases. The selected change stays selected;
+Watch mode follows reviewed jj changes to their latest versions after edits
+or rebases, including when launched from jjui. Press `r` to refresh manually,
+or use `--no-watch` to disable automatic refresh. The selected change stays selected;
 the picker also reflects the refreshed history. Historical review still reads
 commit contents, so unrelated working-copy edits are not included.
 

@@ -40,7 +40,7 @@ use super::DiffOptions;
 use crate::commit_reference::CommitReference;
 use crate::vcs::{RevisionSummary, StackedCommitInfo, VcsBackend, VcsKind};
 
-/// Explicit refresh follows jj change identities across rewrites. Ordinary
+/// Refresh follows jj change identities across rewrites. Ordinary
 /// redraws keep using the selected immutable commit trees.
 fn refresh_review(state: &mut AppState, backend: &dyn VcsBackend) -> Result<(), String> {
     if backend.kind() == VcsKind::Jj {
@@ -1780,10 +1780,14 @@ fn run_app_internal(
         while let Some(app_event) = pending_events.pop_front() {
             let current_event = match app_event {
                 AppEvent::Watch(WatchEvent::Files { changed_files }) => {
-                    // Commit review is immutable. Ignore source-file changes
-                    // instead of reloading from disk (which would silently
-                    // turn the current stacked commit into a worktree diff).
+                    // Follow jj rewrites, but still load both sides from the
+                    // selected change's trees, never unrelated worktree files.
                     if state.stacked_mode {
+                        if backend.kind() == VcsKind::Jj {
+                            if let Err(error) = refresh_review(&mut state, backend) {
+                                active_modal = Some(Modal::info("Refresh failed", error));
+                            }
+                        }
                         continue;
                     }
                     state.needs_reload = true;
@@ -1792,6 +1796,12 @@ fn run_app_internal(
                     pending_changed_files
                         .get_or_insert_with(std::collections::HashSet::new)
                         .extend(changed_files);
+                    continue;
+                }
+                AppEvent::Watch(WatchEvent::Repository) => {
+                    if let Err(error) = refresh_review(&mut state, backend) {
+                        active_modal = Some(Modal::info("Refresh failed", error));
+                    }
                     continue;
                 }
                 AppEvent::Watch(WatchEvent::AnnotationDb) => {
