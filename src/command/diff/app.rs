@@ -40,6 +40,42 @@ use super::DiffOptions;
 use crate::commit_reference::CommitReference;
 use crate::vcs::{RevisionSummary, StackedCommitInfo, VcsBackend, VcsKind};
 
+/// Explicit refresh follows jj change identities across rewrites. Ordinary
+/// redraws keep using the selected immutable commit trees.
+fn refresh_review(state: &mut AppState, backend: &dyn VcsBackend) -> Result<(), String> {
+    if backend.kind() == VcsKind::Jj {
+        let change_ids = state
+            .stacked_commits
+            .iter()
+            .map(|commit| backend.get_change_id(&commit.commit_id))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        backend.refresh().map_err(|e| e.to_string())?;
+        let commits = change_ids
+            .iter()
+            .map(|id| {
+                // Require a single successor; divergent or abandoned changes
+                // should report an error instead of switching silently.
+                let commit_id = backend.resolve_ref(id).map_err(|e| e.to_string())?;
+                backend
+                    .get_commits_for_revset(&commit_id)
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| format!("change {id} no longer exists"))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        state.save_stacked_viewed_files();
+        state.stacked_commits = commits;
+        if let Some(commit) = state.current_commit() {
+            state.set_review_context(review_context_for_commit(&commit.commit_id, backend));
+            state.load_stacked_viewed_files();
+        }
+    }
+    state.needs_reload = true;
+    Ok(())
+}
+
 /// Navigate to a different commit in stacked mode.
 /// Returns true if navigation was successful.
 fn navigate_stacked_commit(
@@ -1102,6 +1138,81 @@ fn revision_graph_row(
         lanes.pop();
     }
     graph
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::*;
+    use crate::vcs::JjBackend;
+    use std::{fs, process::Command};
+
+    #[test]
+    fn refresh_follows_rewritten_change_and_updates_picker() {
+        if !Command::new("jj")
+            .arg("--version")
+            .output()
+            .is_ok_and(|out| out.status.success())
+        {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let jj = |args: &[&str]| {
+            let out = Command::new("jj")
+                .args(args)
+                .current_dir(dir.path())
+                .env("JJ_USER", "lens test")
+                .env("JJ_EMAIL", "lens@test")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        jj(&["--config", "git.colocate=false", "git", "init"]);
+        fs::write(dir.path().join("file.txt"), "before\n").unwrap();
+        jj(&["describe", "-m", "before"]);
+        let backend = JjBackend::new(dir.path()).unwrap();
+        let original_id = backend.resolve_ref("@").unwrap();
+        let change_id = backend.get_change_id("@").unwrap();
+        let mut state = AppState::with_store(
+            load_single_commit_diffs(&original_id, &None, &backend),
+            None,
+            Box::new(InMemoryStore::new()),
+        );
+        state.init_stacked_mode(backend.get_commits_for_revset("@").unwrap());
+
+        // Rewrite the selected change externally, then move @ elsewhere.
+        fs::write(dir.path().join("file.txt"), "after\n").unwrap();
+        jj(&["describe", "-m", "updated"]);
+        jj(&["new"]);
+        fs::write(dir.path().join("file.txt"), "unrelated working copy\n").unwrap();
+        assert_eq!(backend.resolve_ref(&change_id).unwrap(), original_id);
+        refresh_review(&mut state, &backend).unwrap();
+        let selected = state.current_commit().unwrap();
+        assert_ne!(selected.commit_id, original_id);
+        assert_eq!(selected.summary, "updated");
+        assert_eq!(
+            backend.get_change_id(&selected.commit_id).unwrap(),
+            change_id
+        );
+        assert_eq!(state.current_commit_index, 0);
+        assert!(state.needs_reload);
+        let diffs = load_single_commit_diffs(&selected.commit_id, &None, &backend);
+        assert_eq!(diffs[0].new_content, "after\n");
+        assert!(backend.list_revisions(50).unwrap().iter().any(|revision| {
+            revision.commit_id == selected.commit_id && revision.summary == "updated"
+        }));
+
+        // Explicit refresh also snapshots edits when reviewing @ itself.
+        state.init_stacked_mode(backend.get_commits_for_revset("@").unwrap());
+        fs::write(dir.path().join("file.txt"), "fresh edit\n").unwrap();
+        refresh_review(&mut state, &backend).unwrap();
+        let diffs =
+            load_single_commit_diffs(&state.current_commit().unwrap().commit_id, &None, &backend);
+        assert_eq!(diffs[0].new_content, "fresh edit\n");
+    }
 }
 
 #[cfg(test)]
@@ -3199,7 +3310,9 @@ fn run_app_internal(
                             }
                         }
                         KeyCode::Char('r') => {
-                            state.needs_reload = true;
+                            if let Err(error) = refresh_review(&mut state, backend) {
+                                active_modal = Some(Modal::info("Refresh failed", error));
+                            }
                         }
                         KeyCode::Char('b') => {
                             // jj gets a picker: change ids aren't memorable, so
