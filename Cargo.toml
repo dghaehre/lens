@@ -51,6 +51,7 @@ futures = "0.3.34"
 chrono = "0.4.45"
 terminal-light = "1.9.1"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
+tree-sitter-sequel = "0.3.11"
 
 [dev-dependencies]
 tempfile = "3.27.0"

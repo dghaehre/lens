@@ -65,6 +65,26 @@ fn load_config(
 pub static CONFIGS: Lazy<Vec<(&'static str, LanguageConfig)>> = Lazy::new(|| {
     let mut configs = Vec::new();
 
+    // Adapt the grammar's editor capture names and Lua-style numeric
+    // patterns to Lens's capture palette and tree-sitter-highlight regexes.
+    let sql_highlights = tree_sitter_sequel::HIGHLIGHTS_QUERY
+        .replace("@field", "@variable.member")
+        .replace("@parameter", "@variable.parameter")
+        .replace("@float", "@number")
+        .replace("@boolean", "@constant.builtin")
+        .replace("@conditional", "@keyword")
+        .replace("@storageclass", "@keyword")
+        .replace(" @spell", "")
+        .replace("%d", "[0-9]")
+        .replace(r"\.", "[.]");
+    load_config(
+        tree_sitter_sequel::LANGUAGE.into(),
+        "sql",
+        &sql_highlights,
+        "sql",
+        &mut configs,
+    );
+
     load_config(
         tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         "typescript",

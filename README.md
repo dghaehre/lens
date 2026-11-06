@@ -8,7 +8,7 @@ A fast terminal diff viewer and code review TUI, written in Rust.
 
 Review your working tree against any ref side-by-side without leaving your terminal. Ships as a single static Rust binary and stays snappy on multi-thousand-line diffs.
 
-- Side-by-side diff viewer with tree-sitter syntax highlighting
+- Side-by-side diff viewer with tree-sitter syntax highlighting, including SQL
 - Annotate selections, hunks, or whole files
 - Watch mode and stacked-commit review
 - Works with Git and Jujutsu (jj) repositories

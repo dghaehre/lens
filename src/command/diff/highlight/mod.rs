@@ -37,7 +37,10 @@ pub fn highlight_color(index: usize) -> Color {
 
 fn get_config_for_file(filename: &str) -> Option<&'static LanguageConfig> {
     let ext = Path::new(filename).extension().and_then(|e| e.to_str())?;
-    CONFIGS.iter().find(|(e, _)| *e == ext).map(|(_, c)| c)
+    CONFIGS
+        .iter()
+        .find(|(e, _)| e.eq_ignore_ascii_case(ext))
+        .map(|(_, c)| c)
 }
 
 fn highlight_code(code: &str, filename: &str) -> Vec<(String, Option<usize>)> {
@@ -226,6 +229,7 @@ mod tests {
     #[test]
     fn test_all_configs_load() {
         let extensions: Vec<&str> = CONFIGS.iter().map(|(ext, _)| *ext).collect();
+        assert!(extensions.contains(&"sql"), "SQL config should be loaded");
         assert!(extensions.contains(&"rs"), "Rust config should be loaded");
         assert!(
             extensions.contains(&"ts"),
@@ -249,6 +253,52 @@ mod tests {
             extensions.contains(&"swift"),
             "Swift config should be loaded"
         );
+    }
+
+    #[test]
+    fn test_sql_highlighting() {
+        let code = "-- a comment\nSELECT name, 42, 1.5, 'hello', true FROM users WHERE id = 7;\nselect name from users;\n/* multi\nline comment */\n";
+        for filename in ["query.sql", "migration.SQL"] {
+            let tokens = highlight_code(code, filename);
+            assert_eq!(
+                tokens
+                    .iter()
+                    .map(|(text, _)| text.as_str())
+                    .collect::<String>(),
+                code
+            );
+            for (text, capture) in [
+                ("SELECT", "keyword"),
+                ("select", "keyword"),
+                ("42", "number"),
+                ("1.5", "number"),
+                ("'hello'", "string"),
+                ("true", "constant.builtin"),
+                ("=", "operator"),
+            ] {
+                let expected = HIGHLIGHT_NAMES.iter().position(|name| *name == capture);
+                assert!(
+                    tokens
+                        .iter()
+                        .any(|(token, style)| token == text && *style == expected),
+                    "missing {capture} for {text} in {filename}: {tokens:?}"
+                );
+            }
+            let file = FileHighlighter::new(code, filename);
+            let comment_color = highlight_color(
+                HIGHLIGHT_NAMES
+                    .iter()
+                    .position(|name| *name == "comment")
+                    .unwrap(),
+            );
+            for line in [1, 4, 5] {
+                let spans = file.get_line_spans(line, None);
+                assert!(!spans.is_empty());
+                assert!(spans
+                    .iter()
+                    .all(|span| span.style.fg == Some(comment_color)));
+            }
+        }
     }
 
     #[test]
